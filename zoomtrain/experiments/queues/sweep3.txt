@@ -1,0 +1,6 @@
+# Sweep round 3: both Muon sweeps and the weather AdamW sweep were still improving at the top.
+python3 llm/train.py --data /home/user/data/tinystories/tok4k --zoom 1 --budget 2.3e13 --optim muon --lr 3.2e-2 --evals 4 --final_eval_seqs 512 --name sweep_muon_lr3.2e-2 --out results/llm_sweep
+python3 llm/train.py --data /home/user/data/tinystories/tok4k --zoom 1 --budget 2.3e13 --optim muon --lr 6.4e-2 --evals 4 --final_eval_seqs 512 --name sweep_muon_lr6.4e-2 --out results/llm_sweep
+python3 weather/train.py --data /home/user/data/era5_64x32 --zoom 1 --budget 1.8e13 --optim adamw --lr 4e-3 --evals 3 --name wsweep_adamw_lr4e-3 --out results/weather_sweep
+python3 weather/train.py --data /home/user/data/era5_64x32 --zoom 1 --budget 1.8e13 --optim muon --lr 4e-3 --evals 3 --name wsweep_muon_lr4e-3 --out results/weather_sweep
+python3 weather/train.py --data /home/user/data/era5_64x32 --zoom 1 --budget 1.8e13 --optim muon --lr 8e-3 --evals 3 --name wsweep_muon_lr8e-3 --out results/weather_sweep
