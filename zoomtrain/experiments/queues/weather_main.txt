@@ -1,0 +1,17 @@
+# Weather matrix, FLOP-matched at 5.5e13 (~600 baseline steps of batch 16).
+D=/home/user/data/era5_64x32
+python3 weather/train.py --data $D --budget 5.5e13 --zoom 1 --optim adamw --lr LR_ADAMW --name main_adamw_base_s0
+python3 weather/train.py --data $D --budget 5.5e13 --zoom 4:0.6,1:0.4 --optim adamw --lr LR_ADAMW --name main_adamw_zoom_s0
+python3 weather/train.py --data $D --budget 5.5e13 --zoom 4:0.6,1:0.4 --coarse_mode lowres --optim adamw --lr LR_ADAMW --name main_adamw_lowres_s0
+python3 weather/train.py --data $D --budget 5.5e13 --zoom 1 --optim muon --lr LR_MUON --name main_muon_base_s0
+python3 weather/train.py --data $D --budget 5.5e13 --zoom 4:0.6,1:0.4 --optim muon --lr LR_MUON --name main_muon_zoom_s0
+python3 weather/train.py --data $D --budget 5.5e13 --zoom 4:0.6,1:0.4 --coarse_mode lowres --optim muon --lr LR_MUON --name main_muon_lowres_s0
+# --- ablations (Muon)
+python3 weather/train.py --data $D --budget 5.5e13 --zoom 4:0.4,1:0.6 --optim muon --lr LR_MUON --name abl_sched_4-40_s0
+python3 weather/train.py --data $D --budget 5.5e13 --zoom 16:0.3,4:0.3,1:0.4 --optim muon --lr LR_MUON --name abl_sched_16-4-1_s0
+python3 weather/train.py --data $D --budget 5.5e13 --zoom 4:0.6,1:0.4 --optim muon --lr LR_MUON --gated 0 --name abl_mean_s0
+# --- seeds
+python3 weather/train.py --data $D --budget 5.5e13 --zoom 1 --optim muon --lr LR_MUON --seed 1 --name main_muon_base_s1
+python3 weather/train.py --data $D --budget 5.5e13 --zoom 4:0.6,1:0.4 --optim muon --lr LR_MUON --seed 1 --name main_muon_zoom_s1
+# --- longer baseline for compute-to-target
+python3 weather/train.py --data $D --budget 1.1e14 --zoom 1 --optim muon --lr LR_MUON --evals 20 --name long_muon_base_2x_s0

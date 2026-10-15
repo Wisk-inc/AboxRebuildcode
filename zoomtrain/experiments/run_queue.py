@@ -3,9 +3,9 @@
     python experiments/run_queue.py QUEUE.txt --workers 2 --threads 2
 
 QUEUE.txt holds one shell command per line (blank lines and # comments are
-skipped). Each command gets `--threads N` appended, runs from the repo root
-and logs to results/logs/<name>.log where <name> is taken from its --name
-argument. Already-finished runs (results JSON present) are skipped, so a
+skipped; NAME=value lines define $NAME substitutions for later lines). Each
+command gets `--threads N` appended, runs from the repo root and logs to
+results/logs/<name>.log where <name> is taken from its --name argument. Already-finished runs (results JSON present) are skipped, so a
 queue can be re-run to fill in gaps.
 """
 import argparse
@@ -48,7 +48,18 @@ def main():
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--threads", type=int, default=4)
     args = ap.parse_args()
-    cmds = [l.strip() for l in open(args.queue) if l.strip() and not l.startswith("#")]
+    cmds, env = [], {}
+    for line in open(args.queue):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.fullmatch(r"([A-Z_][A-Z0-9_]*)=(\S+)", line)
+        if m:
+            env[m.group(1)] = m.group(2)
+            continue
+        for k, v in env.items():
+            line = line.replace(f"${k}", v)
+        cmds.append(line)
     print(f"{len(cmds)} commands, {args.workers} workers x {args.threads} threads", flush=True)
     with ThreadPoolExecutor(args.workers) as ex:
         for name, status, dt in ex.map(lambda c: run(c, args.threads), cmds):

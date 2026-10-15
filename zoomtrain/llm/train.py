@@ -86,6 +86,8 @@ def main():
     ap.add_argument("--heads", type=int, default=4)
     ap.add_argument("--seq", type=int, default=256)
     ap.add_argument("--batch", type=int, default=16)
+    ap.add_argument("--batch_scale_k", type=int, default=0,
+                    help="use batch*k sequences at zoom k (constant positions per step)")
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--warmup", type=float, default=0.05)
     ap.add_argument("--wd", type=float, default=0.1)
@@ -141,10 +143,11 @@ def main():
         if frac >= 1.0:
             break
         k = sched.k_at(frac)
+        batch = args.batch * (k if args.batch_scale_k else 1)
         for g in opt.param_groups:
             g["lr"] = lr_at(frac, args.lr, warmup=args.warmup)
         t0 = time.perf_counter()
-        chunk = rt.to(stream.next(args.batch))
+        chunk = rt.to(stream.next(batch))
         x, y = chunk[:, :args.seq], chunk[:, k:args.seq + k]
         with rt.autocast():
             loss = fwd(x, y, k=k)
@@ -155,8 +158,8 @@ def main():
         dt = time.perf_counter() - t0
         train_time += dt
         limiter(dt)
-        flops += model.flops_per_step(args.batch, args.seq, k)
-        tokens += args.batch * args.seq
+        flops += model.flops_per_step(batch, args.seq, k)
+        tokens += batch * args.seq
         step += 1
         if step % 25 == 0:
             lv = loss.item()

@@ -1,0 +1,26 @@
+# Main LLM matrix, FLOP-matched at 6.8e13 (~450 baseline steps of 16x256 tokens).
+# LRs are the sweep winners; fill with: sed -i 's/LR_ADAMW/<lr>/; s/LR_MUON/<lr>/' this file.
+D=/home/user/data/tinystories/tok4k
+ZOOM=4:0.35,2:0.25,1:0.4
+# --- baseline vs Zoom, both optimizers, seed 0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim adamw --lr LR_ADAMW --name main_adamw_base_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom $ZOOM --optim adamw --lr LR_ADAMW --name main_adamw_zoom_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr LR_MUON --name main_muon_base_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom $ZOOM --optim muon --lr LR_MUON --name main_muon_zoom_s0
+# --- Zoom ablations (Muon)
+python3 llm/train.py --data $D --budget 6.8e13 --zoom $ZOOM --optim muon --lr LR_MUON --out_mode bag --name abl_bag_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom $ZOOM --optim muon --lr LR_MUON --gated 0 --name abl_mean_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom $ZOOM --optim muon --lr LR_MUON --rope_pos patch --name abl_ropepatch_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 4:0.5,1:0.5 --optim muon --lr LR_MUON --name abl_sched_4-50_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.5,1:0.5 --optim muon --lr LR_MUON --name abl_sched_2-50_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 4:0.6,2:0.2,1:0.2 --optim muon --lr LR_MUON --name abl_sched_4-60_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 4:0.2,2:0.2,1:0.6 --optim muon --lr LR_MUON --name abl_sched_4-20_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom $ZOOM --optim muon --lr LR_MUON --batch_scale_k 1 --name abl_batchk_s0
+# --- extra seeds for the headline comparison
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr LR_MUON --seed 1 --name main_muon_base_s1
+python3 llm/train.py --data $D --budget 6.8e13 --zoom $ZOOM --optim muon --lr LR_MUON --seed 1 --name main_muon_zoom_s1
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr LR_MUON --seed 2 --name main_muon_base_s2
+python3 llm/train.py --data $D --budget 6.8e13 --zoom $ZOOM --optim muon --lr LR_MUON --seed 2 --name main_muon_zoom_s2
+# --- longer baselines: the compute-to-target curve
+python3 llm/train.py --data $D --budget 1.02e14 --zoom 1 --optim muon --lr LR_MUON --evals 15 --name long_muon_base_1.5x_s0
+python3 llm/train.py --data $D --budget 1.36e14 --zoom 1 --optim muon --lr LR_MUON --evals 20 --name long_muon_base_2x_s0
