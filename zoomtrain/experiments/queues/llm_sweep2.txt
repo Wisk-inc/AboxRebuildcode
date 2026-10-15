@@ -1,0 +1,4 @@
+# Sweep extension: Muon was still improving at 4e-3; AdamW 2e-3 re-run with the 5% warmup.
+python3 llm/train.py --data /home/user/data/tinystories/tok4k --zoom 1 --budget 2.3e13 --optim muon --lr 8e-3 --evals 4 --final_eval_seqs 512 --name sweep_muon_lr8e-3 --out results/llm_sweep
+python3 llm/train.py --data /home/user/data/tinystories/tok4k --zoom 1 --budget 2.3e13 --optim muon --lr 1.6e-2 --evals 4 --final_eval_seqs 512 --name sweep_muon_lr1.6e-2 --out results/llm_sweep
+python3 llm/train.py --data /home/user/data/tinystories/tok4k --zoom 1 --budget 2.3e13 --optim adamw --lr 2e-3 --evals 4 --final_eval_seqs 512 --name sweep_adamw_lr2e-3 --out results/llm_sweep
