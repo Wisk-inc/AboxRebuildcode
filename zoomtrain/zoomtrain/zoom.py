@@ -90,12 +90,17 @@ class ZoomSchedule:
         self.stages = stages
 
     def k_at(self, frac):
+        return self.stage_at(frac)[0]
+
+    def stage_at(self, frac):
+        """(k, stage_start, stage_end) in budget fractions for the stage holding frac."""
         acc = 0.0
         for k, f in self.stages:
+            if frac < acc + f - 1e-12:
+                return k, acc, acc + f
             acc += f
-            if frac < acc - 1e-12:
-                return k
-        return self.stages[-1][0]
+        k, f = self.stages[-1]
+        return k, acc - f, acc
 
     @property
     def ks(self):
@@ -116,8 +121,15 @@ class ZoomSchedule:
         return ",".join(f"{k}:{f:g}" for k, f in self.stages)
 
 
-def lr_at(frac, peak, warmup=0.05, final=0.1):
-    """Linear warmup then cosine decay to final*peak, indexed by compute fraction."""
+def lr_at(frac, peak, warmup=0.05, final=0.1, stage=None):
+    """Linear warmup then cosine decay to final*peak, indexed by compute fraction.
+
+    stage=(start, end): restart the schedule inside that window (one warmup +
+    cosine per zoom stage), so every stage gets its own high-LR phase.
+    """
+    if stage is not None:
+        start, end = stage
+        frac = (frac - start) / max(end - start, 1e-12)
     if frac < warmup:
         return peak * frac / warmup
     p = min(1.0, (frac - warmup) / (1 - warmup))

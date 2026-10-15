@@ -90,6 +90,10 @@ def main():
                     help="use batch*k sequences at zoom k (constant positions per step)")
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--warmup", type=float, default=0.05)
+    ap.add_argument("--lr_restart", type=int, default=0,
+                    help="restart warmup+cosine at every zoom stage switch")
+    ap.add_argument("--mix_fine", type=float, default=0.0,
+                    help="in coarse stages, run a k=1 step with this probability")
     ap.add_argument("--wd", type=float, default=0.1)
     ap.add_argument("--gated", type=int, default=1)
     ap.add_argument("--merge_mode", default="", help="gate|mean|linear (overrides --gated)")
@@ -132,6 +136,7 @@ def main():
 
     flops, tokens, step, train_time = 0.0, 0, 0, 0.0
     next_eval = 0.0
+    mix_rng = np.random.default_rng(args.seed + 1)
     while True:
         frac = flops / args.budget
         if frac >= next_eval - 1e-12:
@@ -143,10 +148,13 @@ def main():
             next_eval += 1.0 / args.evals
         if frac >= 1.0:
             break
-        k = sched.k_at(frac)
+        k, s0, s1 = sched.stage_at(frac)
+        if k > 1 and args.mix_fine > 0 and mix_rng.random() < args.mix_fine:
+            k = 1
         batch = args.batch * (k if args.batch_scale_k else 1)
         for g in opt.param_groups:
-            g["lr"] = lr_at(frac, args.lr, warmup=args.warmup)
+            g["lr"] = lr_at(frac, args.lr, warmup=args.warmup,
+                            stage=(s0, s1) if args.lr_restart else None)
         t0 = time.perf_counter()
         chunk = rt.to(stream.next(batch))
         x, y = chunk[:, :args.seq], chunk[:, k:args.seq + k]

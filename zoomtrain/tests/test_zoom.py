@@ -97,3 +97,15 @@ def test_linear_merge_mode_identity_init_and_grads():
     g = ZoomGPT(128, 16, 1, 2, zoom_ks=[2], merge_mode="linear")
     xi = torch.randint(0, 128, (2, 10))
     assert torch.isfinite(g(xi[:, :8], xi[:, 2:10], k=2))
+
+
+def test_stage_bounds_and_lr_restart():
+    s = ZoomSchedule.parse("4:0.35,2:0.25,1:0.4")
+    assert s.stage_at(0.0) == (4, 0.0, 0.35)
+    k, a, b = s.stage_at(0.5)
+    assert k == 2 and abs(a - 0.35) < 1e-9 and abs(b - 0.6) < 1e-9
+    assert s.stage_at(0.99)[0] == 1 and s.stage_at(1.0)[0] == 1
+    # restart: the LR right after a switch is back in warmup, not the cosine tail
+    assert lr_at(0.6 + 1e-4, 1.0, stage=(0.6, 1.0)) < 0.01
+    assert abs(lr_at(0.6 + 0.4 * 0.05, 1.0, stage=(0.6, 1.0)) - 1.0) < 1e-6
+    assert lr_at(0.6, 1.0) < 0.6
