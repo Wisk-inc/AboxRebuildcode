@@ -1,0 +1,7 @@
+# Weather LR sweep at 1/3 of the main budget (1.8e13 FLOPs ~ 200 baseline steps).
+python3 weather/train.py --data /home/user/data/era5_64x32 --zoom 1 --budget 1.8e13 --optim adamw --lr 5e-4 --evals 3 --name wsweep_adamw_lr5e-4 --out results/weather_sweep
+python3 weather/train.py --data /home/user/data/era5_64x32 --zoom 1 --budget 1.8e13 --optim adamw --lr 1e-3 --evals 3 --name wsweep_adamw_lr1e-3 --out results/weather_sweep
+python3 weather/train.py --data /home/user/data/era5_64x32 --zoom 1 --budget 1.8e13 --optim adamw --lr 2e-3 --evals 3 --name wsweep_adamw_lr2e-3 --out results/weather_sweep
+python3 weather/train.py --data /home/user/data/era5_64x32 --zoom 1 --budget 1.8e13 --optim muon --lr 5e-4 --evals 3 --name wsweep_muon_lr5e-4 --out results/weather_sweep
+python3 weather/train.py --data /home/user/data/era5_64x32 --zoom 1 --budget 1.8e13 --optim muon --lr 1e-3 --evals 3 --name wsweep_muon_lr1e-3 --out results/weather_sweep
+python3 weather/train.py --data /home/user/data/era5_64x32 --zoom 1 --budget 1.8e13 --optim muon --lr 2e-3 --evals 3 --name wsweep_muon_lr2e-3 --out results/weather_sweep

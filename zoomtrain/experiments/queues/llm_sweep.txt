@@ -1,0 +1,8 @@
+# Learning-rate sweep at 1/3 of the main budget (2.3e13 FLOPs ~ 150 baseline steps).
+# AdamW: 2e-3 was already worse than 1e-3 (4.90 vs 3.98 at this budget).
+python3 llm/train.py --data /home/user/data/tinystories/tok4k --zoom 1 --budget 2.3e13 --optim adamw --lr 5e-4 --evals 4 --final_eval_seqs 512 --name sweep_adamw_lr5e-4 --out results/llm_sweep
+python3 llm/train.py --data /home/user/data/tinystories/tok4k --zoom 1 --budget 2.3e13 --optim adamw --lr 1e-3 --evals 4 --final_eval_seqs 512 --name sweep_adamw_lr1e-3 --out results/llm_sweep
+python3 llm/train.py --data /home/user/data/tinystories/tok4k --zoom 1 --budget 2.3e13 --optim muon --lr 5e-4 --evals 4 --final_eval_seqs 512 --name sweep_muon_lr5e-4 --out results/llm_sweep
+python3 llm/train.py --data /home/user/data/tinystories/tok4k --zoom 1 --budget 2.3e13 --optim muon --lr 1e-3 --evals 4 --final_eval_seqs 512 --name sweep_muon_lr1e-3 --out results/llm_sweep
+python3 llm/train.py --data /home/user/data/tinystories/tok4k --zoom 1 --budget 2.3e13 --optim muon --lr 2e-3 --evals 4 --final_eval_seqs 512 --name sweep_muon_lr2e-3 --out results/llm_sweep
+python3 llm/train.py --data /home/user/data/tinystories/tok4k --zoom 1 --budget 2.3e13 --optim muon --lr 4e-3 --evals 4 --final_eval_seqs 512 --name sweep_muon_lr4e-3 --out results/llm_sweep
