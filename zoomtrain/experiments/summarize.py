@@ -94,6 +94,12 @@ def main():
         parts.append("## LLM learning-rate sweep (2.3e13 FLOPs)\n")
         parts.append(md_table(llm_rows(sweep), ["run", "optim", "lr", "steps", "val_loss"]))
 
+    wsweep = load("weather_sweep")
+    if wsweep:
+        parts.append("\n\n## Weather learning-rate sweep (1.8e13 FLOPs)\n")
+        parts.append(md_table(weather_rows(wsweep), ["run", "optim", "lr", "steps", "val_mse",
+                                                     "z500@6h", "z500@24h", "z500@72h"]))
+
     main_runs = load("llm")
     if main_runs:
         parts.append("\n\n## LLM main runs and ablations\n")
@@ -123,9 +129,6 @@ def main():
         parts.append("\n\nPersistence RMSE on the same initial conditions: "
                      + ", ".join(f"{c}@{h}h={any_run[f'persist_{c}_{h}h']:.2f}"
                                  for h in (6, 24, 72) for c in ("z500", "t850", "t2m")))
-
-    for sub, label in (("llm", "LLM"), ("weather", "weather")):
-        p = os.path.join(RES, sub, "pack_stats.json")
 
     with open(os.path.join(RES, "SUMMARY.md"), "w") as f:
         f.write("\n".join(parts) + "\n")
