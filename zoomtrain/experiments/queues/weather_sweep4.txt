@@ -1,0 +1,2 @@
+python3 weather/train.py --data /home/user/data/era5_64x32 --zoom 1 --budget 1.8e13 --optim muon --lr 1.6e-2 --evals 3 --name wsweep_muon_lr1.6e-2 --out results/weather_sweep
+python3 weather/train.py --data /home/user/data/era5_64x32 --zoom 1 --budget 1.8e13 --optim muon --lr 3.2e-2 --evals 3 --name wsweep_muon_lr3.2e-2 --out results/weather_sweep
