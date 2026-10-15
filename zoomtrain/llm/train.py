@@ -92,6 +92,7 @@ def main():
     ap.add_argument("--warmup", type=float, default=0.05)
     ap.add_argument("--wd", type=float, default=0.1)
     ap.add_argument("--gated", type=int, default=1)
+    ap.add_argument("--merge_mode", default="", help="gate|mean|linear (overrides --gated)")
     ap.add_argument("--out_mode", default="slot", choices=["slot", "bag"])
     ap.add_argument("--rope_pos", default="token", choices=["token", "patch"])
     ap.add_argument("--qk_norm", type=int, default=0)
@@ -116,7 +117,7 @@ def main():
     sched = ZoomSchedule.parse(args.zoom)
     model = ZoomGPT(meta["vocab_size"], args.d, args.layers, args.heads, zoom_ks=sched.ks,
                     gated=bool(args.gated), out_mode=args.out_mode, rope_pos=args.rope_pos,
-                    qk_norm=bool(args.qk_norm)).to(rt.device)
+                    qk_norm=bool(args.qk_norm), merge_mode=args.merge_mode or None).to(rt.device)
     n_params = sum(p.numel() for p in model.parameters())
     opt = build_optimizer(model, args.optim, args.lr, args.wd)
     fwd = maybe_compile(model, rt)

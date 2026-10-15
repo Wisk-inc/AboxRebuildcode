@@ -1,0 +1,5 @@
+# Follow-up ablations: linear (per-slot d x d) merge/unmerge instead of gates.
+D=/home/user/data/tinystories/tok4k
+W=/home/user/data/era5_64x32
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 4:0.35,2:0.25,1:0.4 --optim muon --lr 1.6e-2 --merge_mode linear --name abl_linear_s0
+python3 weather/train.py --data $W --budget 5.5e13 --zoom 4:0.6,1:0.4 --optim muon --lr 1.6e-2 --merge_mode linear --name abl_linear_s0

@@ -153,6 +153,7 @@ def main():
     ap.add_argument("--warmup", type=float, default=0.05)
     ap.add_argument("--wd", type=float, default=0.05)
     ap.add_argument("--gated", type=int, default=1)
+    ap.add_argument("--merge_mode", default="", help="gate|mean|linear (overrides --gated)")
     ap.add_argument("--evals", type=int, default=10)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="auto")
@@ -172,7 +173,7 @@ def main():
     c_in = len(ds.channels) + 6
     model = ZoomViT(c_in, len(ds.channels), (ds.H, ds.W), 2, args.d, args.layers, args.heads,
                     zoom_ks=sched.ks if args.coarse_mode == "merge" else (),
-                    gated=bool(args.gated)).to(rt.device)
+                    gated=bool(args.gated), merge_mode=args.merge_mode or None).to(rt.device)
     n_params = sum(p.numel() for p in model.parameters())
     opt = build_optimizer(model, args.optim, args.lr, args.wd)
     fwd = maybe_compile(model, rt)

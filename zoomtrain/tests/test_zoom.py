@@ -83,3 +83,17 @@ def test_vit_lowres_path():
     m = ZoomViT(5, 3, (16, 32), 2, 16, 1, 2)
     x = torch.randn(2, 5, 8, 16)
     assert m.forward_lowres(x, 2).shape == (2, 3, 8, 16)
+
+
+def test_linear_merge_mode_identity_init_and_grads():
+    m, u = SlotMerge(4, 8, mode="linear"), SlotUnmerge(4, 8, mode="linear")
+    x = torch.randn(2, 5, 4, 8)
+    z = m(x)
+    assert torch.allclose(z, x.mean(-2), atol=1e-6)
+    y = u(z)
+    assert torch.allclose(y[:, :, 2], z, atol=1e-6)
+    (y.sum()).backward()
+    assert m.weight.grad is not None and u.weight.grad is not None
+    g = ZoomGPT(128, 16, 1, 2, zoom_ks=[2], merge_mode="linear")
+    xi = torch.randint(0, 128, (2, 10))
+    assert torch.isfinite(g(xi[:, :8], xi[:, 2:10], k=2))

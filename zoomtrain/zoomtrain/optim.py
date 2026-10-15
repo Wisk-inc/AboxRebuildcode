@@ -122,7 +122,7 @@ def build_optimizer(model, name, lr, weight_decay, betas=(0.9, 0.95), fused=None
             continue
         if id(p) in muon_ids:
             muon_p.append(p)
-        elif p.dim() >= 2 and "gate" not in n:
+        elif p.dim() >= 2 and "gate" not in n and ".merge." not in n and ".unmerge." not in n:
             decay.append(p)
         else:
             no_decay.append(p)

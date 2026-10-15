@@ -18,6 +18,9 @@ Two small modules make the merge reversible enough to transfer:
                 instead of a single bag-of-tokens distribution.
 
 Both cost K*d parameters per zoom level and are dropped at K=1.
+mode="linear" replaces the per-channel gates with per-slot d x d maps
+(z = sum_j W_j x_j, y_j = U_j h; init W_j = I/K, U_j = I): K*d^2 parameters
+per level, i.e. a learned patch embedding / un-embedding over the slots.
 """
 import math
 
@@ -26,34 +29,51 @@ import torch.nn as nn
 
 
 class SlotMerge(nn.Module):
-    """(B, N*K, d) grouped as (B, N, K, d) -> (B, N, d) by a slot-gated sum."""
+    """(B, N*K, d) grouped as (B, N, K, d) -> (B, N, d) by a slot-weighted sum.
 
-    def __init__(self, k, d, gated=True):
+    mode: "gate" (per-slot, per-channel gate; K*d params), "mean" (fixed 1/K),
+    "linear" (per-slot d x d map, init I/K; K*d*d params).
+    """
+
+    def __init__(self, k, d, gated=True, mode=None):
         super().__init__()
         self.k = k
-        init = torch.full((k, d), 1.0 / k)
-        if gated:
-            self.gate = nn.Parameter(init)
+        self.mode = mode or ("gate" if gated else "mean")
+        if self.mode == "linear":
+            w = torch.eye(d).unsqueeze(0).repeat(k, 1, 1) / k
+            self.weight = nn.Parameter(w)
         else:
-            self.register_buffer("gate", init)
+            init = torch.full((k, d), 1.0 / k)
+            if self.mode == "gate":
+                self.gate = nn.Parameter(init)
+            else:
+                self.register_buffer("gate", init)
 
     def forward(self, x):  # x: (..., K, d)
+        if self.mode == "linear":
+            return torch.einsum("...kd,kde->...e", x, self.weight)
         return (x * self.gate).sum(-2)
 
 
 class SlotUnmerge(nn.Module):
-    """(B, N, d) -> (B, N, K, d): one gated copy per slot."""
+    """(B, N, d) -> (B, N, K, d): one slot-specific copy per slot (gate / linear)."""
 
-    def __init__(self, k, d, gated=True):
+    def __init__(self, k, d, gated=True, mode=None):
         super().__init__()
         self.k = k
-        init = torch.ones(k, d)
-        if gated:
-            self.gate = nn.Parameter(init)
+        self.mode = mode or ("gate" if gated else "mean")
+        if self.mode == "linear":
+            self.weight = nn.Parameter(torch.eye(d).unsqueeze(0).repeat(k, 1, 1))
         else:
-            self.register_buffer("gate", init)
+            init = torch.ones(k, d)
+            if self.mode == "gate":
+                self.gate = nn.Parameter(init)
+            else:
+                self.register_buffer("gate", init)
 
     def forward(self, h):  # h: (..., d)
+        if self.mode == "linear":
+            return torch.einsum("...d,kde->...ke", h, self.weight)
         return h.unsqueeze(-2) * self.gate
 
 

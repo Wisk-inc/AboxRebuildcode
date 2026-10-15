@@ -72,7 +72,8 @@ class Block(nn.Module):
 
 class ZoomGPT(nn.Module):
     def __init__(self, vocab, d=256, n_layer=6, n_head=4, zoom_ks=(),
-                 gated=True, out_mode="slot", rope_pos="token", qk_norm=False):
+                 gated=True, out_mode="slot", rope_pos="token", qk_norm=False,
+                 merge_mode=None):
         super().__init__()
         assert out_mode in ("slot", "bag")
         assert rope_pos in ("token", "patch")
@@ -82,9 +83,9 @@ class ZoomGPT(nn.Module):
         self.emb = nn.Embedding(vocab, d)
         self.blocks = nn.ModuleList(Block(d, n_head, qk_norm=qk_norm) for _ in range(n_layer))
         self.ln_f = RMSNorm(d)
-        self.merge = nn.ModuleDict({str(k): SlotMerge(k, d, gated) for k in zoom_ks})
+        self.merge = nn.ModuleDict({str(k): SlotMerge(k, d, gated, merge_mode) for k in zoom_ks})
         self.unmerge = nn.ModuleDict(
-            {str(k): SlotUnmerge(k, d, gated) for k in zoom_ks} if out_mode == "slot" else {})
+            {str(k): SlotUnmerge(k, d, gated, merge_mode) for k in zoom_ks} if out_mode == "slot" else {})
         self._rope_cache = {}
         self.apply(self._init)
         for b in self.blocks:  # scaled residual init

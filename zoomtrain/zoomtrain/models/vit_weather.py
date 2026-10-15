@@ -39,7 +39,7 @@ class Block(nn.Module):
 
 class ZoomViT(nn.Module):
     def __init__(self, c_in, c_out, grid=(32, 64), patch=2, d=128, n_layer=6, n_head=4,
-                 zoom_ks=(), gated=True):
+                 zoom_ks=(), gated=True, merge_mode=None):
         super().__init__()
         self.c_in, self.c_out, self.patch, self.d, self.n_layer = c_in, c_out, patch, d, n_layer
         self.gh, self.gw = grid[0] // patch, grid[1] // patch    # fine token grid
@@ -50,8 +50,8 @@ class ZoomViT(nn.Module):
         self.decode = nn.Linear(d, c_out * patch * patch)
         nn.init.zeros_(self.decode.weight)
         nn.init.zeros_(self.decode.bias)
-        self.merge = nn.ModuleDict({str(k): SlotMerge(k, d, gated) for k in zoom_ks})
-        self.unmerge = nn.ModuleDict({str(k): SlotUnmerge(k, d, gated) for k in zoom_ks})
+        self.merge = nn.ModuleDict({str(k): SlotMerge(k, d, gated, merge_mode) for k in zoom_ks})
+        self.unmerge = nn.ModuleDict({str(k): SlotUnmerge(k, d, gated, merge_mode) for k in zoom_ks})
 
     def muon_params(self):
         return [p for b in self.blocks for p in
