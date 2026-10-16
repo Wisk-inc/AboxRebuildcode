@@ -91,7 +91,7 @@ def scoreboard(params=5e9, d=4096, vocab=32000, seq=2048, gpu_gb=96.0, peak_tflo
     return {"layers": L, "params": N, "rows": rows}
 
 
-def storage_table(N, tokens, bits_per_token=8.54):
+def storage_table(N, tokens, bits_per_token=5.97):
     """Disk/RAM sizes for weights, resumable checkpoints and the token corpus."""
     return [
         ("weights fp32 (RAM or disk)", 4 * N),
@@ -103,7 +103,7 @@ def storage_table(N, tokens, bits_per_token=8.54):
         ("resumable ckpt: bf16 weights + 8-bit Muon", 3.1 * N),
         ("corpus: raw UTF-8 text (~4 B/token)", 4 * tokens),
         ("corpus: uint16 token ids", 2 * tokens),
-        (f"corpus: TokPack ({bits_per_token:.2f} bits/token, measured on TinyStories)",
+        (f"corpus: TokPack v2 ({bits_per_token:.2f} bits/token, measured on 117M TinyStories tokens)",
          bits_per_token / 8 * tokens),
     ]
 

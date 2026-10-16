@@ -17,11 +17,11 @@ def _zipf_tokens(n, vocab, seed=0):
 def test_tokpack_roundtrip_exact_and_random_access(tmp_path):
     toks = _zipf_tokens(300_000, 4096)
     path = tmp_path / "t.tokpack"
-    nbytes = tokpack.write(path, toks, 4096, chunk=65536)
+    nbytes = tokpack.write(path, toks, 4096, chunk=16384)
     tp = tokpack.TokPack(path)
-    assert len(tp) == len(toks)
+    assert tp.version == 2 and len(tp) == len(toks)
     assert np.array_equal(tp[:], toks)
-    assert np.array_equal(tp[65530:65550], toks[65530:65550])      # crosses a chunk edge
+    assert np.array_equal(tp[16380:16400], toks[16380:16400])      # crosses a chunk edge
     assert np.array_equal(tp.read(299_000, 1000), toks[299_000:])
     assert nbytes < toks.nbytes * 0.8                                 # Zipf data compresses
     windows = list(tp.stream(seq=1000, seed=1))
@@ -29,11 +29,27 @@ def test_tokpack_roundtrip_exact_and_random_access(tmp_path):
     assert all(len(w) == 1000 for w in windows)
 
 
-def test_tokpack_no_remap(tmp_path):
-    toks = _zipf_tokens(10_000, 300)
-    path = tmp_path / "t.tokpack"
-    tokpack.write(path, toks, 300, chunk=4096, remap=False)
-    assert np.array_equal(tokpack.TokPack(path)[:], toks)
+def test_leb128_roundtrip_all_widths():
+    rng = np.random.default_rng(0)
+    a = np.concatenate([rng.integers(0, 128, 1000), rng.integers(128, 16384, 1000),
+                        rng.integers(16384, 1 << 21, 1000), [0, 127, 128, 16383, 16384,
+                                                             (1 << 21) - 1]]).astype(np.uint32)
+    rng.shuffle(a)
+    enc = tokpack.leb128_encode(a)
+    assert len(enc) == (a < 128).sum() + 2 * ((a >= 128) & (a < 16384)).sum() + 3 * (a >= 16384).sum()
+    assert np.array_equal(tokpack.leb128_decode(enc.tobytes(), len(a)), a)
+
+
+def test_tokpack_large_vocab_and_tiny_input(tmp_path):
+    rng = np.random.default_rng(1)
+    toks = rng.integers(0, 100_000, 50_000)              # needs u32 table, 3-byte varints
+    path = tmp_path / "big.tokpack"
+    tokpack.write(path, toks, 100_000, chunk=4096)
+    tp = tokpack.TokPack(path)
+    assert np.array_equal(tp[:], toks)
+    small = np.array([3, 1, 2], dtype=np.uint16)          # too small for a dictionary
+    tokpack.write(tmp_path / "s.tokpack", small, 8, chunk=4096)
+    assert np.array_equal(tokpack.TokPack(tmp_path / "s.tokpack")[:], small)
 
 
 def _corpus_with_dups(eos=0):

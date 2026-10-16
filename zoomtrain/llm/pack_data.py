@@ -28,8 +28,8 @@ def main():
     ap.add_argument("--num_perm", type=int, default=64)
     ap.add_argument("--bands", type=int, default=8)
     ap.add_argument("--threshold", type=float, default=0.8)
-    ap.add_argument("--chunk", type=int, default=65536)
-    ap.add_argument("--level", type=int, default=10)
+    ap.add_argument("--chunk", type=int, default=16384)
+    ap.add_argument("--level", type=int, default=19)
     args = ap.parse_args()
 
     meta = json.load(open(os.path.join(args.data, "meta.json")))
