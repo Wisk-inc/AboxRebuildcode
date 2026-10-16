@@ -38,10 +38,17 @@ class Runtime:
             return contextlib.nullcontext()
         return torch.autocast(self.device.type, dtype=self.amp_dtype)
 
-    def backward(self, loss, optimizer, params, clip=1.0):
-        """loss.backward() + unscale + clip + step, AMP-aware."""
+    def backward(self, loss, optimizer, params, clip=1.0, step=True):
+        """loss.backward() (+ unscale + clip + step unless step=False), AMP-aware."""
         if self.scaler is not None:
             self.scaler.scale(loss).backward()
+        else:
+            loss.backward()
+        if step:
+            self.step(optimizer, params, clip)
+
+    def step(self, optimizer, params, clip=1.0):
+        if self.scaler is not None:
             for o in getattr(optimizer, "optimizers", [optimizer]):
                 self.scaler.unscale_(o)
             torch.nn.utils.clip_grad_norm_(params, clip)
@@ -49,7 +56,6 @@ class Runtime:
                 self.scaler.step(o)
             self.scaler.update()
         else:
-            loss.backward()
             torch.nn.utils.clip_grad_norm_(params, clip)
             optimizer.step()
 

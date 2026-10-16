@@ -145,6 +145,7 @@ def main():
     ap.add_argument("--coarse_mode", default="merge", choices=["merge", "lowres"])
     ap.add_argument("--budget", type=float, required=True)
     ap.add_argument("--optim", default="adamw", choices=["adamw", "muon"])
+    ap.add_argument("--state_bits", type=int, default=32, choices=[32, 8])
     ap.add_argument("--d", type=int, default=128)
     ap.add_argument("--layers", type=int, default=6)
     ap.add_argument("--heads", type=int, default=4)
@@ -179,7 +180,7 @@ def main():
                     zoom_ks=sched.ks if args.coarse_mode == "merge" else (),
                     gated=bool(args.gated), merge_mode=args.merge_mode or None).to(rt.device)
     n_params = sum(p.numel() for p in model.parameters())
-    opt = build_optimizer(model, args.optim, args.lr, args.wd)
+    opt = build_optimizer(model, args.optim, args.lr, args.wd, state_bits=args.state_bits)
     fwd = maybe_compile(model, rt)
     limiter = DutyCycleLimiter(args.duty, rt.device)
 

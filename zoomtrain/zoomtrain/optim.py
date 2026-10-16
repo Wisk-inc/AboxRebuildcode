@@ -9,11 +9,18 @@ weights).
 Update scaling follows Moonlight (Liu et al., 2025): scale = 0.2*sqrt(max(m, n))
 makes the update RMS match AdamW's, so Muon and AdamW share one learning rate
 and one weight decay. scale="jordan" uses the original max(1, m/n)**0.5.
+
+Low-memory options (see zoomtrain.lowmem):
+  state_bits=8   blockwise 8-bit momentum / Adam moments (4x less state memory)
+  bf16 params    updates are computed in fp32 and written back with
+                 stochastic rounding, so no fp32 master copy is needed
 """
 import math
 
 import torch
 from torch.optim import Optimizer
+
+from .lowmem import QState, write_param
 
 NS_COEFFS = (3.4445, -4.7750, 2.0315)
 
@@ -44,10 +51,11 @@ class Muon(Optimizer):
     """
 
     def __init__(self, params, lr=1e-3, momentum=0.95, nesterov=True, ns_steps=5,
-                 weight_decay=0.0, scale="moonlight"):
-        assert scale in ("moonlight", "jordan")
+                 weight_decay=0.0, scale="moonlight", state_bits=32, stochastic=True):
+        assert scale in ("moonlight", "jordan") and state_bits in (32, 8)
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps,
-                        weight_decay=weight_decay, scale=scale)
+                        weight_decay=weight_decay, scale=scale, state_bits=state_bits,
+                        stochastic=stochastic)
         super().__init__(params, defaults)
 
     @staticmethod
@@ -63,20 +71,70 @@ class Muon(Optimizer):
             for p in group["params"]:
                 if p.grad is None:
                     continue
-                g = p.grad
+                g = p.grad.float()
                 state = self.state[p]
                 if "buf" not in state:
-                    state["buf"] = torch.zeros_like(g)
-                buf = state["buf"]
+                    state["buf"] = (QState(p, "signed") if group["state_bits"] == 8
+                                    else torch.zeros_like(p, dtype=torch.float32))
+                q = isinstance(state["buf"], QState)
+                buf = state["buf"].get() if q else state["buf"]
                 buf.lerp_(g, 1 - group["momentum"])
+                if q:
+                    state["buf"].set(buf)
                 g = g.lerp(buf, group["momentum"]) if group["nesterov"] else buf
                 split = getattr(p, "muon_split", 1)
                 rows, cols = g.shape[0] // split, g.shape[1]
                 u = newton_schulz(g.reshape(split, rows, cols), group["ns_steps"])
-                u = u.reshape_as(p) * self._scale(rows, cols, group["scale"])
-                if group["weight_decay"]:
-                    p.mul_(1 - group["lr"] * group["weight_decay"])
-                p.add_(u, alpha=-group["lr"])
+                u = u.reshape(p.shape) * self._scale(rows, cols, group["scale"])
+                new = p.float() * (1 - group["lr"] * group["weight_decay"]) - group["lr"] * u
+                write_param(p, new, group["stochastic"])
+        return loss
+
+
+class AdamWLowMem(Optimizer):
+    """AdamW with optional 8-bit moments and bf16 parameters (stochastic rounding).
+
+    Same update as torch.optim.AdamW (decoupled weight decay, bias correction).
+    """
+
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.0,
+                 state_bits=8, stochastic=True):
+        assert state_bits in (32, 8)
+        super().__init__(params, dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay,
+                                      state_bits=state_bits, stochastic=stochastic))
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = closure() if closure is not None else None
+        for group in self.param_groups:
+            b1, b2 = group["betas"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                g = p.grad.float()
+                st = self.state[p]
+                if "step" not in st:
+                    st["step"] = 0
+                    if group["state_bits"] == 8:
+                        st["m"], st["v"] = QState(p, "signed"), QState(p, "log")
+                    else:
+                        st["m"] = torch.zeros_like(p, dtype=torch.float32)
+                        st["v"] = torch.zeros_like(p, dtype=torch.float32)
+                st["step"] += 1
+                q = isinstance(st["m"], QState)
+                m = st["m"].get() if q else st["m"]
+                v = st["v"].get() if q else st["v"]
+                m.lerp_(g, 1 - b1)
+                v.mul_(b2).addcmul_(g, g, value=1 - b2)
+                if q:
+                    st["m"].set(m)
+                    st["v"].set(v)
+                t = st["step"]
+                mhat = m / (1 - b1 ** t)
+                vhat = v / (1 - b2 ** t)
+                new = p.float() * (1 - group["lr"] * group["weight_decay"]) \
+                    - group["lr"] * mhat / (vhat.sqrt() + group["eps"])
+                write_param(p, new, group["stochastic"])
         return loss
 
 
@@ -106,12 +164,16 @@ class CombinedOptimizer:
             o.load_state_dict(s)
 
 
-def build_optimizer(model, name, lr, weight_decay, betas=(0.9, 0.95), fused=None):
+def build_optimizer(model, name, lr, weight_decay, betas=(0.9, 0.95), fused=None,
+                    state_bits=32):
     """name: 'adamw' or 'muon'.
 
     Muon takes the 2-D weights the model lists in `model.muon_params()`
     (hidden matrices inside the blocks). Embeddings, output head, norms, gates
     and biases stay on AdamW, as recommended for Muon.
+
+    state_bits=8, or bf16 parameters, switch AdamW to AdamWLowMem (8-bit
+    moments / stochastic-rounding writes); otherwise torch's fused AdamW is used.
     """
     muon_ids = set()
     if name == "muon":
@@ -126,13 +188,18 @@ def build_optimizer(model, name, lr, weight_decay, betas=(0.9, 0.95), fused=None
             decay.append(p)
         else:
             no_decay.append(p)
-    kw = {}
-    if fused is None:
-        fused = next(model.parameters()).is_cuda
-    if fused:
-        kw["fused"] = True
-    adamw = torch.optim.AdamW([{"params": decay, "weight_decay": weight_decay},
-                               {"params": no_decay, "weight_decay": 0.0}],
-                              lr=lr, betas=betas, eps=1e-8, **kw)
-    muon = Muon(muon_p, lr=lr, weight_decay=weight_decay) if muon_p else None
+    groups = [{"params": decay, "weight_decay": weight_decay},
+              {"params": no_decay, "weight_decay": 0.0}]
+    bf16_params = next(model.parameters()).dtype == torch.bfloat16
+    if state_bits == 8 or bf16_params:
+        adamw = AdamWLowMem(groups, lr=lr, betas=betas, eps=1e-8, state_bits=state_bits)
+    else:
+        kw = {}
+        if fused is None:
+            fused = next(model.parameters()).is_cuda
+        if fused:
+            kw["fused"] = True
+        adamw = torch.optim.AdamW(groups, lr=lr, betas=betas, eps=1e-8, **kw)
+    muon = (Muon(muon_p, lr=lr, weight_decay=weight_decay, state_bits=state_bits)
+            if muon_p else None)
     return CombinedOptimizer([adamw, muon])

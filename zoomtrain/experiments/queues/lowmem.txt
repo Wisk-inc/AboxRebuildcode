@@ -1,0 +1,8 @@
+# Quality check of the low-memory options at matched steps (1.5e13 FLOPs ~ 100 baseline steps).
+D=/home/user/data/tinystories/tok4k
+python3 llm/train.py --data $D --budget 1.5e13 --zoom 1 --optim muon --lr 1.6e-2 --evals 2 --final_eval_seqs 1024 --name lm_muon32 --out results/llm_lowmem --save results/llm_lowmem/lm_muon32.pt
+python3 llm/train.py --data $D --budget 1.5e13 --zoom 1 --optim muon --lr 1.6e-2 --state_bits 8 --evals 2 --final_eval_seqs 1024 --name lm_muon8 --out results/llm_lowmem
+python3 llm/train.py --data $D --budget 1.5e13 --zoom 1 --optim muon --lr 1.6e-2 --state_bits 8 --param_dtype bf16 --evals 2 --final_eval_seqs 1024 --name lm_muon8_bf16 --out results/llm_lowmem
+python3 llm/train.py --data $D --budget 1.5e13 --zoom 1 --optim adamw --lr 1e-3 --evals 2 --final_eval_seqs 1024 --name lm_adamw32 --out results/llm_lowmem
+python3 llm/train.py --data $D --budget 1.5e13 --zoom 1 --optim adamw --lr 1e-3 --state_bits 8 --evals 2 --final_eval_seqs 1024 --name lm_adamw8 --out results/llm_lowmem
+python3 llm/train.py --data $D --budget 1.5e13 --zoom 1 --optim muon --lr 1.6e-2 --grad_ckpt 1 --accum 2 --batch 8 --evals 2 --final_eval_seqs 1024 --name lm_muon32_ckpt_accum2 --out results/llm_lowmem

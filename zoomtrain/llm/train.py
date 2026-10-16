@@ -27,6 +27,7 @@ from zoomtrain.data.tokpack import TokPack  # noqa: E402
 from zoomtrain.device import (DutyCycleLimiter, describe, maybe_compile,  # noqa: E402
                               setup_runtime)
 from zoomtrain.models import ZoomGPT  # noqa: E402
+from zoomtrain.lowmem import state_bytes  # noqa: E402
 from zoomtrain.optim import build_optimizer  # noqa: E402
 from zoomtrain.zoom import ZoomSchedule, lr_at  # noqa: E402
 
@@ -81,6 +82,12 @@ def main():
     ap.add_argument("--zoom", default="1")
     ap.add_argument("--budget", type=float, required=True, help="training FLOPs")
     ap.add_argument("--optim", default="adamw", choices=["adamw", "muon"])
+    ap.add_argument("--state_bits", type=int, default=32, choices=[32, 8],
+                    help="8: blockwise 8-bit optimizer state")
+    ap.add_argument("--param_dtype", default="fp32", choices=["fp32", "bf16"],
+                    help="bf16: weights in bf16, updates written with stochastic rounding")
+    ap.add_argument("--grad_ckpt", type=int, default=0, help="activation checkpointing per block")
+    ap.add_argument("--accum", type=int, default=1, help="gradient accumulation steps")
     ap.add_argument("--d", type=int, default=256)
     ap.add_argument("--layers", type=int, default=6)
     ap.add_argument("--heads", type=int, default=4)
@@ -121,9 +128,12 @@ def main():
     sched = ZoomSchedule.parse(args.zoom)
     model = ZoomGPT(meta["vocab_size"], args.d, args.layers, args.heads, zoom_ks=sched.ks,
                     gated=bool(args.gated), out_mode=args.out_mode, rope_pos=args.rope_pos,
-                    qk_norm=bool(args.qk_norm), merge_mode=args.merge_mode or None).to(rt.device)
+                    qk_norm=bool(args.qk_norm), merge_mode=args.merge_mode or None,
+                    grad_ckpt=bool(args.grad_ckpt)).to(rt.device)
+    if args.param_dtype == "bf16":
+        model = model.to(torch.bfloat16)
     n_params = sum(p.numel() for p in model.parameters())
-    opt = build_optimizer(model, args.optim, args.lr, args.wd)
+    opt = build_optimizer(model, args.optim, args.lr, args.wd, state_bits=args.state_bits)
     fwd = maybe_compile(model, rt)
     stream = ChunkStream(open_tokens(args.data, "train"), args.seq, args.seed)
     val = open_tokens(args.data, "val")
@@ -156,19 +166,22 @@ def main():
             g["lr"] = lr_at(frac, args.lr, warmup=args.warmup,
                             stage=(s0, s1) if args.lr_restart else None)
         t0 = time.perf_counter()
-        chunk = rt.to(stream.next(batch))
-        x, y = chunk[:, :args.seq], chunk[:, k:args.seq + k]
-        with rt.autocast():
-            loss = fwd(x, y, k=k)
         opt.zero_grad(set_to_none=True)
-        rt.backward(loss, opt, model.parameters())
+        for _ in range(args.accum):
+            chunk = rt.to(stream.next(batch))
+            x, y = chunk[:, :args.seq], chunk[:, k:args.seq + k]
+            with rt.autocast():
+                loss = fwd(x, y, k=k) / args.accum
+            rt.backward(loss, opt, model.parameters(), step=False)
+        rt.step(opt, model.parameters())
+        loss = loss * args.accum
         if rt.device.type == "cuda":
             torch.cuda.synchronize()
         dt = time.perf_counter() - t0
         train_time += dt
         limiter(dt)
-        flops += model.flops_per_step(batch, args.seq, k)
-        tokens += batch * args.seq
+        flops += model.flops_per_step(batch, args.seq, k) * args.accum
+        tokens += batch * args.seq * args.accum
         step += 1
         if step % 25 == 0:
             lv = loss.item()
@@ -179,6 +192,8 @@ def main():
                 break
 
     log["final_val_loss"] = evaluate(model, val, args, rt, args.final_eval_seqs)
+    log["optimizer_state_bytes"] = state_bytes(opt)
+    log["param_bytes"] = sum(p.numel() * p.element_size() for p in model.parameters())
     log["train_time"] = train_time
     log["tokens"] = tokens
     log["steps"] = step

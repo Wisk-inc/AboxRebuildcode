@@ -8,6 +8,7 @@ forward(idx, k):
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from ..zoom import SlotMerge, SlotUnmerge
 
@@ -73,12 +74,12 @@ class Block(nn.Module):
 class ZoomGPT(nn.Module):
     def __init__(self, vocab, d=256, n_layer=6, n_head=4, zoom_ks=(),
                  gated=True, out_mode="slot", rope_pos="token", qk_norm=False,
-                 merge_mode=None):
+                 merge_mode=None, grad_ckpt=False):
         super().__init__()
         assert out_mode in ("slot", "bag")
         assert rope_pos in ("token", "patch")
         self.d, self.n_layer, self.vocab = d, n_layer, vocab
-        self.out_mode, self.rope_pos = out_mode, rope_pos
+        self.out_mode, self.rope_pos, self.grad_ckpt = out_mode, rope_pos, grad_ckpt
         self.head_dim = d // n_head
         self.emb = nn.Embedding(vocab, d)
         self.blocks = nn.ModuleList(Block(d, n_head, qk_norm=qk_norm) for _ in range(n_layer))
@@ -103,7 +104,7 @@ class ZoomGPT(nn.Module):
                 (b.qkv.weight, b.proj.weight, b.fc.weight, b.fc_out.weight)]
 
     def _rope(self, n_pos, k):
-        key = (n_pos, k)
+        key = (n_pos, k, self.emb.weight.device)
         if key not in self._rope_cache:
             p = torch.arange(n_pos, dtype=torch.float32, device=self.emb.weight.device)
             if self.rope_pos == "token":  # group p sits at its centre, in token units
@@ -118,7 +119,10 @@ class ZoomGPT(nn.Module):
             x = self.merge[str(k)](x.view(B, T // k, k, self.d))
         cos, sin = self._rope(x.shape[1], k)
         for blk in self.blocks:
-            x = blk(x, cos, sin)
+            if self.grad_ckpt and self.training:
+                x = checkpoint(blk, x, cos, sin, use_reentrant=False)
+            else:
+                x = blk(x, cos, sin)
         return self.ln_f(x)
 
     def forward(self, idx, targets, k=1):
