@@ -1,0 +1,4 @@
+# Long run of the best measured recipe (Muon, k=1) with checkpoints along the way,
+# to place Bantam on a quality-vs-compute chart next to published TinyStories models.
+D=/home/user/data/tinystories/tok4k
+python3 llm/train.py --data $D --budget 6.8e14 --zoom 1 --optim muon --lr 1.6e-2 --evals 10 --name long_muon_10x --out results/published --save results/published/long_muon_10x.pt --save_every_eval 1

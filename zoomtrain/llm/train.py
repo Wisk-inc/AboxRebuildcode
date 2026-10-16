@@ -119,6 +119,8 @@ def main():
     ap.add_argument("--name", required=True)
     ap.add_argument("--out", default=os.path.join(ROOT, "results", "llm"))
     ap.add_argument("--save", default="")
+    ap.add_argument("--save_every_eval", type=int, default=0,
+                    help="also save <save>_f<frac>.pt at every evaluation (compute curve)")
     args = ap.parse_args()
 
     rt = setup_runtime(args.device, args.precision, args.compile, args.threads, args.seed)
@@ -155,6 +157,10 @@ def main():
                                  "train_time": train_time, "val_loss": vl})
             print(f"  frac={frac:.3f} step={step} tok={tokens/1e6:.2f}M "
                   f"t={train_time:.0f}s val={vl:.4f}", flush=True)
+            if args.save and args.save_every_eval and step > 0:
+                ck = args.save.replace(".pt", f"_f{frac:.2f}.pt")
+                torch.save(model.state_dict(), ck)
+                log["evals"][-1]["checkpoint"] = ck
             next_eval += 1.0 / args.evals
         if frac >= 1.0:
             break

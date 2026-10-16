@@ -1,0 +1,106 @@
+{
+ "args": {
+  "data": "/home/user/data/tinystories/tok4k",
+  "zoom": "1",
+  "budget": 15000000000000.0,
+  "optim": "adamw",
+  "state_bits": 8,
+  "param_dtype": "fp32",
+  "grad_ckpt": 0,
+  "accum": 1,
+  "d": 256,
+  "layers": 6,
+  "heads": 4,
+  "seq": 256,
+  "batch": 16,
+  "batch_scale_k": 0,
+  "lr": 0.001,
+  "warmup": 0.05,
+  "lr_restart": 0,
+  "mix_fine": 0.0,
+  "wd": 0.1,
+  "gated": 1,
+  "merge_mode": "",
+  "out_mode": "slot",
+  "rope_pos": "token",
+  "qk_norm": 0,
+  "evals": 2,
+  "eval_seqs": 256,
+  "final_eval_seqs": 1024,
+  "seed": 0,
+  "device": "auto",
+  "precision": "auto",
+  "compile": false,
+  "threads": 1,
+  "duty": 1.0,
+  "name": "lm_adamw8",
+  "out": "results/llm_lowmem",
+  "save": ""
+ },
+ "schedule": "1:1",
+ "params": 5770496,
+ "evals": [
+  {
+   "frac": 0.0,
+   "flops": 0.0,
+   "tokens": 0,
+   "step": 0,
+   "train_time": 0.0,
+   "val_loss": 8.351752996444702
+  },
+  {
+   "frac": 0.50465865728,
+   "flops": 7569879859200.0,
+   "tokens": 204800,
+   "step": 50,
+   "train_time": 156.39572336500032,
+   "val_loss": 4.679065465927124
+  },
+  {
+   "frac": 1.00931731456,
+   "flops": 15139759718400.0,
+   "tokens": 409600,
+   "step": 100,
+   "train_time": 278.5644869779999,
+   "val_loss": 4.295354247093201
+  }
+ ],
+ "train": [
+  {
+   "step": 25,
+   "frac": 0.2422361554944,
+   "k": 1,
+   "loss": 5.597280502319336,
+   "train_time": 96.05461928400018
+  },
+  {
+   "step": 50,
+   "frac": 0.4945654841344,
+   "k": 1,
+   "loss": 4.868849277496338,
+   "train_time": 156.39572336500032
+  },
+  {
+   "step": 75,
+   "frac": 0.7468948127744,
+   "k": 1,
+   "loss": 4.624687671661377,
+   "train_time": 217.08888660800017
+  },
+  {
+   "step": 100,
+   "frac": 0.9992241414144,
+   "k": 1,
+   "loss": 4.658371448516846,
+   "train_time": 278.5644869779999
+  }
+ ],
+ "runtime": "device=cpu amp=None compile=False threads=1 pid=2024",
+ "final_val_loss": 4.479197829961777,
+ "optimizer_state_bytes": 11811484,
+ "param_bytes": 23081984,
+ "train_time": 278.5644869779999,
+ "tokens": 409600,
+ "steps": 100,
+ "data_epochs": 0.0035078872652730122
+}
