@@ -1,0 +1,4 @@
+# Seeds for the one Zoom variant that beat the baseline on seed 0 (2.690 vs 2.737 +- 0.011).
+D=/home/user/data/tinystories/tok4k
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.5,1:0.5 --optim muon --lr 1.6e-2 --batch_scale_k 1 --seed 1 --name fu_2-50_bk_s1
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.5,1:0.5 --optim muon --lr 1.6e-2 --batch_scale_k 1 --seed 2 --name fu_2-50_bk_s2
