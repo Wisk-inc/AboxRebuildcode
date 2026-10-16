@@ -5,7 +5,8 @@
 
 bits=8 quantizes every floating tensor with >= 2 dims and >= 4096 elements
 (weight matrices, embeddings) with blockwise absmax int8 along the last axis
-(block = 256 columns, one fp16 scale per block, 0.8 % overhead); vectors
+(block = 256 columns, one fp16 scale per block, 0.8 % overhead); bits=4 uses
+packed int4 codes with block 64 (zoomtrain.qweights), ~0.53 B/param; vectors
 (norm gains, biases, merge gates) are kept exactly in fp32 because they are
 tiny and sensitive. Everything is then byte-shuffled and zstd-compressed.
 
@@ -20,6 +21,8 @@ import struct
 import numpy as np
 import torch
 import zstandard as zstd
+
+from .qweights import dequantize_rows, quantize_rows
 
 MAGIC = b"ZWPK1\0"
 BLOCK = 256
@@ -45,12 +48,17 @@ def _dq8(q, s, pad, shape):
 
 
 def save(path, state_dict, bits=8, level=10):
-    assert bits in (8, 16, 32)
+    assert bits in (4, 8, 16, 32)
     meta, blobs = [], []
     for name, t in state_dict.items():
         t = t.detach().cpu()
         entry = {"name": name, "shape": list(t.shape), "dtype": str(t.dtype).split(".")[-1]}
-        if t.is_floating_point() and bits == 8 and t.dim() >= 2 and t.numel() >= 4096:
+        if t.is_floating_point() and bits == 4 and t.dim() >= 2 and t.numel() >= 4096:
+            q, sc, pad = quantize_rows(t.reshape(-1, t.shape[-1]), 4, 64)
+            entry.update(enc="int4", pad=pad, q_shape=list(q.shape), scale_shape=list(sc.shape))
+            blobs += [q.numpy().tobytes(), sc.numpy().tobytes()]
+            entry["sizes"] = [len(blobs[-2]), len(blobs[-1])]
+        elif t.is_floating_point() and bits == 8 and t.dim() >= 2 and t.numel() >= 4096:
             q, s, pad = _q8(t)
             entry.update(enc="int8", pad=pad, scale_shape=list(s.shape))
             blobs += [q.tobytes(), s.tobytes()]
@@ -93,7 +101,15 @@ def load(path):
     out, pos = {}, 0
     for e in h["tensors"]:
         shape = tuple(e["shape"])
-        if e["enc"] == "int8":
+        if e["enc"] == "int4":
+            n_q, n_s = e["sizes"]
+            q = torch.from_numpy(np.frombuffer(raw[pos:pos + n_q], dtype=np.uint8).copy())
+            sc = torch.from_numpy(np.frombuffer(raw[pos + n_q:pos + n_q + n_s],
+                                                dtype=np.float16).copy())
+            pos += n_q + n_s
+            w = dequantize_rows(q.view(e["q_shape"]), sc.view(e["scale_shape"]), e["pad"], 4, 64)
+            out[e["name"]] = w.reshape(shape)
+        elif e["enc"] == "int8":
             n_q, n_s = e["sizes"]
             q = np.frombuffer(raw[pos:pos + n_q], dtype=np.int8)
             s = np.frombuffer(raw[pos + n_q:pos + n_q + n_s], dtype=np.float16)

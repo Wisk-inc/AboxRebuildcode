@@ -1,0 +1,130 @@
+"""Weight-only quantized layers: keep weights in int8 / int4 in RAM, compute in float.
+
+    from zoomtrain.qweights import quantize_model
+    report = quantize_model(model, bits=4, block=64)   # in place
+    print(report)                                      # bytes before / after
+
+Each weight matrix is split into blocks of `block` consecutive input columns;
+every block stores one fp16 scale (absmax / qmax) and int codes:
+
+    bits=8: int8 in [-127, 127]                    ~1.03 B/param (block 128)
+    bits=4: int4 in [-7, 7], two codes per byte    ~0.53 B/param (block 64)
+
+The forward pass dequantizes the block-scaled codes to the activation dtype
+and runs a normal matmul, so the model's output is that of a model whose
+weights were rounded once; nothing else changes. Embeddings (including a
+tied output head) are quantized the same way, row by row. Norm gains and
+biases stay in float (they are a rounding error of the parameter count).
+Quality is measured, not assumed: see experiments/weights_eval.py.
+"""
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+QMAX = {8: 127, 4: 7}
+
+
+def quantize_rows(w, bits, block):
+    """(R, C) float -> (codes uint8/int8, fp16 scales (R, C/block), pad)."""
+    w = w.detach().float()
+    R, C = w.shape
+    pad = (-C) % block
+    if pad:
+        w = F.pad(w, (0, pad))
+    b = w.view(R, -1, block)
+    s = (b.abs().amax(dim=2) / QMAX[bits]).clamp_min(1e-12)
+    q = torch.round(b / s[..., None]).clamp_(-QMAX[bits], QMAX[bits]).to(torch.int8)
+    if bits == 4:
+        u = (q + 8).to(torch.uint8).view(R, -1)            # 1..15, 0 unused
+        q = (u[:, 0::2] | (u[:, 1::2] << 4)).contiguous()  # two codes per byte
+    return q, s.to(torch.float16), pad
+
+
+def dequantize_rows(q, s, pad, bits, block, dtype=torch.float32):
+    R = q.shape[0]
+    if bits == 4:
+        lo = (q & 0x0F).to(torch.int8) - 8
+        hi = (q >> 4).to(torch.int8) - 8
+        q = torch.stack([lo, hi], dim=-1).view(R, -1)
+    w = q.view(R, -1, block).to(dtype) * s.to(dtype)[..., None]
+    w = w.view(R, -1)
+    return w[:, :w.shape[1] - pad] if pad else w
+
+
+class QLinear(nn.Module):
+    def __init__(self, linear, bits=8, block=128):
+        super().__init__()
+        block = min(block, linear.in_features)     # no padding waste on narrow rows
+        self.bits, self.block = bits, block
+        self.in_features, self.out_features = linear.in_features, linear.out_features
+        q, s, self.pad = quantize_rows(linear.weight, bits, block)
+        self.register_buffer("q", q)
+        self.register_buffer("s", s)
+        self.bias = None if linear.bias is None else nn.Parameter(linear.bias.detach().clone(),
+                                                                   requires_grad=False)
+
+    @property
+    def weight(self):
+        return dequantize_rows(self.q, self.s, self.pad, self.bits, self.block)
+
+    def forward(self, x):
+        w = dequantize_rows(self.q, self.s, self.pad, self.bits, self.block, x.dtype)
+        return F.linear(x, w, None if self.bias is None else self.bias.to(x.dtype))
+
+    def nbytes(self):
+        n = self.q.numel() * self.q.element_size() + self.s.numel() * 2
+        return n + (0 if self.bias is None else self.bias.numel() * 4)
+
+
+class QEmbedding(nn.Module):
+    """Quantized embedding table; `.weight` dequantizes (for a tied output head)."""
+
+    def __init__(self, emb, bits=8, block=128):
+        super().__init__()
+        block = min(block, emb.weight.shape[1])
+        self.bits, self.block = bits, block
+        self.num_embeddings, self.embedding_dim = emb.weight.shape
+        q, s, self.pad = quantize_rows(emb.weight, bits, block)
+        self.register_buffer("q", q)
+        self.register_buffer("s", s)
+
+    @property
+    def weight(self):
+        return dequantize_rows(self.q, self.s, self.pad, self.bits, self.block)
+
+    def forward(self, idx):
+        return F.embedding(idx, self.weight)
+
+    def nbytes(self):
+        return self.q.numel() * self.q.element_size() + self.s.numel() * 2
+
+
+def model_bytes(model):
+    """Bytes held by parameters, buffers and quantized codes (no double counting)."""
+    seen, total = set(), 0
+    for t in list(model.parameters()) + list(model.buffers()):
+        if id(t) in seen:
+            continue
+        seen.add(id(t))
+        total += t.numel() * t.element_size()
+    return total
+
+
+@torch.no_grad()
+def quantize_model(model, bits=8, block=None, min_numel=4096):
+    """Replace every nn.Linear / nn.Embedding with >= min_numel weights, in place."""
+    assert bits in (8, 4)
+    block = block or (128 if bits == 8 else 64)
+    before = model_bytes(model)
+    n_q = 0
+    for name, mod in list(model.named_modules()):
+        for cname, child in list(mod.named_children()):
+            if isinstance(child, nn.Linear) and child.weight.numel() >= min_numel:
+                setattr(mod, cname, QLinear(child, bits, block))
+                n_q += 1
+            elif isinstance(child, nn.Embedding) and child.weight.numel() >= min_numel:
+                setattr(mod, cname, QEmbedding(child, bits, block))
+                n_q += 1
+    after = model_bytes(model)
+    return {"bits": bits, "block": block, "modules_quantized": n_q,
+            "bytes_before": before, "bytes_after": after, "ratio": before / after}

@@ -1,96 +1,151 @@
-"""Memory and time estimator for single-GPU transformer training.
+"""Memory and time scoreboard for single-GPU LLM training.
 
-    python -m zoomtrain.memory --params 5e9 --d 4096 --layers 32 --vocab 32000 \
-        --seq 2048 --micro 8 --gpu_gb 96 --tflops 250 --mfu 0.4 --tokens 1e11
+    python -m zoomtrain.memory                 # 5B model on one RTX PRO 6000 Blackwell
+    python -m zoomtrain.memory --tokens 2e10   # a 20B-token run
+    python -m zoomtrain.memory --markdown      # table for docs
 
-Prints, for several training configurations, the bytes/parameter breakdown,
-activation memory with/without checkpointing and chunked cross-entropy, the
-largest micro-batch that fits, and the wall-clock for the given token count.
+Each row adds one technique to the row above and reports static memory
+(weights + grads + optimizer state), activation memory, whether it fits,
+the largest micro-batch, training FLOPs and wall-clock days to reach the
+same loss as the standard recipe trained on --tokens tokens.
 
-Formulas (bf16 activations, FlashAttention so no T^2 term):
-  activations stored per layer, no recompute:   34 * B*T*d bytes
-                                                (Korthikanti et al., 2022)
-  with full checkpointing: 2 * B*T*d per layer (block input) + one layer's
-                                                34 * B*T*d transient
-  logits: B*T*V*4 (fp32 loss)  or  B*chunk*V*4 with chunked cross-entropy
-  training FLOPs: 6*N*D, +2*N*D with full recompute
+Assumptions (defaults; every one is a flag):
+  GPU       RTX PRO 6000 Blackwell Workstation: 96 GB, 503.8 TFLOPS dense BF16
+            (NVIDIA RTX Blackwell PRO architecture whitepaper, Appendix A).
+  MFU       0.40 of dense BF16 peak. Measured single-card nanochat runs on this
+            GPU report 40-50 % (karpathy/nanochat discussions #198, #288).
+  FP8       x1.20 throughput for FP8 linears (Transformer Engine current
+            scaling is supported on SM 12.0); reports range 20-30 %. Not
+            measured here.
+  Muon      reaches AdamW's loss with 0.52x the FLOPs (Liu et al. 2025,
+            "Muon is Scalable for LLM Training", compute-optimal 1-16B runs).
+            Measured here at 5.8M params: Muon at 1/3 of the compute beat AdamW
+            at full compute (>= 3x), not used in the table.
+  bf16 + SR bf16 weights/grads with stochastic rounding match fp32-master mixed
+            precision up to 6.7B (Ozkara et al. 2025); 8-bit Adam states match
+            32-bit up to 1.5B (Dettmers et al. 2021).
+  Power     450 W cap keeps ~95 % throughput on this card (ResNet-50 training
+            sweep, naveen.ing); not measured for LLM training.
+Activation memory (bf16, FlashAttention): 34*T*d bytes per layer per sequence
+(Korthikanti et al. 2022); full checkpointing keeps 2*T*d per layer plus one
+layer's activations and costs one extra forward (8ND instead of 6ND).
 """
 import argparse
-import math
 
-GB = 1024 ** 3
+GB = 1e9
 
 
-def config_table(N, d, L, V, T, B, gpu_gb, tflops, mfu, tokens, chunk=1024,
-                 muon_mult=1.0, overhead_gb=2.5, hidden_frac=0.9):
+def model_dims(params, d, vocab):
+    """Layers for a target parameter count: 12*L*d^2 + 2*V*d (untied embeddings)."""
+    L = max(1, round((params - 2 * vocab * d) / (12 * d * d)))
+    return L, 12 * L * d * d + 2 * vocab * d
+
+
+def scoreboard(params=5e9, d=4096, vocab=32000, seq=2048, gpu_gb=96.0, peak_tflops=503.8,
+               mfu=0.40, tokens=1e11, fp8_speedup=1.20, muon_flops=0.52, power_tput=0.95,
+               overhead_gb=3.0, hidden_frac=None):
+    L, N = model_dims(params, d, vocab)
+    if hidden_frac is None:
+        hidden_frac = 12 * L * d * d / N
+    act_seq = 34 * seq * d * L                        # bytes per sequence, no recompute
+    act_seq_ckpt = 2 * seq * d * L                    # stored block inputs
+    act_layer = 34 * seq * d                          # one layer recomputed at a time
+    logits_seq = seq * vocab * 6                      # bf16 logits + fp32 loss buffer
+    logits_chunk = 1024 * vocab * 6                   # chunked cross-entropy
+
+    def row(name, w, g, state, ckpt, chunked, tok_mult=1.0, speed=1.0, note=""):
+        static = N * (w + g + state)
+        per_seq = (act_seq_ckpt if ckpt else act_seq) + (0 if chunked else logits_seq)
+        fixed = static + overhead_gb * GB + (act_layer if ckpt else 0) + \
+            (logits_chunk if chunked else 0)
+        max_micro = int((gpu_gb * GB - fixed) // per_seq) if gpu_gb * GB > fixed else 0
+        micro = max(1, min(max_micro, 8))
+        flops = (8 if ckpt else 6) * N * tokens * tok_mult
+        secs = flops / (peak_tflops * 1e12 * mfu * speed)
+        return {"config": name, "bytes_per_param": w + g + state,
+                "static_gb": static / GB, "act_gb": micro * per_seq / GB,
+                "total_gb": (fixed + micro * per_seq) / GB, "fits": max_micro >= 1,
+                "max_micro": max_micro, "flops": flops, "days": secs / 86400, "note": note}
+
+    muon_state = hidden_frac * 1 + (1 - hidden_frac) * 2      # 8-bit momentum / 8-bit Adam
     rows = []
-    configs = [
-        ("fp32 weights + AdamW fp32 (naive)", 4, 4, "adamw", 4, False, False),
-        ("bf16 autocast, fp32 master + AdamW fp32", 6, 4, "adamw", 4, False, False),
-        ("bf16 weights(SR) + AdamW 8-bit, ckpt, chunked CE", 2, 2, "adamw", 1, True, True),
-        ("bf16 weights(SR) + Muon 8-bit, ckpt, chunked CE", 2, 2, "muon", 1, True, True),
-        ("bf16 weights(SR) + Muon 8-bit, no ckpt, chunked CE", 2, 2, "muon", 1, False, True),
+    r = row("1. Standard: AMP bf16, fp32 master + fp32 AdamW", 4 + 2, 4, 8, False, False,
+            note="fp32 weights + bf16 autocast copies")
+    if not r["fits"]:
+        r = row("1. Standard: AMP bf16, fp32 master + fp32 AdamW (+ act. ckpt to fit)",
+                4 + 2, 4, 8, True, False, note="does not fit without activation checkpointing")
+    rows.append(r)
+    rows.append(row("2. + bf16 weights (stochastic rounding) + 8-bit AdamW + chunked CE",
+                    2, 2, 2, False, True, note="no fp32 master; fits without recompute"))
+    rows.append(row("3. + Muon (8-bit momentum)", 2, 2, muon_state, False, True,
+                    tok_mult=muon_flops, note=f"same loss with {muon_flops:.2f}x the FLOPs"))
+    rows.append(row("4. + FP8 linears", 2, 2, muon_state, False, True, tok_mult=muon_flops,
+                    speed=fp8_speedup, note=f"x{fp8_speedup:.2f} throughput (literature)"))
+    rows.append(row("5. + 450 W power cap (75 % power)", 2, 2, muon_state, False, True,
+                    tok_mult=muon_flops, speed=fp8_speedup * power_tput,
+                    note=f"x{power_tput:.2f} throughput, 25 % less power"))
+    return {"layers": L, "params": N, "rows": rows}
+
+
+def storage_table(N, tokens, bits_per_token=8.54):
+    """Disk/RAM sizes for weights, resumable checkpoints and the token corpus."""
+    return [
+        ("weights fp32 (RAM or disk)", 4 * N),
+        ("weights bf16", 2 * N),
+        ("weights int8 (qweights / WeightPack 8)", 1.03 * N),
+        ("weights int4 (qweights / WeightPack 4)", 0.53 * N),
+        ("resumable ckpt: fp32 weights + fp32 AdamW", 12 * N),
+        ("resumable ckpt: bf16 weights + 8-bit Muon", 3.1 * N),
+        ("corpus: raw UTF-8 text (~4 B/token)", 4 * tokens),
+        ("corpus: uint16 token ids", 2 * tokens),
+        (f"corpus: TokPack ({bits_per_token:.2f} bits/token, measured on TinyStories)",
+         bits_per_token / 8 * tokens),
     ]
-    for name, wb, gb_, opt, sb, ckpt, chunked in configs:
-        if opt == "adamw":
-            state = N * 2 * sb
-        else:  # Muon: momentum only on hidden matrices, AdamW on the rest
-            state = N * hidden_frac * sb + N * (1 - hidden_frac) * 2 * sb
-        static = N * (wb + gb_) + state
-        per_tok_layer = 34 * d
-        if ckpt:
-            act = L * 2 * d * B * T + per_tok_layer * B * T
-        else:
-            act = L * per_tok_layer * B * T
-        logits = (B * chunk if chunked else B * T) * V * 4 + B * T * 2 * d * (0 if chunked else 1)
-        total = static + act + logits + overhead_gb * GB
-        # largest micro-batch that fits
-        per_b = (L * 2 * d * T + per_tok_layer * T if ckpt else L * per_tok_layer * T) \
-            + (chunk if chunked else T) * V * 4
-        max_b = int((gpu_gb * GB - static - overhead_gb * GB) // per_b)
-        flops = (8 if ckpt else 6) * N * tokens
-        secs = flops / (tflops * 1e12 * mfu)
-        rows.append({"config": name, "static_gb": static / GB, "act_gb": act / GB,
-                     "logits_gb": logits / GB, "total_gb": total / GB,
-                     "fits": total <= gpu_gb * GB, "max_micro": max(0, max_b),
-                     "days": secs / 86400, "days_muon_adj": secs / 86400 /
-                     (muon_mult if opt == "muon" else 1.0)})
-    return rows
 
 
-def fmt(rows):
-    hdr = f"{'config':52s} {'static':>7s} {'act':>6s} {'logit':>6s} {'total':>7s} fits {'maxB':>5s} {'days':>7s} {'days(x)':>8s}"
-    out = [hdr, "-" * len(hdr)]
-    for r in rows:
-        out.append(f"{r['config']:52s} {r['static_gb']:7.1f} {r['act_gb']:6.1f} {r['logits_gb']:6.1f} "
-                   f"{r['total_gb']:7.1f} {'yes' if r['fits'] else 'NO ':4s} {r['max_micro']:5d} "
-                   f"{r['days']:7.1f} {r['days_muon_adj']:8.1f}")
-    return "\n".join(out)
+def fmt(sb, tokens, markdown=False):
+    base = sb["rows"][0]["days"]
+    lines = []
+    if markdown:
+        lines.append("| configuration | bytes/param | static GB | total GB | fits | max micro-batch | days | speedup |")
+        lines.append("|---|---|---|---|---|---|---|---|")
+        for r in sb["rows"]:
+            lines.append(f"| {r['config']} | {r['bytes_per_param']:.1f} | {r['static_gb']:.0f} | "
+                         f"{r['total_gb']:.0f} | {'yes' if r['fits'] else 'no'} | {r['max_micro']} | "
+                         f"{r['days']:.0f} | {base / r['days']:.2f}x |")
+        return "\n".join(lines)
+    lines.append(f"model: {sb['params']/1e9:.2f}B params ({sb['layers']} layers), "
+                 f"reference = standard recipe on {tokens:.1e} tokens")
+    hdr = f"{'configuration':72s} {'B/p':>5s} {'static':>7s} {'total':>6s} fit {'maxB':>5s} {'days':>6s} {'speedup':>7s}"
+    lines += [hdr, "-" * len(hdr)]
+    for r in sb["rows"]:
+        lines.append(f"{r['config']:72s} {r['bytes_per_param']:5.1f} {r['static_gb']:6.0f}G "
+                     f"{r['total_gb']:5.0f}G {'yes' if r['fits'] else 'NO ':3s} {r['max_micro']:5d} "
+                     f"{r['days']:6.0f} {base / r['days']:6.2f}x")
+    return "\n".join(lines)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--params", type=float, default=5e9)
     ap.add_argument("--d", type=int, default=4096)
-    ap.add_argument("--layers", type=int, default=32)
     ap.add_argument("--vocab", type=int, default=32000)
     ap.add_argument("--seq", type=int, default=2048)
-    ap.add_argument("--micro", type=int, default=8)
     ap.add_argument("--gpu_gb", type=float, default=96)
-    ap.add_argument("--tflops", type=float, default=250, help="dense bf16 peak")
-    ap.add_argument("--mfu", type=float, default=0.4)
+    ap.add_argument("--peak_tflops", type=float, default=503.8)
+    ap.add_argument("--mfu", type=float, default=0.40)
     ap.add_argument("--tokens", type=float, default=1e11)
-    ap.add_argument("--muon_mult", type=float, default=2.0,
-                    help="compute-to-target multiplier credited to Muon in the last column")
-    args = ap.parse_args()
-    rows = config_table(args.params, args.d, args.layers, args.vocab, args.seq, args.micro,
-                        args.gpu_gb, args.tflops, args.mfu, args.tokens, muon_mult=args.muon_mult)
-    print(f"N={args.params:.2e} params, d={args.d}, L={args.layers}, V={args.vocab}, "
-          f"T={args.seq}, micro-batch={args.micro}, GPU={args.gpu_gb:.0f} GB, "
-          f"{args.tflops:.0f} TFLOPS x MFU {args.mfu:.2f}, {args.tokens:.2e} tokens")
-    print(fmt(rows))
-    print("days(x): wall-clock after dividing Muon rows by --muon_mult "
-          "(measured 2.5x at 5.8M params here; ~2x reported at 1-16B).")
+    ap.add_argument("--fp8_speedup", type=float, default=1.20)
+    ap.add_argument("--muon_flops", type=float, default=0.52)
+    ap.add_argument("--power_tput", type=float, default=0.95)
+    ap.add_argument("--markdown", action="store_true")
+    a = ap.parse_args()
+    sb = scoreboard(a.params, a.d, a.vocab, a.seq, a.gpu_gb, a.peak_tflops, a.mfu, a.tokens,
+                    a.fp8_speedup, a.muon_flops, a.power_tput)
+    print(fmt(sb, a.tokens, a.markdown))
+    print()
+    for name, b in storage_table(sb["params"], a.tokens):
+        print(f"{name:66s} {b / GB:8.1f} GB")
 
 
 if __name__ == "__main__":

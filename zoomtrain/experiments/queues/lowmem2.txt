@@ -1,0 +1,5 @@
+# A fully trained model (main budget) saved for weight-storage evaluation, plus
+# the low-memory stack at the main budget so its quality cost is measured where it matters.
+D=/home/user/data/tinystories/tok4k
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr 1.6e-2 --name save_muon_base --out results/llm_lowmem --save results/llm_lowmem/save_muon_base.pt
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr 1.6e-2 --state_bits 8 --param_dtype bf16 --name full_muon8_bf16 --out results/llm_lowmem

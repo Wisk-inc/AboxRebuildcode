@@ -132,10 +132,62 @@ def test_weightpack_roundtrip_sizes_and_error(tmp_path):
     assert sizes[8] < fp32 / 3
 
 
-def test_memory_estimator_fits_logic():
-    rows = memory.config_table(5e9, 4096, 32, 32000, 2048, 8, 96, 250, 0.4, 1e11)
-    naive = rows[0]
-    eff = [r for r in rows if "Muon 8-bit, ckpt" in r["config"]][0]
-    assert not naive["fits"] and eff["fits"]
-    assert eff["static_gb"] < 30 and naive["static_gb"] > 70
+def test_memory_scoreboard_ladder():
+    sb = memory.scoreboard()
+    rows = sb["rows"]
+    assert 4.9e9 < sb["params"] < 5.3e9
+    std, eff = rows[0], rows[2]
+    assert "ckpt" in std["config"]                  # standard recipe must recompute to fit
+    assert std["bytes_per_param"] == 18 and eff["bytes_per_param"] < 5.2
+    assert all(r["fits"] for r in rows)
     assert eff["max_micro"] >= 8
+    days = [r["days"] for r in rows]
+    assert days[0] > days[1] > days[2] > days[3]
+    assert abs(days[0] / days[1] - 8 / 6) < 1e-6    # recompute removed
+    assert abs(days[1] / days[2] - 1 / 0.52) < 1e-6
+
+
+
+def test_qweights_int8_int4_shapes_error_and_bytes():
+    from zoomtrain import qweights
+    torch.manual_seed(0)
+    w = torch.randn(96, 200)
+    for bits, block in ((8, 128), (4, 64)):
+        q, s, pad = qweights.quantize_rows(w, bits, block)
+        r = qweights.dequantize_rows(q, s, pad, bits, block)
+        assert r.shape == w.shape
+        blk = torch.nn.functional.pad(w.abs(), (0, pad)).view(96, -1, block).amax(2)
+        bound = (blk / qweights.QMAX[bits] / 2 * 1.01 + 1e-3).repeat_interleave(block, 1)[:, :200]
+        assert ((r - w).abs() <= bound).all()
+
+
+def test_quantize_model_in_place_keeps_outputs_close():
+    from zoomtrain import qweights
+    torch.manual_seed(0)
+    m = ZoomGPT(512, 64, 2, 2).eval()
+    x = torch.randint(0, 512, (2, 33))
+    ref = m(x[:, :32], x[:, 1:], k=1).item()
+    out = {}
+    for bits in (8, 4):
+        q = ZoomGPT(512, 64, 2, 2).eval()
+        q.load_state_dict(m.state_dict())
+        rep = qweights.quantize_model(q, bits)
+        out[bits] = q(x[:, :32], x[:, 1:], k=1).item()
+        assert rep["modules_quantized"] == 2 * 4 + 1          # 4 linears per block + embedding
+        assert rep["ratio"] > (3.5 if bits == 8 else 6.0)
+    assert abs(out[8] - ref) < 0.01 and abs(out[4] - ref) < 0.1
+
+
+def test_weightpack_int4(tmp_path):
+    torch.manual_seed(0)
+    m = ZoomGPT(512, 64, 2, 2)
+    sd = m.state_dict()
+    p = tmp_path / "w4.zwpk"
+    n4 = weightpack.save(p, sd, 4)
+    n8 = weightpack.save(tmp_path / "w8.zwpk", sd, 8)
+    back = weightpack.load(p)
+    assert n4 < n8
+    for k, v in sd.items():
+        assert back[k].shape == v.shape
+        if v.dim() >= 2 and v.numel() >= 4096:
+            assert (back[k] - v).abs().max() <= v.abs().max() / 7
