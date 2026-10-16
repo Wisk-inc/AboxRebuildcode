@@ -12,8 +12,9 @@ same loss as the standard recipe trained on --tokens tokens.
 Assumptions (defaults; every one is a flag):
   GPU       RTX PRO 6000 Blackwell Workstation: 96 GB, 503.8 TFLOPS dense BF16
             (NVIDIA RTX Blackwell PRO architecture whitepaper, Appendix A).
-  MFU       0.40 of dense BF16 peak. Measured single-card nanochat runs on this
-            GPU report 40-50 % (karpathy/nanochat discussions #198, #288).
+  MFU       0.40 of dense BF16 peak (conservative). nanochat on one RTX PRO 6000
+            measured ~297 TFLOPS = 59 % at 600 W and ~40 % at 300 W
+            (karpathy/nanochat #288, d20 = 3.49 GFLOP/token); 2 cards ~50 % (#28).
   FP8       x1.20 throughput for FP8 linears (Transformer Engine current
             scaling is supported on SM 12.0); reports range 20-30 %. Not
             measured here.
@@ -24,11 +25,14 @@ Assumptions (defaults; every one is a flag):
   bf16 + SR bf16 weights/grads with stochastic rounding match fp32-master mixed
             precision up to 6.7B (Ozkara et al. 2025); 8-bit Adam states match
             32-bit up to 1.5B (Dettmers et al. 2021).
-  Power     450 W cap keeps ~95 % throughput on this card (ResNet-50 training
-            sweep, naveen.ing); not measured for LLM training.
+  Power     450 W cap keeps ~95 % throughput on this card in a ResNet-50 training
+            sweep (naveen.ing); for LLM training the only datapoint is nanochat at
+            300 W: -32 % throughput, +36 % tokens per watt (#288).
 Activation memory (bf16, FlashAttention): 34*T*d bytes per layer per sequence
-(Korthikanti et al. 2022); full checkpointing keeps 2*T*d per layer plus one
-layer's activations and costs one extra forward (8ND instead of 6ND).
+(Korthikanti et al. 2022; llm.c GPT-2 1.6B measured within ~1 %). HF-style
+Llama code measured ~1.6x higher (LOMO) -> --act_factor 1.6. Full checkpointing
+keeps 2*T*d per layer plus one layer's activations and costs one extra forward
+(8ND instead of 6ND; Megatron measured +30-40 % wall-clock).
 """
 import argparse
 
@@ -43,13 +47,13 @@ def model_dims(params, d, vocab):
 
 def scoreboard(params=5e9, d=4096, vocab=32000, seq=2048, gpu_gb=96.0, peak_tflops=503.8,
                mfu=0.40, tokens=1e11, fp8_speedup=1.20, muon_flops=0.52, power_tput=0.95,
-               overhead_gb=3.0, hidden_frac=None):
+               overhead_gb=3.0, hidden_frac=None, act_factor=1.0):
     L, N = model_dims(params, d, vocab)
     if hidden_frac is None:
         hidden_frac = 12 * L * d * d / N
-    act_seq = 34 * seq * d * L                        # bytes per sequence, no recompute
+    act_seq = 34 * seq * d * L * act_factor           # bytes per sequence, no recompute
     act_seq_ckpt = 2 * seq * d * L                    # stored block inputs
-    act_layer = 34 * seq * d                          # one layer recomputed at a time
+    act_layer = 34 * seq * d * act_factor             # one layer recomputed at a time
     logits_seq = seq * vocab * 6                      # bf16 logits + fp32 loss buffer
     logits_chunk = 1024 * vocab * 6                   # chunked cross-entropy
 
@@ -92,6 +96,7 @@ def storage_table(N, tokens, bits_per_token=8.54):
     return [
         ("weights fp32 (RAM or disk)", 4 * N),
         ("weights bf16", 2 * N),
+        ("weights bf16, lossless (WeightPack 16: byte-shuffle + zstd, ~71 %)", 1.42 * N),
         ("weights int8 (qweights / WeightPack 8)", 1.03 * N),
         ("weights int4 (qweights / WeightPack 4)", 0.53 * N),
         ("resumable ckpt: fp32 weights + fp32 AdamW", 12 * N),
@@ -138,10 +143,12 @@ def main():
     ap.add_argument("--fp8_speedup", type=float, default=1.20)
     ap.add_argument("--muon_flops", type=float, default=0.52)
     ap.add_argument("--power_tput", type=float, default=0.95)
+    ap.add_argument("--act_factor", type=float, default=1.0,
+                    help="activation memory vs the 34*T*d formula (1.6 for HF Llama code)")
     ap.add_argument("--markdown", action="store_true")
     a = ap.parse_args()
     sb = scoreboard(a.params, a.d, a.vocab, a.seq, a.gpu_gb, a.peak_tflops, a.mfu, a.tokens,
-                    a.fp8_speedup, a.muon_flops, a.power_tput)
+                    a.fp8_speedup, a.muon_flops, a.power_tput, act_factor=a.act_factor)
     print(fmt(sb, a.tokens, a.markdown))
     print()
     for name, b in storage_table(sb["params"], a.tokens):
