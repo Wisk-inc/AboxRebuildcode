@@ -1,15 +1,20 @@
-# Follow-up ablations targeting the two failure modes seen in the main runs:
+# Follow-up ablations targeting the failure modes seen in the main runs:
 #  (1) body drifts from k=1 geometry during coarse stages  -> --mix_fine (interleave k=1 steps)
 #  (2) fine stage only gets the cosine tail                -> --lr_restart (warmup+cosine per stage)
-# plus the per-slot linear merge/unmerge.
+#  (3) k=4 stages are net-negative; k=2 at 50% is neutral  -> 2-level schedules + k-scaled batch
+#  plus the per-slot linear merge/unmerge.
 D=/home/user/data/tinystories/tok4k
 W=/home/user/data/era5_64x32
 Z=4:0.35,2:0.25,1:0.4
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.5,1:0.5 --optim muon --lr 1.6e-2 --batch_scale_k 1 --name fu_2-50_bk_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.5,1:0.5 --optim muon --lr 1.6e-2 --lr_restart 1 --name fu_2-50_restart_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.5,1:0.5 --optim muon --lr 1.6e-2 --lr_restart 1 --batch_scale_k 1 --name fu_2-50_restart_bk_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.5,1:0.5 --optim muon --lr 1.6e-2 --seed 1 --name abl_sched_2-50_s1
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.5,1:0.5 --optim muon --lr 1.6e-2 --seed 2 --name abl_sched_2-50_s2
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.3,1:0.7 --optim muon --lr 1.6e-2 --name fu_2-30_s0
 python3 llm/train.py --data $D --budget 6.8e13 --zoom $Z --optim muon --lr 1.6e-2 --lr_restart 1 --name fu_restart_s0
 python3 llm/train.py --data $D --budget 6.8e13 --zoom $Z --optim muon --lr 1.6e-2 --mix_fine 0.25 --name fu_mix25_s0
-python3 llm/train.py --data $D --budget 6.8e13 --zoom $Z --optim muon --lr 1.6e-2 --lr_restart 1 --mix_fine 0.25 --name fu_restart_mix25_s0
-python3 llm/train.py --data $D --budget 6.8e13 --zoom 4:0.5,1:0.5 --optim muon --lr 1.6e-2 --lr_restart 1 --mix_fine 0.25 --name fu_restart_mix25_4-50_s0
-python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.5,1:0.5 --optim muon --lr 1.6e-2 --lr_restart 1 --name fu_restart_2-50_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom $Z --optim muon --lr 1.6e-2 --lr_restart 1 --mix_fine 0.25 --batch_scale_k 1 --name fu_restart_mix25_bk_s0
 python3 llm/train.py --data $D --budget 6.8e13 --zoom $Z --optim muon --lr 1.6e-2 --merge_mode linear --name abl_linear_s0
 python3 weather/train.py --data $W --budget 5.5e13 --zoom 4:0.6,1:0.4 --optim muon --lr 1.6e-2 --lr_restart 1 --name fu_restart_s0
 python3 weather/train.py --data $W --budget 5.5e13 --zoom 4:0.6,1:0.4 --optim muon --lr 1.6e-2 --lr_restart 1 --mix_fine 0.25 --name fu_restart_mix25_s0
