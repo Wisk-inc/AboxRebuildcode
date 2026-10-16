@@ -123,6 +123,9 @@ def main():
                     help="also save <save>_f<frac>.pt at every evaluation (compute curve)")
     args = ap.parse_args()
 
+    os.makedirs(args.out, exist_ok=True)
+    if args.save:
+        os.makedirs(os.path.dirname(os.path.abspath(args.save)), exist_ok=True)
     rt = setup_runtime(args.device, args.precision, args.compile, args.threads, args.seed)
     if rt.device.type == "cpu":
         rt.amp_dtype = None  # fp32 on CPU (no bf16 matmul units on this class of CPU)

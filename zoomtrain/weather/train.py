@@ -170,6 +170,7 @@ def main():
     ap.add_argument("--out", default=os.path.join(ROOT, "results", "weather"))
     args = ap.parse_args()
 
+    os.makedirs(args.out, exist_ok=True)
     rt = setup_runtime(args.device, args.precision, args.compile, args.threads, args.seed)
     if rt.device.type == "cpu":
         rt.amp_dtype = None
