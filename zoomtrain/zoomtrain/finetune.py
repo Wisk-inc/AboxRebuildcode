@@ -72,6 +72,30 @@ def load_examples(args):
     return out
 
 
+CHATML = ("{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\n' + "
+          "message['content'] + '<|im_end|>' + '\n' }}{% endfor %}"
+          "{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}")
+
+
+def resolve_template(tok):
+    """Base checkpoints have no chat template: install ChatML when the vocab has its
+    tokens (SmolLM2, Qwen2.5 bases) and align eos with the end-of-turn token."""
+    if getattr(tok, "chat_template", None):
+        return "model"
+    if "<|im_end|>" in tok.get_vocab():
+        tok.chat_template = CHATML
+        tok.eos_token = "<|im_end|>"
+        return "chatml-installed"
+    return "plain"
+
+
+def to_messages(ex):
+    if "messages" in ex:
+        return ex["messages"]
+    return [{"role": "user", "content": ex["prompt"]},
+            {"role": "assistant", "content": ex["response"]}]
+
+
 def render(tok, ex):
     """-> (prompt_text, full_text) using the chat template when available."""
     has_tpl = getattr(tok, "chat_template", None) is not None
@@ -95,47 +119,105 @@ def render(tok, ex):
     return prompt, full
 
 
-def tokenize_examples(tok, examples, seq):
-    """-> list of (ids, labels) with labels = -100 on the prompt part."""
+def _assistant_mask(tok, msgs):
+    """Use the template's {% generation %} blocks when it has them; else None."""
+    try:
+        enc = tok.apply_chat_template(msgs, tokenize=True, return_dict=True,
+                                      return_assistant_tokens_mask=True,
+                                      add_generation_prompt=False)
+    except Exception:
+        return None
+    mask = enc.get("assistant_masks")
+    if not mask or sum(mask) == 0:
+        return None
+    return enc["input_ids"], mask
+
+
+def tokenize_examples(tok, examples, seq, prompt_loss_weight=0.0):
+    """-> list of (ids, labels, weights): labels = -100 on prompt tokens unless
+    prompt_loss_weight > 0, in which case prompt tokens get that weight and
+    response tokens weight 1. Multi-turn chats get every assistant turn supervised
+    when the template marks generation spans; otherwise the final turn only."""
     items = []
     for ex in examples:
-        prompt, full = render(tok, ex)
-        p_ids = tok(prompt, add_special_tokens=False)["input_ids"]
-        f_ids = tok(full, add_special_tokens=False)["input_ids"]
-        if not f_ids[:len(p_ids)] == p_ids:          # template quirk: fall back to lengths
-            p_len = min(len(p_ids), len(f_ids) - 1)
+        msgs = to_messages(ex)
+        am = _assistant_mask(tok, msgs) if getattr(tok, "chat_template", None) else None
+        if am is not None:
+            f_ids, mask = am
+            f_ids, mask = f_ids[:seq], mask[:seq]
+            sup = [bool(m) for m in mask]
         else:
-            p_len = len(p_ids)
-        f_ids = f_ids[:seq]
-        if p_len >= len(f_ids):
+            prompt, full = render(tok, ex)
+            p_ids = tok(prompt, add_special_tokens=False)["input_ids"]
+            f_ids = tok(full, add_special_tokens=False)["input_ids"]
+            p_len = len(p_ids) if f_ids[:len(p_ids)] == p_ids else min(len(p_ids), len(f_ids) - 1)
+            f_ids = f_ids[:seq]
+            sup = [i >= p_len for i in range(len(f_ids))]
+        if not any(sup):
             continue
-        labels = [-100] * p_len + f_ids[p_len:]
-        items.append((f_ids, labels))
+        labels = [t if s_ or prompt_loss_weight > 0 else -100 for t, s_ in zip(f_ids, sup)]
+        weights = [1.0 if s_ else prompt_loss_weight for s_ in sup]
+        items.append((f_ids, labels, weights))
     return items
 
 
-def pack(items, seq, pad_id):
-    """Concatenate examples into windows of `seq` tokens (+1 for the shifted target)."""
-    ids, labels = [], []
-    for i, l in items:
-        ids += i
-        labels += l
-    windows = []
-    for s in range(0, len(ids) - 1, seq):
-        x = ids[s:s + seq + 1]
-        y = labels[s:s + seq + 1]
-        if len(x) < 2:
-            break
-        if len(x) < seq + 1:
-            x = x + [pad_id] * (seq + 1 - len(x))
-            y = y + [-100] * (seq + 1 - len(y))
-        windows.append((x, y))
-    return windows
+def _pad(x, y, w, n, pad_id):
+    k = n - len(x)
+    return x + [pad_id] * k, y + [-100] * k, w + [0.0] * k
+
+
+def pack(items, seq, pad_id, mode="bfd"):
+    """Group tokenized examples into windows of seq+1 tokens.
+
+    mode="bfd":     best-fit-decreasing bin packing, examples never split (TRL default)
+    mode="wrapped": concatenate everything and cut every seq tokens (may split examples)
+    mode="none":    one example per window, padded
+    Each window is (ids, labels, weights) of length seq+1 (inputs = [:-1], targets = [1:]).
+    """
+    n = seq + 1
+    items = [t for t in items if len(t[0]) >= 2]
+    if mode != "wrapped":                               # one example per bin: truncate to fit
+        items = [(i[:n], l[:n], w[:n]) for i, l, w in items]
+    if mode == "wrapped":
+        ids, labels, ws = [], [], []
+        for i, l, w in items:
+            ids += i
+            labels += l
+            ws += w
+        out = []
+        for s in range(0, len(ids) - 1, seq):
+            x, y, w = ids[s:s + n], labels[s:s + n], ws[s:s + n]
+            out.append(_pad(x, y, w, n, pad_id))
+        return out
+    if mode == "none":
+        return [_pad(i, l, w, n, pad_id) for i, l, w in items]
+    bins = []                                           # best-fit decreasing
+    for i, l, w in sorted(items, key=lambda t: -len(t[0])):
+        best, best_left = None, None
+        for b in bins:
+            left = n - b["len"]
+            if len(i) <= left and (best_left is None or left < best_left):
+                best, best_left = b, left
+        if best is None:
+            best = {"len": 0, "x": [], "y": [], "w": []}
+            bins.append(best)
+        best["x"] += i
+        best["y"] += l
+        best["w"] += w
+        best["len"] += len(i)
+    return [_pad(b["x"], b["y"], b["w"], n, pad_id) for b in bins]
 
 
 # ----------------------------------------------------------------------------- model
-def lm_loss(model, x, y, ce_chunk):
-    """Loss over response tokens; chunked head when the model exposes it."""
+def lm_loss(model, x, y, ce_chunk, w=None):
+    """Mean CE over supervised tokens (optionally weighted); chunked head when the
+    model exposes base + output embeddings."""
+    if w is not None and bool((w != 1.0).logical_and(y != -100).any()):
+        logits = model(input_ids=x).logits.float()
+        per = torch.nn.functional.cross_entropy(logits.reshape(-1, logits.shape[-1]),
+                                                y.reshape(-1), ignore_index=-100, reduction="none")
+        wf = w.reshape(-1).float()
+        return (per * wf).sum() / wf[y.reshape(-1) != -100].sum().clamp_min(1)
     base = getattr(model, "model", None) or getattr(model, "base_model", None)
     head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
     if ce_chunk and base is not None and head is not None and hasattr(head, "weight"):
@@ -155,7 +237,7 @@ def evaluate(model, windows, rt, batch, ce_chunk):
         xs = torch.tensor([w[0] for w in windows[i:i + batch]], device=rt.device)
         ys = torch.tensor([w[1] for w in windows[i:i + batch]], device=rt.device)
         with rt.autocast():
-            loss = lm_loss(model, xs[:, :-1], ys[:, 1:], ce_chunk)
+            loss = lm_loss(model, xs[:, :-1], ys[:, 1:], ce_chunk)   # eval: response tokens only
         nv = int((ys[:, 1:] != -100).sum())
         tot += loss.float().item() * nv
         n += nv
@@ -176,6 +258,9 @@ def main(argv=None):
     ap.add_argument("--max_examples", type=int, default=0)
     ap.add_argument("--eval_frac", type=float, default=0.05)
     ap.add_argument("--seq", type=int, default=512)
+    ap.add_argument("--pack", default="bfd", choices=["bfd", "wrapped", "none"])
+    ap.add_argument("--prompt_loss_weight", type=float, default=0.0,
+                    help="0 = loss on response tokens only (default); 1 = train on everything")
     ap.add_argument("--epochs", type=float, default=1.0)
     ap.add_argument("--max_steps", type=int, default=0)
     ap.add_argument("--batch", type=int, default=4)
@@ -191,9 +276,9 @@ def main(argv=None):
     ap.add_argument("--param_dtype", default="auto", choices=["auto", "fp32", "bf16"])
     ap.add_argument("--lora", type=int, default=16, help="LoRA rank (0 = full fine-tuning)")
     ap.add_argument("--lora_alpha", type=float, default=32)
-    ap.add_argument("--lora_dropout", type=float, default=0.0)
+    ap.add_argument("--lora_dropout", type=float, default=0.05)
     ap.add_argument("--lora_targets", default="", help="comma list; default: all projections")
-    ap.add_argument("--rslora", type=int, default=0)
+    ap.add_argument("--rslora", type=int, default=-1, help="-1: auto (on when r >= 64)")
     ap.add_argument("--quant", type=int, default=0, choices=[0, 8, 4], help="quantize the frozen base")
     ap.add_argument("--grad_ckpt", type=int, default=0)
     ap.add_argument("--ce_chunk", type=int, default=2048)
@@ -223,6 +308,7 @@ def main(argv=None):
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(args.model)
+    template = resolve_template(tok)
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
     pdt = args.param_dtype
@@ -236,8 +322,9 @@ def main(argv=None):
         report["quant"] = quantize_model(model, args.quant, min_numel=1 << 16)
     if args.lora:
         targets = tuple(t for t in args.lora_targets.split(",") if t) or DEFAULT_TARGETS
+        rslora = (args.lora >= 64) if args.rslora < 0 else bool(args.rslora)
         report["lora"] = apply_lora(model, args.lora, args.lora_alpha, args.lora_dropout,
-                                    targets, rslora=bool(args.rslora))
+                                    targets, rslora=rslora)
         assert report["lora"]["wrapped"] > 0, "no LoRA targets matched; use --lora_targets"
     else:
         for p in model.parameters():
@@ -254,15 +341,18 @@ def main(argv=None):
     fwd_model = model
     if world > 1:
         from torch.nn.parallel import DistributedDataParallel as DDP
-        fwd_model = DDP(model, device_ids=[rt.device.index] if rt.device.type == "cuda" else None)
+        fwd_model = DDP(model, device_ids=[rt.device.index] if rt.device.type == "cuda" else None,
+                        gradient_as_bucket_view=True)
 
     # ---- data ----
     examples = load_examples(args)
-    items = tokenize_examples(tok, examples, args.seq)
+    items = tokenize_examples(tok, examples, args.seq, args.prompt_loss_weight)
     random.Random(args.seed).shuffle(items)
     n_eval = max(1, int(len(items) * args.eval_frac))
-    eval_w = pack(items[:n_eval], args.seq, tok.pad_token_id)
-    train_w = pack(items[n_eval:], args.seq, tok.pad_token_id)
+    eval_w = pack(items[:n_eval], args.seq, tok.pad_token_id, args.pack)
+    train_w = pack(items[n_eval:], args.seq, tok.pad_token_id, args.pack)
+    n_sup = sum(1 for w in train_w for t in w[1][1:] if t != -100)
+    pad_frac = sum(w[0].count(tok.pad_token_id) for w in train_w) / max(1, len(train_w) * (args.seq + 1))
     train_w = train_w[rank::world]
     steps_per_epoch = max(1, len(train_w) // (args.batch * args.accum))
     total_steps = args.max_steps or max(1, int(steps_per_epoch * args.epochs))
@@ -276,6 +366,7 @@ def main(argv=None):
            "model_bytes_before_quant": base_bytes_fp, "model_bytes": model_bytes(model),
            "optimizer_state_bytes": state_bytes(opt), "train_windows": len(train_w) * world,
            "eval_windows": len(eval_w), "examples": len(items), "steps": total_steps,
+           "chat_template": template, "supervised_tokens": n_sup, "padding_fraction": pad_frac,
            "world_size": world, "runtime": describe(rt), "evals": [], "train": []}
     if is_main:
         print(f"[finetune] {args.model} trainable={trainable/1e6:.2f}M "
@@ -303,8 +394,9 @@ def main(argv=None):
             pos += args.batch
             xs = torch.tensor([train_w[i][0] for i in idx], device=rt.device)
             ys = torch.tensor([train_w[i][1] for i in idx], device=rt.device)
+            ws = torch.tensor([train_w[i][2] for i in idx], device=rt.device)
             with rt.autocast():
-                loss = lm_loss(fwd_model, xs[:, :-1], ys[:, 1:], args.ce_chunk) / args.accum
+                loss = lm_loss(fwd_model, xs[:, :-1], ys[:, 1:], args.ce_chunk, ws[:, 1:]) / args.accum
             rt.backward(loss, opt, [p for p in model.parameters() if p.requires_grad], step=False)
             loss_acc += loss.float().item()
         rt.step(opt, [p for p in model.parameters() if p.requires_grad])

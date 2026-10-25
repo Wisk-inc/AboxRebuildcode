@@ -1,0 +1,112 @@
+{
+ "args": {
+  "model": "HuggingFaceTB/SmolLM2-135M",
+  "dataset": "databricks/databricks-dolly-15k",
+  "config": "",
+  "split": "train",
+  "jsonl": "",
+  "prompt_col": "prompt",
+  "response_col": "response",
+  "messages_col": "messages",
+  "max_examples": 400,
+  "eval_frac": 0.05,
+  "seq": 256,
+  "epochs": 1.0,
+  "max_steps": 40,
+  "batch": 2,
+  "accum": 2,
+  "lr": 0.0002,
+  "warmup": 0.03,
+  "sched": "wsd",
+  "wd": 0.0,
+  "optim": "muon",
+  "muon_lora": 0,
+  "ns": "quintic",
+  "state_bits": 8,
+  "param_dtype": "auto",
+  "lora": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.0,
+  "lora_targets": "",
+  "rslora": 0,
+  "quant": 0,
+  "grad_ckpt": 0,
+  "ce_chunk": 2048,
+  "eval_every": 20,
+  "device": "auto",
+  "precision": "auto",
+  "threads": 1,
+  "duty": 1.0,
+  "seed": 0,
+  "out": "results/finetune/smollm135m_dolly_lora_fp",
+  "save_merged": 0
+ },
+ "report": {
+  "lora": {
+   "wrapped": 210,
+   "r": 16,
+   "alpha": 32,
+   "trainable_params": 4884480,
+   "total_params": 139399488,
+   "trainable_frac": 0.035039440030081026
+  }
+ },
+ "trainable_params": 4884480,
+ "total_params": 139399488,
+ "quantized_base_params": 0,
+ "model_bytes_before_quant": 538060288,
+ "model_bytes": 557598208,
+ "optimizer_state_bytes": 9997920,
+ "train_windows": 164,
+ "eval_windows": 8,
+ "examples": 355,
+ "steps": 40,
+ "world_size": 1,
+ "runtime": "device=cpu amp=None compile=False threads=1 pid=5532",
+ "evals": [
+  {
+   "step": 0,
+   "eval_loss": 2.871076617071978
+  },
+  {
+   "step": 20,
+   "eval_loss": 2.8101829246238426,
+   "time": 177.0350170469983
+  },
+  {
+   "step": 40,
+   "eval_loss": 2.7923718756139757,
+   "time": 353.06353890099854
+  }
+ ],
+ "train": [
+  {
+   "step": 1,
+   "loss": 2.497912883758545,
+   "time": 9.325473443000192
+  },
+  {
+   "step": 10,
+   "loss": 2.459378242492676,
+   "time": 88.31503843999963
+  },
+  {
+   "step": 20,
+   "loss": 2.8004512786865234,
+   "time": 177.0350170469983
+  },
+  {
+   "step": 30,
+   "loss": 2.394171357154846,
+   "time": 264.5415445269982
+  },
+  {
+   "step": 40,
+   "loss": 2.9760448932647705,
+   "time": 353.06353890099854
+  }
+ ],
+ "train_time": 353.06353890099854,
+ "final_eval_loss": 2.7923718756139757,
+ "adapter_bytes": 19670199
+}

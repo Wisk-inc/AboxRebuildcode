@@ -128,12 +128,38 @@ def test_finetune_data_pipeline_masks_prompt_and_packs():
            {"messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]}]
     items = ft.tokenize_examples(tok, exs, seq=64)
     assert len(items) == 2
-    for ids, labels in items:
-        assert len(ids) == len(labels)
-        assert labels[0] == -100 and labels[-1] != -100
-    w = ft.pack(items, 16, tok.pad_token_id or 0)
-    assert all(len(x) == 17 and len(y) == 17 for x, y in w)
-    # every response token is predicted exactly once (position 0 of a window is input only)
-    n_targets = sum(1 for x, y in w for t in y[1:] if t != -100)
-    n_resp = sum(1 for i, l in items for t in l[1:] if t != -100)
+    for ids, labels, weights in items:
+        assert len(ids) == len(labels) == len(weights)
+        assert labels[0] == -100 and labels[-1] != -100 and weights[-1] == 1.0
+    pad = tok.pad_token_id or 0
+    for mode in ("bfd", "wrapped", "none"):
+        w = ft.pack(items, 16, pad, mode)
+        assert all(len(x) == 17 and len(y) == 17 and len(z) == 17 for x, y, z in w)
+    # wrapped: every response token is predicted exactly once (window position 0 is input only)
+    w = ft.pack(items, 16, pad, "wrapped")
+    n_targets = sum(1 for x, y, z in w for t in y[1:] if t != -100)
+    n_resp = sum(1 for i, l, _ in items for t in l[1:] if t != -100)
     assert n_targets == n_resp
+    # bfd never splits an example and fills bins best-first
+    big = [(list(range(9)), list(range(9)), [1.0] * 9)] * 3 + [(list(range(5)), list(range(5)), [1.0] * 5)]
+    w = ft.pack(big, 16, pad, "bfd")          # capacity 17: {9+5}, {9}, {9} -> 3 bins, no splits
+    assert len(w) == 3 and sorted(17 - x.count(pad) for x, _, _ in w) == [9, 9, 14]
+    # prompt_loss_weight > 0 supervises prompt tokens with that weight
+    items2 = ft.tokenize_examples(tok, exs[:1], seq=64, prompt_loss_weight=0.3)
+    ids, labels, weights = items2[0]
+    assert labels[0] != -100 and weights[0] == 0.3 and weights[-1] == 1.0
+
+
+def test_resolve_template_installs_chatml_for_base_vocab():
+    from zoomtrain import finetune as ft
+
+    class FakeTok:
+        chat_template = None
+        eos_token = "<|endoftext|>"
+
+        def get_vocab(self):
+            return {"<|im_start|>": 1, "<|im_end|>": 2, "<|endoftext|>": 0}
+
+    t = FakeTok()
+    assert ft.resolve_template(t) == "chatml-installed"
+    assert t.eos_token == "<|im_end|>" and "generation_prompt" in t.chat_template

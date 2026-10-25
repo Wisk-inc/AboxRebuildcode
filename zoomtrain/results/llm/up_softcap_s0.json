@@ -1,0 +1,128 @@
+{
+ "args": {
+  "data": "/home/user/data/tinystories/tok4k",
+  "zoom": "1",
+  "budget": 68000000000000.0,
+  "optim": "muon",
+  "state_bits": 32,
+  "param_dtype": "fp32",
+  "grad_ckpt": 0,
+  "accum": 1,
+  "d": 256,
+  "layers": 6,
+  "heads": 4,
+  "seq": 256,
+  "batch": 16,
+  "batch_scale_k": 0,
+  "batch_scale": 0.0,
+  "lr": 0.016,
+  "warmup": 0.05,
+  "sched": "cosine",
+  "decay_frac": 0.45,
+  "lr_restart": 0,
+  "mix_fine": 0.0,
+  "wd": 0.1,
+  "gated": 1,
+  "merge_mode": "",
+  "out_mode": "slot",
+  "rope_pos": "token",
+  "qk_norm": 0,
+  "mlp": "gelu",
+  "softcap": 15.0,
+  "zero_init_proj": 0,
+  "ns": "quintic",
+  "evals": 10,
+  "eval_seqs": 256,
+  "final_eval_seqs": 2048,
+  "seed": 0,
+  "device": "auto",
+  "precision": "auto",
+  "compile": false,
+  "threads": 1,
+  "duty": 1.0,
+  "name": "up_softcap_s0",
+  "out": "/home/user/AboxRebuildcode/zoomtrain/results/llm",
+  "save": "",
+  "save_every_eval": 0,
+  "ckpt_every": 0,
+  "ckpt": "/home/user/AboxRebuildcode/zoomtrain/results/llm/up_softcap_s0.ckpt",
+  "resume": "",
+  "stop_step": 0
+ },
+ "schedule": "1:1",
+ "params": 5770496,
+ "evals": [
+  {
+   "frac": 0.0,
+   "flops": 0.0,
+   "tokens": 0,
+   "step": 0,
+   "train_time": 0.0,
+   "val_loss": 8.351714372634888
+  },
+  {
+   "frac": 0.1001895863717647,
+   "flops": 6812891873280.0,
+   "tokens": 184320,
+   "step": 45,
+   "train_time": 138.34488746800253,
+   "val_loss": 3.99080491065979
+  },
+  {
+   "frac": 0.2003791727435294,
+   "flops": 13625783746560.0,
+   "tokens": 368640,
+   "step": 90,
+   "train_time": 279.494652114,
+   "val_loss": 3.4181259274482727
+  },
+  {
+   "frac": 0.3005687591152941,
+   "flops": 20438675619840.0,
+   "tokens": 552960,
+   "step": 135,
+   "train_time": 446.03221862800456,
+   "val_loss": 3.1949127316474915
+  }
+ ],
+ "train": [
+  {
+   "step": 25,
+   "frac": 0.053434446064941174,
+   "k": 1,
+   "loss": 4.673539638519287,
+   "train_time": 77.09981123600028
+  },
+  {
+   "step": 50,
+   "frac": 0.10909532738258823,
+   "k": 1,
+   "loss": 4.141671180725098,
+   "train_time": 153.86066511600256
+  },
+  {
+   "step": 75,
+   "frac": 0.1647562087002353,
+   "k": 1,
+   "loss": 3.836479902267456,
+   "train_time": 231.95849995300068
+  },
+  {
+   "step": 100,
+   "frac": 0.22041709001788234,
+   "k": 1,
+   "loss": 3.840054750442505,
+   "train_time": 311.84623677700165
+  },
+  {
+   "step": 125,
+   "frac": 0.2760779713355294,
+   "k": 1,
+   "loss": 3.5747427940368652,
+   "train_time": 398.66713677400185
+  }
+ ],
+ "runtime": "device=cpu amp=None compile=False threads=1 pid=6122",
+ "world_size": 1,
+ "in_progress": true
+}
