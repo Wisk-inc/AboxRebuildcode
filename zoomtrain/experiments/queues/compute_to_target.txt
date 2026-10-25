@@ -1,0 +1,6 @@
+# Baseline (Muon, k=1) at 1.25x / 1.5x / 2x the main budget, each with its own full LR schedule,
+# to measure how much compute the baseline needs to match Zoom k=2-50% + 2x batch (2.685 +- 0.004).
+D=/home/user/data/tinystories/tok4k
+python3 llm/train.py --data $D --budget 8.5e13 --zoom 1 --optim muon --lr 1.6e-2 --name long_muon_base_1.25x_s0
+python3 llm/train.py --data $D --budget 1.02e14 --zoom 1 --optim muon --lr 1.6e-2 --evals 15 --name long_muon_base_1.5x_s0
+python3 llm/train.py --data $D --budget 1.36e14 --zoom 1 --optim muon --lr 1.6e-2 --evals 20 --name long_muon_base_2x_s0
