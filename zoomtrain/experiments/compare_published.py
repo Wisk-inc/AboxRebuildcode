@@ -29,19 +29,27 @@ import torch.nn.functional as F
 torch.set_flush_denormal(True)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "experiments"))
 from zoomtrain.models import ZoomGPT  # noqa: E402
 from zoomtrain.zoom import ZoomSchedule  # noqa: E402
 
 
-def load_stories(path, n):
-    texts = pq.read_table(path, columns=["text"]).column("text").to_pylist()
-    out = [t.strip() for t in texts if t and t.strip()]
-    return out[:n]
+def load_stories(path, n, clean_json=None):
+    texts = [t.strip() for t in pq.read_table(path, columns=["text"]).column("text").to_pylist()]
+    if clean_json:
+        idx = json.load(open(clean_json))["clean_indices"]
+        return [texts[i] for i in idx][:n]
+    return [t for t in texts if t][:n]
 
 
-def windows(ids, bos, ctx):
-    """[bos] + ids split so every id is predicted exactly once with <= ctx inputs."""
-    seq = [bos] + ids
+def l2c_text(s):
+    """llama2.c trained on TinyStories_all_data, where paragraphs are split by a single newline."""
+    return s.replace("\n\n", "\n")
+
+
+def windows(ids, bos, ctx, end=None):
+    """[bos] + ids (+ end) split so every target is predicted exactly once with <= ctx inputs."""
+    seq = [bos] + ids + ([end] if end is not None else [])
     out, s = [], 0
     while s < len(seq) - 1:
         chunk = seq[s:s + ctx + 1]          # ctx inputs, ctx targets
@@ -74,7 +82,7 @@ def score(forward_logits, chunks, batch=32, pad_id=0):
     return total, n_tok
 
 
-def eval_ours(spec, stories, threads):
+def eval_ours(spec, stories, threads, end_token=True):
     run_json, weights = spec.split(":")
     log = json.load(open(run_json))
     a = argparse.Namespace(**log["args"])
@@ -88,29 +96,36 @@ def eval_ours(spec, stories, threads):
     m.load_state_dict({k: v.float() for k, v in sd.items()})
     m.eval()
     eos = meta["eos_id"]
-    chunks = [c for s in stories for c in windows(tok.encode(s).ids, eos, a.seq)]
+    chunks = [c for s in stories
+              for c in windows(tok.encode(s).ids, eos, a.seq, eos if end_token else None)]
 
     def fwd(x, mask):
         return m.hidden(x, 1) @ m.emb.weight.t()
 
     nll, ntok = score(fwd, chunks)
     params = sum(p.numel() for p in m.parameters())
+    # intermediate checkpoints (--save_every_eval) are charged what they had seen at that point
+    tr_tokens, tr_flops, tr_secs = log.get("tokens"), log["args"]["budget"], log.get("train_time")
+    for e in log.get("evals", []):
+        if e.get("checkpoint") and os.path.abspath(e["checkpoint"]) == os.path.abspath(weights):
+            tr_tokens, tr_flops, tr_secs = e["tokens"], e["flops"], e["train_time"]
     return {"name": os.path.basename(weights).replace(".pt", ""), "family": "ours",
             "params": params, "params_non_embedding": params - m.emb.weight.numel(),
             "vocab": meta["vocab_size"], "context": a.seq, "nll_nats": nll, "tokens": ntok,
-            "train_flops": log["args"]["budget"], "train_tokens": log["tokens"],
-            "train_seconds_cpu": log["train_time"], "run": run_json}
+            "train_flops": tr_flops, "train_tokens": tr_tokens,
+            "train_seconds_cpu": tr_secs, "run": run_json}
 
 
-def eval_hf(repo, stories, ctx_cap, tokenizer_repo=None):
+def eval_hf(repo, stories, ctx_cap, tokenizer_repo=None, end_token=True):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(tokenizer_repo or repo)
     m = AutoModelForCausalLM.from_pretrained(repo, torch_dtype=torch.float32)
     m.eval()
     bos = tok.bos_token_id if tok.bos_token_id is not None else tok.eos_token_id
     ctx = min(getattr(m.config, "max_position_embeddings", 2048) or 2048, ctx_cap)
+    end = tok.eos_token_id if end_token else None
     chunks = [c for s in stories
-              for c in windows(tok(s, add_special_tokens=False)["input_ids"], bos, ctx)]
+              for c in windows(tok(s, add_special_tokens=False)["input_ids"], bos, ctx, end)]
 
     def fwd(x, mask):
         return m(input_ids=x, attention_mask=mask).logits
@@ -127,24 +142,58 @@ def eval_hf(repo, stories, ctx_cap, tokenizer_repo=None):
             "nll_nats": nll, "tokens": ntok}
 
 
+def eval_llama2c(pt_path, spm_path, stories, end_token=True):
+    import sentencepiece as spm
+    from llama2c import load
+    m, ck = load(pt_path)
+    sp = spm.SentencePieceProcessor(model_file=spm_path)
+    bos = sp.bos_id()
+    ctx = m.max_seq_len
+    # llama2.c packs [BOS] story [BOS] story ..., so the end of a story is predicting the next BOS
+    chunks = [c for s in stories
+              for c in windows(sp.encode(l2c_text(s)), bos, ctx, bos if end_token else None)]
+
+    def fwd(x, mask):
+        return m(x)
+
+    nll, ntok = score(fwd, chunks, batch=16, pad_id=0)
+    params = sum(p.numel() for p in m.parameters())
+    cfg = ck.get("config", {})
+    return {"name": os.path.basename(pt_path).replace(".pt", ""), "family": "published-llama2c",
+            "params": params, "params_non_embedding": params - m.tok_embeddings.weight.numel(),
+            "vocab": m.tok_embeddings.weight.shape[0], "context": ctx, "nll_nats": nll,
+            "tokens": ntok, "iter_num": ck.get("iter_num"),
+            "train_tokens": (ck.get("iter_num") or 0) * cfg.get("batch_size", 0)
+            * cfg.get("max_seq_len", 0) * cfg.get("gradient_accumulation_steps", 0)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--val_parquet", default="/home/user/data/tinystories/val.parquet")
     ap.add_argument("--stories", type=int, default=1000)
     ap.add_argument("--ours", nargs="*", default=[], help="run.json:weights.pt")
     ap.add_argument("--hf", nargs="*", default=[], help="HF repo ids (optionally repo@tokenizer_repo)")
+    ap.add_argument("--l2c", nargs="*", default=[], help="llama2.c checkpoint.pt:tokenizer.model")
+    ap.add_argument("--clean", default="", help="JSON with clean_indices (stories no model saw)")
+    ap.add_argument("--no_end", action="store_true", help="do not score the end-of-story token")
     ap.add_argument("--ctx_cap", type=int, default=1024)
     ap.add_argument("--threads", type=int, default=2)
     ap.add_argument("--out", default=os.path.join(ROOT, "results", "published", "compare.json"))
     args = ap.parse_args()
     torch.set_num_threads(args.threads)
-    stories = load_stories(args.val_parquet, args.stories)
+    stories = load_stories(args.val_parquet, args.stories, args.clean or None)
+    end = not args.no_end
     n_bytes = sum(len(s.encode("utf-8")) for s in stories)
     results = json.load(open(args.out)) if os.path.exists(args.out) else {}
-    results["_eval"] = {"stories": len(stories), "bytes": n_bytes, "source": args.val_parquet}
+    prev = results.get("_eval")
+    results["_eval"] = {"stories": len(stories), "bytes": n_bytes, "source": args.val_parquet,
+                        "clean_subset": bool(args.clean), "end_of_story_scored": end,
+                        "denominator": "UTF-8 bytes of the original V1 validation text"}
+    if prev and (prev["stories"], prev["bytes"]) != (len(stories), n_bytes):
+        results = {"_eval": results["_eval"]}         # different story set: start fresh
     for spec in args.ours:
         t0 = time.time()
-        r = eval_ours(spec, stories, args.threads)
+        r = eval_ours(spec, stories, args.threads, end)
         r["eval_seconds"] = time.time() - t0
         results[r["name"]] = r
         print(r["name"], flush=True)
@@ -152,13 +201,20 @@ def main():
         repo, _, tok_repo = spec.partition("@")
         t0 = time.time()
         try:
-            r = eval_hf(repo, stories, args.ctx_cap, tok_repo or None)
+            r = eval_hf(repo, stories, args.ctx_cap, tok_repo or None, end)
         except Exception as e:  # keep going; report the failure
             print(f"{repo}: FAILED {type(e).__name__}: {e}", flush=True)
             continue
         r["eval_seconds"] = time.time() - t0
         results[repo] = r
         print(repo, flush=True)
+    for spec in args.l2c:
+        pt, _, spm_path = spec.partition(":")
+        t0 = time.time()
+        r = eval_llama2c(pt, spm_path, stories, end)
+        r["eval_seconds"] = time.time() - t0
+        results[r["name"]] = r
+        print(r["name"], flush=True)
     for k, r in results.items():
         if k.startswith("_"):
             continue
