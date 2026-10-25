@@ -30,6 +30,8 @@ torch.set_flush_denormal(True)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "experiments"))
+sys.path.insert(0, os.path.join(ROOT, "llm"))
+from train import build_model  # noqa: E402
 
 
 def load_stories(path, n, clean_json=None):
