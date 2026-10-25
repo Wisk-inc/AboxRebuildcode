@@ -1,0 +1,128 @@
+{
+ "args": {
+  "data": "/home/user/data/tinystories/tok4k",
+  "zoom": "1",
+  "budget": 68000000000000.0,
+  "optim": "muon",
+  "state_bits": 32,
+  "param_dtype": "fp32",
+  "grad_ckpt": 0,
+  "accum": 1,
+  "d": 256,
+  "layers": 6,
+  "heads": 4,
+  "seq": 256,
+  "batch": 16,
+  "batch_scale_k": 0,
+  "batch_scale": 0.0,
+  "lr": 0.016,
+  "warmup": 0.05,
+  "sched": "cosine",
+  "decay_frac": 0.45,
+  "lr_restart": 0,
+  "mix_fine": 0.0,
+  "wd": 0.1,
+  "gated": 1,
+  "merge_mode": "",
+  "out_mode": "slot",
+  "rope_pos": "token",
+  "qk_norm": 0,
+  "mlp": "gelu",
+  "softcap": 0.0,
+  "zero_init_proj": 0,
+  "ns": "polar",
+  "evals": 10,
+  "eval_seqs": 256,
+  "final_eval_seqs": 2048,
+  "seed": 0,
+  "device": "auto",
+  "precision": "auto",
+  "compile": false,
+  "threads": 1,
+  "duty": 1.0,
+  "name": "up_polar_s0",
+  "out": "/home/user/AboxRebuildcode/zoomtrain/results/llm",
+  "save": "",
+  "save_every_eval": 0,
+  "ckpt_every": 0,
+  "ckpt": "/home/user/AboxRebuildcode/zoomtrain/results/llm/up_polar_s0.ckpt",
+  "resume": "",
+  "stop_step": 0
+ },
+ "schedule": "1:1",
+ "params": 5770496,
+ "evals": [
+  {
+   "frac": 0.0,
+   "flops": 0.0,
+   "tokens": 0,
+   "step": 0,
+   "train_time": 0.0,
+   "val_loss": 8.351752996444702
+  },
+  {
+   "frac": 0.1001895863717647,
+   "flops": 6812891873280.0,
+   "tokens": 184320,
+   "step": 45,
+   "train_time": 202.3770361549996,
+   "val_loss": 4.0498045682907104
+  },
+  {
+   "frac": 0.2003791727435294,
+   "flops": 13625783746560.0,
+   "tokens": 368640,
+   "step": 90,
+   "train_time": 403.11994605900145,
+   "val_loss": 3.4657866954803467
+  },
+  {
+   "frac": 0.3005687591152941,
+   "flops": 20438675619840.0,
+   "tokens": 552960,
+   "step": 135,
+   "train_time": 601.8149016180014,
+   "val_loss": 3.2281094789505005
+  }
+ ],
+ "train": [
+  {
+   "step": 25,
+   "frac": 0.053434446064941174,
+   "k": 1,
+   "loss": 4.703121185302734,
+   "train_time": 113.93799815399507
+  },
+  {
+   "step": 50,
+   "frac": 0.10909532738258823,
+   "k": 1,
+   "loss": 4.193731784820557,
+   "train_time": 225.23306065900215
+  },
+  {
+   "step": 75,
+   "frac": 0.1647562087002353,
+   "k": 1,
+   "loss": 3.8997459411621094,
+   "train_time": 339.0495024740012
+  },
+  {
+   "step": 100,
+   "frac": 0.22041709001788234,
+   "k": 1,
+   "loss": 3.880449056625366,
+   "train_time": 445.8545769150005
+  },
+  {
+   "step": 125,
+   "frac": 0.2760779713355294,
+   "k": 1,
+   "loss": 3.6299850940704346,
+   "train_time": 556.4138298100006
+  }
+ ],
+ "runtime": "device=cpu amp=None compile=False threads=1 pid=8204",
+ "world_size": 1,
+ "in_progress": true
+}
