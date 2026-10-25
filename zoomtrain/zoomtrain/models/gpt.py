@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
+from ..losses import chunked_cross_entropy
 from ..zoom import SlotMerge, SlotUnmerge
 
 
@@ -78,13 +79,14 @@ class ZoomGPT(nn.Module):
     def __init__(self, vocab, d=256, n_layer=6, n_head=4, zoom_ks=(),
                  gated=True, out_mode="slot", rope_pos="token", qk_norm=False,
                  merge_mode=None, grad_ckpt=False, mlp="gelu", softcap=0.0,
-                 zero_init_proj=False):
+                 zero_init_proj=False, ce_chunk=0):
         super().__init__()
         assert out_mode in ("slot", "bag")
         assert rope_pos in ("token", "patch")
         self.d, self.n_layer, self.vocab = d, n_layer, vocab
         self.out_mode, self.rope_pos, self.grad_ckpt = out_mode, rope_pos, grad_ckpt
         self.softcap = softcap
+        self.ce_chunk = ce_chunk
         self.head_dim = d // n_head
         self.emb = nn.Embedding(vocab, d)
         self.blocks = nn.ModuleList(Block(d, n_head, qk_norm=qk_norm, mlp=mlp)
@@ -146,10 +148,17 @@ class ZoomGPT(nn.Module):
         B, T = idx.shape
         h = self.hidden(idx, k)                      # (B, T/k, d)
         if k == 1:
+            if self.ce_chunk:
+                return chunked_cross_entropy(h, self.emb.weight, targets, self.ce_chunk,
+                                             softcap=self.softcap)
             return F.cross_entropy(self.logits(h).view(-1, self.vocab), targets.reshape(-1))
         tgt = targets.view(B, T // k, k)
         if self.out_mode == "slot":
-            z = self.logits(self.unmerge[str(k)](h))  # (B, T/k, k, V)
+            hs = self.unmerge[str(k)](h)             # (B, T/k, k, d)
+            if self.ce_chunk:
+                return chunked_cross_entropy(hs, self.emb.weight, tgt, self.ce_chunk,
+                                             softcap=self.softcap)
+            z = self.logits(hs)                      # (B, T/k, k, V)
             return F.cross_entropy(z.reshape(-1, self.vocab), tgt.reshape(-1))
         logp = F.log_softmax(self.logits(h), dim=-1)   # (B, T/k, V), one dist per group
         return -logp.gather(-1, tgt).mean()

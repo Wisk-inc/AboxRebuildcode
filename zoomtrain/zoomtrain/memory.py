@@ -102,6 +102,43 @@ def scoreboard(params=5e9, d=0, vocab=32000, seq=2048, gpu_gb=96.0, peak_tflops=
     return {"layers": L, "params": N, "d": d, "rows": rows}
 
 
+def finetune_table(N, d, L, seq, micro, gpu_gb, lora_r=16, overhead_gb=2.0, act_factor=1.0):
+    """Memory for fine-tuning an N-param base model on one GPU: full FT vs LoRA vs QLoRA.
+
+    LoRA params ~ 2 * r * (sum over the 7 projections of (d_in + d_out)) per layer
+    ~ r * L * (4*2d + 3*(d + 2.7d)) for a Llama block; adapters keep fp32 state.
+    """
+    lora_params = lora_r * L * (4 * 2 * d + 3 * (d + 2.7 * d))
+    act = 34 * d * L * seq * micro * act_factor
+    act_ckpt = (2 * d * L + 34 * d) * seq * micro * act_factor
+    rows = []
+    for name, wbytes, grads, state, trainable in [
+        ("full fine-tune: fp32 master + AdamW (standard)", 4 + 2, 4 * N, 8 * N, N),
+        ("full fine-tune: bf16 weights(SR) + 8-bit Muon", 2, 2 * N, 1.1 * N, N),
+        (f"LoRA r={lora_r}: bf16 base frozen + fp32 adapters/AdamW", 2, 4 * lora_params,
+         8 * lora_params, lora_params),
+        (f"QLoRA r={lora_r}: int4 base (zoomtrain.qweights) + adapters", 0.53, 4 * lora_params,
+         8 * lora_params, lora_params),
+    ]:
+        static = wbytes * N + grads + state + 4 * lora_params * (1 if "LoRA" in name else 0)
+        for ck, a in (("no", act), ("yes", act_ckpt)):
+            total = static + a + overhead_gb * GB
+            rows.append({"config": name, "ckpt": ck, "trainable": trainable,
+                         "static_gb": static / GB, "act_gb": a / GB, "total_gb": total / GB,
+                         "fits": total <= gpu_gb * GB})
+    return rows
+
+
+def fmt_finetune(rows, N, gpu_gb):
+    hdr = f"fine-tuning a {N/1e9:.1f}B base model on one {gpu_gb:.0f} GB GPU"
+    out = [hdr, f"{'configuration':60s} {'act.ckpt':>8s} {'trainable':>10s} {'static':>7s} {'act':>6s} {'total':>6s} fit"]
+    out.append("-" * len(out[1]))
+    for r in rows:
+        out.append(f"{r['config']:60s} {r['ckpt']:>8s} {r['trainable']/1e6:9.1f}M {r['static_gb']:6.1f}G "
+                   f"{r['act_gb']:5.1f}G {r['total_gb']:5.1f}G {'yes' if r['fits'] else 'NO'}")
+    return "\n".join(out)
+
+
 def storage_table(N, tokens, bits_per_token=5.97):
     """Disk/RAM sizes for weights, resumable checkpoints and the token corpus."""
     return [
@@ -157,7 +194,17 @@ def main():
     ap.add_argument("--act_factor", type=float, default=1.0,
                     help="activation memory vs the 34*T*d formula (1.6 for HF Llama code)")
     ap.add_argument("--markdown", action="store_true")
+    ap.add_argument("--finetune", action="store_true",
+                    help="print the fine-tuning memory table (full / LoRA / QLoRA) instead")
+    ap.add_argument("--micro", type=int, default=4, help="micro-batch for the fine-tune table")
+    ap.add_argument("--lora_r", type=int, default=16)
     a = ap.parse_args()
+    if a.finetune:
+        d = a.d or default_width(a.params)
+        L, N = model_dims(a.params, d, a.vocab)
+        print(fmt_finetune(finetune_table(N, d, L, a.seq, a.micro, a.gpu_gb, a.lora_r,
+                                          act_factor=a.act_factor), N, a.gpu_gb))
+        return
     sb = scoreboard(a.params, a.d, a.vocab, a.seq, a.gpu_gb, a.peak_tflops, a.mfu, a.tokens,
                     a.fp8_speedup, a.muon_flops, a.power_tput, act_factor=a.act_factor)
     print(fmt(sb, a.tokens, a.markdown))

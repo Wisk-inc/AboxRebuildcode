@@ -13,6 +13,7 @@ import torch
 torch.set_flush_denormal(True)  # before any parallel op (see zoomtrain.device)
 
 import argparse  # noqa: E402
+from contextlib import nullcontext  # noqa: E402
 import json  # noqa: E402
 import math  # noqa: E402
 import os  # noqa: E402
@@ -164,6 +165,17 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     if args.save:
         os.makedirs(os.path.dirname(os.path.abspath(args.save)), exist_ok=True)
+    # multi-GPU / multi-process via torchrun: every rank trains on its own data shard,
+    # DDP averages gradients, so the global batch is batch x WORLD_SIZE
+    world = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    if world > 1:
+        import torch.distributed as dist
+        dist.init_process_group("nccl" if torch.cuda.is_available() else "gloo")
+        if torch.cuda.is_available():
+            args.device = f"cuda:{int(os.environ.get('LOCAL_RANK', '0'))}"
+            torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
+    is_main = rank == 0
     rt = setup_runtime(args.device, args.precision, args.compile, args.threads, args.seed)
     if rt.device.type == "cpu":
         rt.amp_dtype = None  # fp32 on CPU (no bf16 matmul units on this class of CPU)
@@ -179,15 +191,23 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     opt = build_optimizer(model, args.optim, args.lr, args.wd, state_bits=args.state_bits,
                           ns=args.ns)
-    fwd = maybe_compile(model, rt)
-    stream = ChunkStream(open_tokens(args.data, "train"), args.seq, args.seed)
+    ddp = None
+    if world > 1:
+        from torch.nn.parallel import DistributedDataParallel as DDP
+        ddp = DDP(model, device_ids=[rt.device.index] if rt.device.type == "cuda" else None,
+                  find_unused_parameters=bool(sched.ks))   # merge gates idle at other k
+        fwd = maybe_compile(ddp, rt)
+    else:
+        fwd = maybe_compile(model, rt)
+    stream = ChunkStream(open_tokens(args.data, "train"), args.seq, args.seed + rank)
     val = open_tokens(args.data, "val")
     limiter = DutyCycleLimiter(args.duty, rt.device)
 
     log = {"args": vars(args), "schedule": repr(sched), "params": n_params, "evals": [],
-           "train": [], "runtime": describe(rt)}
-    print(f"[{args.name}] params={n_params/1e6:.2f}M zoom={sched} optim={args.optim} "
-          f"budget={args.budget:.3e} {describe(rt)}", flush=True)
+           "train": [], "runtime": describe(rt), "world_size": world}
+    if is_main:
+        print(f"[{args.name}] params={n_params/1e6:.2f}M zoom={sched} optim={args.optim} "
+              f"budget={args.budget:.3e} world={world} {describe(rt)}", flush=True)
 
     flops, tokens, step, train_time = 0.0, 0, 0, 0.0
     next_eval = 0.0
@@ -206,6 +226,8 @@ def main():
         print(f"  resumed at step {step} (frac={flops/args.budget:.3f})", flush=True)
     while True:
         frac = flops / args.budget
+        if frac >= next_eval - 1e-12 and not is_main:
+            next_eval += 1.0 / args.evals             # other ranks skip evaluation
         if frac >= next_eval - 1e-12:
             vl = evaluate(model, val, args, rt, args.eval_seqs)
             log["evals"].append({"frac": frac, "flops": flops, "tokens": tokens, "step": step,
@@ -235,12 +257,16 @@ def main():
                             sched=args.sched, decay_frac=args.decay_frac)
         t0 = time.perf_counter()
         opt.zero_grad(set_to_none=True)
-        for _ in range(args.accum):
+        for a in range(args.accum):
             chunk = rt.to(stream.next(batch))
             x, y = chunk[:, :args.seq], chunk[:, k:args.seq + k]
-            with rt.autocast():
+            sync = ddp.no_sync() if (ddp is not None and a < args.accum - 1) else nullcontext()
+            with sync, rt.autocast():
                 loss = fwd(x, y, k=k) / args.accum
-            rt.backward(loss, opt, model.parameters(), step=False)
+                if ddp is not None and a < args.accum - 1:
+                    rt.backward(loss, opt, model.parameters(), step=False)
+            if ddp is None or a == args.accum - 1:
+                rt.backward(loss, opt, model.parameters(), step=False)
         rt.step(opt, model.parameters())
         loss = loss * args.accum
         if rt.device.type == "cuda":
@@ -248,8 +274,8 @@ def main():
         dt = time.perf_counter() - t0
         train_time += dt
         limiter(dt)
-        flops += model.flops_per_step(batch, args.seq, k) * args.accum
-        tokens += batch * args.seq * args.accum
+        flops += model.flops_per_step(batch, args.seq, k) * args.accum * world
+        tokens += batch * args.seq * args.accum * world
         step += 1
         if step % 25 == 0:
             lv = loss.item()
@@ -258,7 +284,7 @@ def main():
             if not math.isfinite(lv):
                 print("non-finite loss, abort", flush=True)
                 break
-        if args.ckpt_every and step % args.ckpt_every == 0:
+        if args.ckpt_every and step % args.ckpt_every == 0 and is_main:
             save_ckpt(args.ckpt, model, opt, stream,
                       {"flops": flops, "tokens": tokens, "step": step, "train_time": train_time,
                        "next_eval": next_eval}, log, mix_rng)
@@ -270,6 +296,12 @@ def main():
                            "train_time": train_time, "next_eval": next_eval}, log, mix_rng)
             return
 
+    if world > 1:
+        import torch.distributed as dist
+        dist.barrier()
+        if not is_main:
+            dist.destroy_process_group()
+            return
     log.pop("in_progress", None)
     log["final_val_loss"] = evaluate(model, val, args, rt, args.final_eval_seqs)
     log["optimizer_state_bytes"] = state_bytes(opt)
@@ -285,6 +317,8 @@ def main():
         torch.save(model.state_dict(), args.save)
     print(f"[{args.name}] final val={log['final_val_loss']:.4f} tokens={tokens/1e6:.1f}M "
           f"steps={step} train_time={train_time:.0f}s", flush=True)
+    if world > 1:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

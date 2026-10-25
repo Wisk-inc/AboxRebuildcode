@@ -1,0 +1,101 @@
+{
+ "args": {
+  "model": "HuggingFaceTB/SmolLM2-135M",
+  "dataset": "databricks/databricks-dolly-15k",
+  "config": "",
+  "split": "train",
+  "jsonl": "",
+  "prompt_col": "prompt",
+  "response_col": "response",
+  "messages_col": "messages",
+  "max_examples": 400,
+  "eval_frac": 0.05,
+  "seq": 256,
+  "epochs": 1.0,
+  "max_steps": 40,
+  "batch": 2,
+  "accum": 2,
+  "lr": 0.0002,
+  "warmup": 0.03,
+  "sched": "wsd",
+  "wd": 0.0,
+  "optim": "muon",
+  "muon_lora": 0,
+  "ns": "quintic",
+  "state_bits": 8,
+  "param_dtype": "auto",
+  "lora": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.0,
+  "lora_targets": "",
+  "rslora": 0,
+  "quant": 4,
+  "grad_ckpt": 0,
+  "ce_chunk": 2048,
+  "eval_every": 20,
+  "device": "auto",
+  "precision": "auto",
+  "threads": 1,
+  "duty": 1.0,
+  "seed": 0,
+  "out": "results/finetune/smollm135m_dolly_qlora4",
+  "save_merged": 0
+ },
+ "report": {
+  "quant": {
+   "bits": 4,
+   "block": 64,
+   "modules_quantized": 212,
+   "bytes_before": 538060288,
+   "bytes_after": 86623744,
+   "ratio": 6.211464237796048
+  },
+  "lora": {
+   "wrapped": 210,
+   "r": 16,
+   "alpha": 32,
+   "trainable_params": 4884480,
+   "total_params": 4919616,
+   "trainable_frac": 0.992857979159349
+  }
+ },
+ "trainable_params": 4884480,
+ "total_params": 4919616,
+ "model_bytes_before_quant": 538060288,
+ "model_bytes": 106161664,
+ "optimizer_state_bytes": 0,
+ "train_windows": 164,
+ "eval_windows": 8,
+ "examples": 355,
+ "steps": 40,
+ "world_size": 1,
+ "runtime": "device=cpu amp=None compile=False threads=1 pid=4772",
+ "evals": [
+  {
+   "step": 0,
+   "eval_loss": 3.3892809047023262
+  },
+  {
+   "step": 20,
+   "eval_loss": 3.2188984781455687,
+   "time": 250.03663840199897
+  }
+ ],
+ "train": [
+  {
+   "step": 1,
+   "loss": 2.9592173099517822,
+   "time": 14.567963505999614
+  },
+  {
+   "step": 10,
+   "loss": 2.9036312103271484,
+   "time": 123.83815511599823
+  },
+  {
+   "step": 20,
+   "loss": 3.1309874057769775,
+   "time": 250.03663840199897
+  }
+ ]
+}

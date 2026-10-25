@@ -18,6 +18,7 @@ Low-memory options (see zoomtrain.lowmem):
 import math
 
 import torch
+import torch.nn as nn
 from torch.optim import Optimizer
 
 from .lowmem import QState, write_param
@@ -180,20 +181,44 @@ class CombinedOptimizer:
             o.load_state_dict(s)
 
 
+def default_muon_params(model, include_lora=False):
+    """Muon candidates for an arbitrary model: trainable 2-D weights of nn.Linear
+    layers that are not embeddings or the output head (and not LoRA adapters
+    unless include_lora). Works for HuggingFace causal LMs."""
+    skip = {id(m.weight) for m in model.modules() if isinstance(m, nn.Embedding)}
+    get_out = getattr(model, "get_output_embeddings", None)
+    if callable(get_out):
+        out = get_out()
+        if out is not None and hasattr(out, "weight"):
+            skip.add(id(out.weight))
+    params = []
+    for name, m in model.named_modules():
+        if isinstance(m, nn.Linear) and m.weight.requires_grad and m.weight.dim() == 2 \
+                and id(m.weight) not in skip and "lora_" not in name \
+                and not name.split(".")[-1] in ("lm_head", "head", "output", "score"):
+            params.append(m.weight)
+        elif include_lora and type(m).__name__ == "LoRALinear":
+            params += [m.lora_A, m.lora_B]
+    return params
+
+
 def build_optimizer(model, name, lr, weight_decay, betas=(0.9, 0.95), fused=None,
-                    state_bits=32, ns="quintic"):
+                    state_bits=32, ns="quintic", muon_lora=False):
     """name: 'adamw' or 'muon'.
 
-    Muon takes the 2-D weights the model lists in `model.muon_params()`
-    (hidden matrices inside the blocks). Embeddings, output head, norms, gates
-    and biases stay on AdamW, as recommended for Muon.
+    Muon takes the 2-D weights the model lists in `model.muon_params()`, or,
+    for any other model (e.g. a HuggingFace LM), the hidden nn.Linear weights
+    found by `default_muon_params`. Embeddings, output head, norms, gates,
+    biases and (by default) LoRA adapters stay on AdamW.
 
     state_bits=8, or bf16 parameters, switch AdamW to AdamWLowMem (8-bit
     moments / stochastic-rounding writes); otherwise torch's fused AdamW is used.
     """
     muon_ids = set()
     if name == "muon":
-        muon_ids = {id(p) for p in model.muon_params()}
+        cands = model.muon_params() if hasattr(model, "muon_params") \
+            else default_muon_params(model, include_lora=muon_lora)
+        muon_ids = {id(p) for p in cands if p.requires_grad}
     muon_p, decay, no_decay = [], [], []
     for n, p in model.named_parameters():
         if not p.requires_grad:
@@ -206,7 +231,8 @@ def build_optimizer(model, name, lr, weight_decay, betas=(0.9, 0.95), fused=None
             no_decay.append(p)
     groups = [{"params": decay, "weight_decay": weight_decay},
               {"params": no_decay, "weight_decay": 0.0}]
-    bf16_params = next(model.parameters()).dtype == torch.bfloat16
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    bf16_params = any(p.dtype == torch.bfloat16 for p in trainable)
     if state_bits == 8 or bf16_params:
         adamw = AdamWLowMem(groups, lr=lr, betas=betas, eps=1e-8, state_bits=state_bits)
     else:
