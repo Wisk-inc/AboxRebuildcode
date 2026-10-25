@@ -24,6 +24,7 @@ dependencies = ["torch>=2.2", "numpy>=1.24", "zstandard>=0.21"]
 
 [project.optional-dependencies]
 data = ["tokenizers", "pyarrow", "huggingface_hub"]
+finetune = ["transformers>=4.40", "datasets", "sentencepiece"]
 weather = ["xarray", "zarr", "fsspec", "aiohttp"]
 test = ["pytest"]
 

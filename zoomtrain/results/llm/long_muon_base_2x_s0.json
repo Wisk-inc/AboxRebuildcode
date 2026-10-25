@@ -469,5 +469,11 @@
   }
  ],
  "runtime": "device=cpu amp=None compile=False threads=1 pid=4415",
- "in_progress": true
+ "final_val_loss": 2.460663042962551,
+ "optimizer_state_bytes": 27289656,
+ "param_bytes": 23081984,
+ "train_time": 2398.950077385005,
+ "tokens": 3682304,
+ "steps": 899,
+ "data_epochs": 0.03153590651480438
 }

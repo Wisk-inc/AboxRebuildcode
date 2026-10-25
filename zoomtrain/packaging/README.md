@@ -26,6 +26,9 @@ pip install bantamtrain
 | `bantamtrain.device` | runtime: flush-to-zero on CPU, AMP, TF32, compile, batch finder, duty-cycle limiter | the FTZ fix made affected CPU matmuls up to 23x faster |
 | `bantamtrain.memory` | memory / time scoreboard for single-GPU training | `python -m bantamtrain.memory` |
 | `bantamtrain.models` | `ZoomGPT` (decoder LM) and `ZoomViT` (weather grid forecaster) with every option above | |
+| `bantamtrain.lora` | LoRA / QLoRA adapters on `nn.Linear` or int8 / NF4 / int4 `QLinear` bases; merge, adapter-only state dicts | |
+| `bantamtrain.losses` | chunked cross-entropy: never materializes the tokens x vocab logits | |
+| `bantamtrain.finetune` | `python -m bantamtrain.finetune`: SFT of any HuggingFace causal LM (chat templates, response-only loss, best-fit packing), Muon + 8-bit state, torchrun DDP | SmolLM2-135M QLoRA on Dolly: held-out loss 3.39 -> 3.18 in 40 CPU steps |
 
 ## Quick start
 
@@ -56,6 +59,22 @@ weightpack.save("model.zwpk", model.state_dict(), bits=8)    # int8 checkpoint f
 qweights.quantize_model(model, bits=4)                        # int4 weights in RAM, float compute
 ```
 
+Fine-tune a HuggingFace model (LoRA on an int8 / NF4 base, Muon, 8-bit state):
+
+```bash
+pip install bantamtrain[finetune]
+python -m bantamtrain.finetune --model HuggingFaceTB/SmolLM2-135M \
+    --dataset databricks/databricks-dolly-15k --max_examples 2000 \
+    --lora 16 --quant 8 --optim muon --state_bits 8 --epochs 1 --out runs/dolly
+torchrun --nproc_per_node 4 -m bantamtrain.finetune ...        # multi-GPU
+python -m bantamtrain.memory --finetune --params 7e9 --gpu_gb 24  # will it fit?
+```
+
+Measured on SmolLM2-135M before training (100 held-out Dolly examples): int8
+base costs +0.003 loss (558 -> 200 MB), NF4 linears with int8 embeddings
++0.18 (140 MB). Use int8 for small bases; NF4 for 7B+ where the literature
+finds it near-lossless.
+
 Size a run on one GPU:
 
 ```bash
@@ -64,9 +83,9 @@ python -m bantamtrain.memory --params 5e9 --gpu_gb 96 --tokens 1e11
 
 ## Honest notes
 
-- Muon, 8-bit optimizer state, stochastic-rounding bf16 and blockwise weight
-  quantization are published techniques re-implemented here; Zoom Training and
-  the storage formats are this project's own.
+- Muon, 8-bit optimizer state, stochastic-rounding bf16, LoRA/QLoRA/NF4 and
+  blockwise weight quantization are published techniques re-implemented here;
+  Zoom Training and the storage formats are this project's own.
 - All quality numbers above were measured on a 5.8M-parameter model; gains at
   larger scale are expected to be smaller for the optimizer and are untested for
   Zoom. Nothing has been run on a GPU yet.
