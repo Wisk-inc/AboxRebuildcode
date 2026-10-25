@@ -1,0 +1,14 @@
+# Upgrade ablations, FLOP-matched at 6.8e13, Muon lr 1.6e-2, seed 0. Baseline: main_muon_base 2.737 +- 0.011.
+D=/home/user/data/tinystories/tok4k
+Z=2:0.5,1:0.5
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr 1.6e-2 --sched wsd --name up_wsd_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr 1.6e-2 --mlp relu2 --name up_relu2_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr 1.6e-2 --softcap 15 --name up_softcap_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr 1.6e-2 --zero_init_proj 1 --name up_zeroinit_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr 1.6e-2 --ns polar --name up_polar_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr 1.6e-2 --qk_norm 1 --name up_qknorm_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom $Z --optim muon --lr 1.6e-2 --batch_scale 4 --name up_zoom_bs4_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.33,1:0.67 --optim muon --lr 1.6e-2 --batch_scale 2 --name up_zoom_2-33_bs2_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.65,1:0.35 --optim muon --lr 1.6e-2 --batch_scale 2 --name up_zoom_2-65_bs2_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr 1.6e-2 --sched wsd --mlp relu2 --softcap 15 --zero_init_proj 1 --ns polar --name up_bundle_base_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom $Z --optim muon --lr 1.6e-2 --batch_scale 2 --sched wsd --mlp relu2 --softcap 15 --zero_init_proj 1 --ns polar --name up_bundle_zoom_s0

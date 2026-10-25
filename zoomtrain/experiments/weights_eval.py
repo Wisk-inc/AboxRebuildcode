@@ -23,15 +23,11 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "llm"))
 from zoomtrain import qweights, weightpack  # noqa: E402
 from zoomtrain.device import setup_runtime  # noqa: E402
-from zoomtrain.models import ZoomGPT  # noqa: E402
-from zoomtrain.zoom import ZoomSchedule  # noqa: E402
-from train import evaluate, open_tokens  # noqa: E402
+from train import build_model, evaluate, open_tokens  # noqa: E402
 
 
 def build(a, vocab):
-    sched = ZoomSchedule.parse(a.zoom)
-    return ZoomGPT(vocab, a.d, a.layers, a.heads, zoom_ks=sched.ks, gated=bool(a.gated),
-                   out_mode=a.out_mode, rope_pos=a.rope_pos, qk_norm=bool(a.qk_norm))
+    return build_model(a, vocab)
 
 
 def main():

@@ -30,8 +30,6 @@ torch.set_flush_denormal(True)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "experiments"))
-from zoomtrain.models import ZoomGPT  # noqa: E402
-from zoomtrain.zoom import ZoomSchedule  # noqa: E402
 
 
 def load_stories(path, n, clean_json=None):
@@ -89,9 +87,7 @@ def eval_ours(spec, stories, threads, end_token=True):
     from tokenizers import Tokenizer
     tok = Tokenizer.from_file(os.path.join(a.data, "tokenizer.json"))
     meta = json.load(open(os.path.join(a.data, "meta.json")))
-    m = ZoomGPT(meta["vocab_size"], a.d, a.layers, a.heads,
-                zoom_ks=ZoomSchedule.parse(a.zoom).ks, gated=bool(a.gated),
-                out_mode=a.out_mode, rope_pos=a.rope_pos, qk_norm=bool(a.qk_norm))
+    m = build_model(a, meta["vocab_size"])
     sd = torch.load(weights, map_location="cpu")
     m.load_state_dict({k: v.float() for k, v in sd.items()})
     m.eval()
@@ -100,7 +96,7 @@ def eval_ours(spec, stories, threads, end_token=True):
               for c in windows(tok.encode(s).ids, eos, a.seq, eos if end_token else None)]
 
     def fwd(x, mask):
-        return m.hidden(x, 1) @ m.emb.weight.t()
+        return m.logits(m.hidden(x, 1))
 
     nll, ntok = score(fwd, chunks)
     params = sum(p.numel() for p in m.parameters())

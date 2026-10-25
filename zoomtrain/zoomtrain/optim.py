@@ -23,18 +23,31 @@ from torch.optim import Optimizer
 from .lowmem import QState, write_param
 
 NS_COEFFS = (3.4445, -4.7750, 2.0315)
+# Polar Express (Amsel et al., 2025): per-step minimax coefficients, same matmul
+# cost as the quintic iteration; a, b, c of every tuple but the last are divided
+# by 1.01, 1.01^3, 1.01^5 for safety, and the input is normalized with a 1.01 margin.
+_PE = [(8.28721201814563, -23.595886519098837, 17.300387312530933),
+       (4.107059111542203, -2.9478499167379106, 0.5448431082926601),
+       (3.9486908534822946, -2.908902115962949, 0.5518191394370137),
+       (3.3184196573706015, -2.488488024314874, 0.51004894012372),
+       (2.300652019954817, -1.6689039845747493, 0.4188073119525673)]
+POLAR_COEFFS = [(a / 1.01, b / 1.01 ** 3, c / 1.01 ** 5) for a, b, c in _PE[:-1]] + [_PE[-1]]
 
 
 @torch.no_grad()
-def newton_schulz(G, steps=5, eps=1e-7):
+def newton_schulz(G, steps=5, eps=1e-7, variant="quintic"):
     """Approximate U V^T of G = U S V^T (batched over leading dims)."""
-    a, b, c = NS_COEFFS
     X = G.to(torch.bfloat16 if G.is_cuda else torch.float32)
     transpose = X.size(-2) > X.size(-1)
     if transpose:
         X = X.mT
-    X = X / (X.norm(dim=(-2, -1), keepdim=True) + eps)
-    for _ in range(steps):
+    if variant == "polar":
+        coeffs = (POLAR_COEFFS + [POLAR_COEFFS[-1]] * steps)[:steps]
+        X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.01 + eps)
+    else:
+        coeffs = [NS_COEFFS] * steps
+        X = X / (X.norm(dim=(-2, -1), keepdim=True) + eps)
+    for a, b, c in coeffs:
         A = X @ X.mT
         B = b * A + c * (A @ A)
         X = a * X + B @ X
@@ -51,11 +64,13 @@ class Muon(Optimizer):
     """
 
     def __init__(self, params, lr=1e-3, momentum=0.95, nesterov=True, ns_steps=5,
-                 weight_decay=0.0, scale="moonlight", state_bits=32, stochastic=True):
+                 weight_decay=0.0, scale="moonlight", state_bits=32, stochastic=True,
+                 ns="quintic"):
         assert scale in ("moonlight", "jordan") and state_bits in (32, 8)
+        assert ns in ("quintic", "polar")
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps,
                         weight_decay=weight_decay, scale=scale, state_bits=state_bits,
-                        stochastic=stochastic)
+                        stochastic=stochastic, ns=ns)
         super().__init__(params, defaults)
 
     @staticmethod
@@ -84,7 +99,8 @@ class Muon(Optimizer):
                 g = g.lerp(buf, group["momentum"]) if group["nesterov"] else buf
                 split = getattr(p, "muon_split", 1)
                 rows, cols = g.shape[0] // split, g.shape[1]
-                u = newton_schulz(g.reshape(split, rows, cols), group["ns_steps"])
+                u = newton_schulz(g.reshape(split, rows, cols), group["ns_steps"],
+                                  variant=group["ns"])
                 u = u.reshape(p.shape) * self._scale(rows, cols, group["scale"])
                 new = p.float() * (1 - group["lr"] * group["weight_decay"]) - group["lr"] * u
                 write_param(p, new, group["stochastic"])
@@ -165,7 +181,7 @@ class CombinedOptimizer:
 
 
 def build_optimizer(model, name, lr, weight_decay, betas=(0.9, 0.95), fused=None,
-                    state_bits=32):
+                    state_bits=32, ns="quintic"):
     """name: 'adamw' or 'muon'.
 
     Muon takes the 2-D weights the model lists in `model.muon_params()`
@@ -200,6 +216,6 @@ def build_optimizer(model, name, lr, weight_decay, betas=(0.9, 0.95), fused=None
         if fused:
             kw["fused"] = True
         adamw = torch.optim.AdamW(groups, lr=lr, betas=betas, eps=1e-8, **kw)
-    muon = (Muon(muon_p, lr=lr, weight_decay=weight_decay, state_bits=state_bits)
+    muon = (Muon(muon_p, lr=lr, weight_decay=weight_decay, state_bits=state_bits, ns=ns)
             if muon_p else None)
     return CombinedOptimizer([adamw, muon])

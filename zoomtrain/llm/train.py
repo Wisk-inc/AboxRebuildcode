@@ -76,6 +76,30 @@ def evaluate(model, val, args, rt, n_seqs):
     return tot / n
 
 
+MODEL_FIELDS = ("d", "layers", "heads", "zoom", "gated", "out_mode", "rope_pos", "qk_norm",
+                "merge_mode", "mlp", "softcap", "zero_init_proj")
+
+
+def build_model(a, vocab, grad_ckpt=False):
+    """ZoomGPT from an argparse namespace / run-log args (shared with the eval scripts)."""
+    g = lambda k, default: getattr(a, k, default) if not isinstance(a, dict) else a.get(k, default)  # noqa: E731
+    return ZoomGPT(vocab, g("d", 256), g("layers", 6), g("heads", 4),
+                   zoom_ks=ZoomSchedule.parse(g("zoom", "1")).ks, gated=bool(g("gated", 1)),
+                   out_mode=g("out_mode", "slot"), rope_pos=g("rope_pos", "token"),
+                   qk_norm=bool(g("qk_norm", 0)), merge_mode=g("merge_mode", "") or None,
+                   grad_ckpt=grad_ckpt, mlp=g("mlp", "gelu"), softcap=float(g("softcap", 0.0)),
+                   zero_init_proj=bool(g("zero_init_proj", 0)))
+
+
+def save_ckpt(path, model, opt, stream, progress, log, mix_rng):
+    tmp = path + ".tmp"
+    torch.save({"model": model.state_dict(), "opt": opt.state_dict(),
+                "stream": {"pos": stream.pos, "epochs": stream.epochs},
+                "progress": progress, "log": log, "rng": torch.get_rng_state(),
+                "mix_rng": mix_rng.bit_generator.state, "args": log["args"]}, tmp)
+    os.replace(tmp, path)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="dir with train/val .bin or .tokpack")
@@ -95,8 +119,12 @@ def main():
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--batch_scale_k", type=int, default=0,
                     help="use batch*k sequences at zoom k (constant positions per step)")
+    ap.add_argument("--batch_scale", type=float, default=0.0,
+                    help="multiply the batch by this while zoomed (k>1); overrides --batch_scale_k")
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--warmup", type=float, default=0.05)
+    ap.add_argument("--sched", default="cosine", choices=["cosine", "wsd"])
+    ap.add_argument("--decay_frac", type=float, default=0.45, help="wsd: fraction spent decaying")
     ap.add_argument("--lr_restart", type=int, default=0,
                     help="restart warmup+cosine at every zoom stage switch")
     ap.add_argument("--mix_fine", type=float, default=0.0,
@@ -107,6 +135,10 @@ def main():
     ap.add_argument("--out_mode", default="slot", choices=["slot", "bag"])
     ap.add_argument("--rope_pos", default="token", choices=["token", "patch"])
     ap.add_argument("--qk_norm", type=int, default=0)
+    ap.add_argument("--mlp", default="gelu", choices=["gelu", "relu2"])
+    ap.add_argument("--softcap", type=float, default=0.0, help="logit softcap (0 = off; 15 typical)")
+    ap.add_argument("--zero_init_proj", type=int, default=0)
+    ap.add_argument("--ns", default="quintic", choices=["quintic", "polar"], help="Muon orthogonalizer")
     ap.add_argument("--evals", type=int, default=10)
     ap.add_argument("--eval_seqs", type=int, default=256)
     ap.add_argument("--final_eval_seqs", type=int, default=2048)
@@ -121,7 +153,13 @@ def main():
     ap.add_argument("--save", default="")
     ap.add_argument("--save_every_eval", type=int, default=0,
                     help="also save <save>_f<frac>.pt at every evaluation (compute curve)")
+    ap.add_argument("--ckpt_every", type=int, default=0,
+                    help="write a resumable checkpoint (model+optimizer+data position) every N steps")
+    ap.add_argument("--ckpt", default="", help="resumable checkpoint path (default <out>/<name>.ckpt)")
+    ap.add_argument("--resume", default="", help="resume from this resumable checkpoint")
+    ap.add_argument("--stop_step", type=int, default=0, help="stop after this many steps (tests)")
     args = ap.parse_args()
+    args.ckpt = args.ckpt or os.path.join(args.out, f"{args.name}.ckpt")
 
     os.makedirs(args.out, exist_ok=True)
     if args.save:
@@ -131,14 +169,16 @@ def main():
         rt.amp_dtype = None  # fp32 on CPU (no bf16 matmul units on this class of CPU)
     meta = json.load(open(os.path.join(args.data, "meta.json")))
     sched = ZoomSchedule.parse(args.zoom)
-    model = ZoomGPT(meta["vocab_size"], args.d, args.layers, args.heads, zoom_ks=sched.ks,
-                    gated=bool(args.gated), out_mode=args.out_mode, rope_pos=args.rope_pos,
-                    qk_norm=bool(args.qk_norm), merge_mode=args.merge_mode or None,
-                    grad_ckpt=bool(args.grad_ckpt)).to(rt.device)
+    resume = torch.load(args.resume, map_location="cpu", weights_only=False) if args.resume else None
+    if resume is not None:
+        bad = [k for k in MODEL_FIELDS if resume["args"].get(k) != getattr(args, k)]
+        assert not bad, f"--resume: model options differ from the checkpoint: {bad}"
+    model = build_model(args, meta["vocab_size"], bool(args.grad_ckpt)).to(rt.device)
     if args.param_dtype == "bf16":
         model = model.to(torch.bfloat16)
     n_params = sum(p.numel() for p in model.parameters())
-    opt = build_optimizer(model, args.optim, args.lr, args.wd, state_bits=args.state_bits)
+    opt = build_optimizer(model, args.optim, args.lr, args.wd, state_bits=args.state_bits,
+                          ns=args.ns)
     fwd = maybe_compile(model, rt)
     stream = ChunkStream(open_tokens(args.data, "train"), args.seq, args.seed)
     val = open_tokens(args.data, "val")
@@ -152,6 +192,18 @@ def main():
     flops, tokens, step, train_time = 0.0, 0, 0, 0.0
     next_eval = 0.0
     mix_rng = np.random.default_rng(args.seed + 1)
+    if resume is not None:
+        model.load_state_dict(resume["model"])
+        opt.load_state_dict(resume["opt"])
+        stream.pos, stream.epochs = resume["stream"]["pos"], resume["stream"]["epochs"]
+        pr = resume["progress"]
+        flops, tokens, step, train_time, next_eval = (pr["flops"], pr["tokens"], pr["step"],
+                                                      pr["train_time"], pr["next_eval"])
+        log = resume["log"]
+        log["resumed_from"] = args.resume
+        torch.set_rng_state(resume["rng"])
+        mix_rng.bit_generator.state = resume["mix_rng"]
+        print(f"  resumed at step {step} (frac={flops/args.budget:.3f})", flush=True)
     while True:
         frac = flops / args.budget
         if frac >= next_eval - 1e-12:
@@ -170,10 +222,14 @@ def main():
         k, s0, s1 = sched.stage_at(frac)
         if k > 1 and args.mix_fine > 0 and mix_rng.random() < args.mix_fine:
             k = 1
-        batch = args.batch * (k if args.batch_scale_k else 1)
+        if k > 1 and args.batch_scale > 0:
+            batch = int(round(args.batch * args.batch_scale))
+        else:
+            batch = args.batch * (k if args.batch_scale_k else 1)
         for g in opt.param_groups:
             g["lr"] = lr_at(frac, args.lr, warmup=args.warmup,
-                            stage=(s0, s1) if args.lr_restart else None)
+                            stage=(s0, s1) if args.lr_restart else None,
+                            sched=args.sched, decay_frac=args.decay_frac)
         t0 = time.perf_counter()
         opt.zero_grad(set_to_none=True)
         for _ in range(args.accum):
@@ -199,6 +255,17 @@ def main():
             if not math.isfinite(lv):
                 print("non-finite loss, abort", flush=True)
                 break
+        if args.ckpt_every and step % args.ckpt_every == 0:
+            save_ckpt(args.ckpt, model, opt, stream,
+                      {"flops": flops, "tokens": tokens, "step": step, "train_time": train_time,
+                       "next_eval": next_eval}, log, mix_rng)
+        if args.stop_step and step >= args.stop_step:
+            print(f"  stopped at step {step} (--stop_step)", flush=True)
+            if args.ckpt_every:
+                save_ckpt(args.ckpt, model, opt, stream,
+                          {"flops": flops, "tokens": tokens, "step": step,
+                           "train_time": train_time, "next_eval": next_eval}, log, mix_rng)
+            return
 
     log["final_val_loss"] = evaluate(model, val, args, rt, args.final_eval_seqs)
     log["optimizer_state_bytes"] = state_bytes(opt)

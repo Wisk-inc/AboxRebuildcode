@@ -67,3 +67,17 @@ def test_qkv_split_orthogonalizes_blocks_separately():
     w.grad = torch.randn_like(w)
     opt.step()
     assert torch.isfinite(w).all()
+
+
+def test_polar_express_orthogonalizes():
+    torch.manual_seed(0)
+    g = torch.randn(48, 24)
+    u = newton_schulz(g, steps=5, variant="polar")
+    sv = torch.linalg.svdvals(u)
+    assert sv.min() > 0.6 and sv.max() < 1.4
+    m = ZoomGPT(128, 32, 1, 2)
+    opt = build_optimizer(m, "muon", 1e-2, 0.0, fused=False, ns="polar")
+    x = torch.randint(0, 128, (2, 10))
+    m(x[:, :8], x[:, 1:9], k=1).backward()
+    opt.step()
+    assert all(torch.isfinite(p).all() for p in m.parameters())

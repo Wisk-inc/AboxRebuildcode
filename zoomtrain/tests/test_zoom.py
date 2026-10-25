@@ -109,3 +109,25 @@ def test_stage_bounds_and_lr_restart():
     assert lr_at(0.6 + 1e-4, 1.0, stage=(0.6, 1.0)) < 0.01
     assert abs(lr_at(0.6 + 0.4 * 0.05, 1.0, stage=(0.6, 1.0)) - 1.0) < 1e-6
     assert lr_at(0.6, 1.0) < 0.6
+
+
+def test_wsd_schedule_shape():
+    assert lr_at(0.0, 1.0, sched="wsd") == 0.0
+    assert abs(lr_at(0.3, 1.0, sched="wsd", decay_frac=0.45) - 1.0) < 1e-9     # flat
+    assert abs(lr_at(0.55, 1.0, sched="wsd", decay_frac=0.45) - 1.0) < 1e-9
+    mid = lr_at(0.775, 1.0, sched="wsd", decay_frac=0.45)
+    assert abs(mid - 0.55) < 1e-9                                                # halfway down
+    assert abs(lr_at(1.0, 1.0, sched="wsd") - 0.1) < 1e-9
+
+
+def test_speedrun_options_forward_and_grads():
+    torch.manual_seed(0)
+    m = ZoomGPT(128, 32, 2, 2, zoom_ks=[2], mlp="relu2", softcap=15.0, zero_init_proj=True)
+    assert torch.equal(m.blocks[0].proj.weight, torch.zeros_like(m.blocks[0].proj.weight))
+    x = torch.randint(0, 128, (2, 18))
+    for k in (1, 2):
+        loss = m(x[:, :16], x[:, k:16 + k], k=k)
+        assert torch.isfinite(loss)
+        loss.backward()
+    z = m.logits(torch.randn(2, 3, 32) * 100)
+    assert z.abs().max() <= 15.0

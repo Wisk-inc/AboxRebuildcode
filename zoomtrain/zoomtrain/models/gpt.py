@@ -41,9 +41,10 @@ def apply_rope(x, cos, sin):  # x: (B, H, T, Dh)
 
 
 class Block(nn.Module):
-    def __init__(self, d, n_head, mlp_mult=4, qk_norm=False):
+    def __init__(self, d, n_head, mlp_mult=4, qk_norm=False, mlp="gelu"):
         super().__init__()
         self.n_head = n_head
+        self.mlp = mlp
         self.ln1 = RMSNorm(d)
         self.qkv = nn.Linear(d, 3 * d, bias=False)
         self.qkv.weight.muon_split = 3          # orthogonalize q, k, v separately
@@ -67,31 +68,40 @@ class Block(nn.Module):
         q, k = apply_rope(q, cos, sin), apply_rope(k, cos, sin)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         x = x + self.proj(y.transpose(1, 2).reshape(B, T, D))
-        x = x + self.fc_out(F.gelu(self.fc(self.ln2(x))))
+        h = self.fc(self.ln2(x))
+        h = F.relu(h).square() if self.mlp == "relu2" else F.gelu(h)
+        x = x + self.fc_out(h)
         return x
 
 
 class ZoomGPT(nn.Module):
     def __init__(self, vocab, d=256, n_layer=6, n_head=4, zoom_ks=(),
                  gated=True, out_mode="slot", rope_pos="token", qk_norm=False,
-                 merge_mode=None, grad_ckpt=False):
+                 merge_mode=None, grad_ckpt=False, mlp="gelu", softcap=0.0,
+                 zero_init_proj=False):
         super().__init__()
         assert out_mode in ("slot", "bag")
         assert rope_pos in ("token", "patch")
         self.d, self.n_layer, self.vocab = d, n_layer, vocab
         self.out_mode, self.rope_pos, self.grad_ckpt = out_mode, rope_pos, grad_ckpt
+        self.softcap = softcap
         self.head_dim = d // n_head
         self.emb = nn.Embedding(vocab, d)
-        self.blocks = nn.ModuleList(Block(d, n_head, qk_norm=qk_norm) for _ in range(n_layer))
+        self.blocks = nn.ModuleList(Block(d, n_head, qk_norm=qk_norm, mlp=mlp)
+                                    for _ in range(n_layer))
         self.ln_f = RMSNorm(d)
         self.merge = nn.ModuleDict({str(k): SlotMerge(k, d, gated, merge_mode) for k in zoom_ks})
         self.unmerge = nn.ModuleDict(
             {str(k): SlotUnmerge(k, d, gated, merge_mode) for k in zoom_ks} if out_mode == "slot" else {})
         self._rope_cache = {}
         self.apply(self._init)
-        for b in self.blocks:  # scaled residual init
-            nn.init.normal_(b.proj.weight, std=0.02 / (2 * n_layer) ** 0.5)
-            nn.init.normal_(b.fc_out.weight, std=0.02 / (2 * n_layer) ** 0.5)
+        for b in self.blocks:  # scaled residual init, or zero-init (speedrun)
+            if zero_init_proj:
+                nn.init.zeros_(b.proj.weight)
+                nn.init.zeros_(b.fc_out.weight)
+            else:
+                nn.init.normal_(b.proj.weight, std=0.02 / (2 * n_layer) ** 0.5)
+                nn.init.normal_(b.fc_out.weight, std=0.02 / (2 * n_layer) ** 0.5)
 
     @staticmethod
     def _init(m):
@@ -125,19 +135,23 @@ class ZoomGPT(nn.Module):
                 x = blk(x, cos, sin)
         return self.ln_f(x)
 
+    def logits(self, h):
+        z = h @ self.emb.weight.t()                  # tied output head
+        if self.softcap > 0:                         # bounded logits (Gemma-2 / speedrun)
+            z = self.softcap * torch.tanh(z / self.softcap)
+        return z
+
     def forward(self, idx, targets, k=1):
         """idx: (B, T); targets: (B, T) where targets[:, i] = token at i + k."""
         B, T = idx.shape
         h = self.hidden(idx, k)                      # (B, T/k, d)
-        W = self.emb.weight                          # tied output head
         if k == 1:
-            logits = h @ W.t()
-            return F.cross_entropy(logits.view(-1, self.vocab), targets.reshape(-1))
+            return F.cross_entropy(self.logits(h).view(-1, self.vocab), targets.reshape(-1))
         tgt = targets.view(B, T // k, k)
         if self.out_mode == "slot":
-            logits = self.unmerge[str(k)](h) @ W.t()   # (B, T/k, k, V)
-            return F.cross_entropy(logits.reshape(-1, self.vocab), tgt.reshape(-1))
-        logp = F.log_softmax(h @ W.t(), dim=-1)        # (B, T/k, V), one dist per group
+            z = self.logits(self.unmerge[str(k)](h))  # (B, T/k, k, V)
+            return F.cross_entropy(z.reshape(-1, self.vocab), tgt.reshape(-1))
+        logp = F.log_softmax(self.logits(h), dim=-1)   # (B, T/k, V), one dist per group
         return -logp.gather(-1, tgt).mean()
 
     def flops_per_step(self, batch, seq, k):
@@ -153,7 +167,7 @@ class ZoomGPT(nn.Module):
     def generate(self, idx, n_new, temperature=0.8, top_k=40, eos_id=None):
         for _ in range(n_new):
             h = self.hidden(idx[:, -256:], 1)[:, -1]
-            logits = (h @ self.emb.weight.t()) / temperature
+            logits = self.logits(h) / temperature
             v, _ = torch.topk(logits, top_k)
             logits[logits < v[:, [-1]]] = -float("inf")
             nxt = torch.multinomial(F.softmax(logits, -1), 1)

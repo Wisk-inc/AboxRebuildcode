@@ -154,6 +154,9 @@ def main():
                     help="use batch*k samples at zoom k (constant tokens per step)")
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--warmup", type=float, default=0.05)
+    ap.add_argument("--sched", default="cosine", choices=["cosine", "wsd"])
+    ap.add_argument("--decay_frac", type=float, default=0.45)
+    ap.add_argument("--ns", default="quintic", choices=["quintic", "polar"])
     ap.add_argument("--lr_restart", type=int, default=0,
                     help="restart warmup+cosine at every zoom stage switch")
     ap.add_argument("--mix_fine", type=float, default=0.0,
@@ -183,7 +186,8 @@ def main():
                     zoom_ks=sched.ks if args.coarse_mode == "merge" else (),
                     gated=bool(args.gated), merge_mode=args.merge_mode or None).to(rt.device)
     n_params = sum(p.numel() for p in model.parameters())
-    opt = build_optimizer(model, args.optim, args.lr, args.wd, state_bits=args.state_bits)
+    opt = build_optimizer(model, args.optim, args.lr, args.wd, state_bits=args.state_bits,
+                          ns=args.ns)
     fwd = maybe_compile(model, rt)
     limiter = DutyCycleLimiter(args.duty, rt.device)
 
@@ -218,7 +222,8 @@ def main():
             k = 1
         for gr in opt.param_groups:
             gr["lr"] = lr_at(frac, args.lr, warmup=args.warmup,
-                             stage=(s0, s1) if args.lr_restart else None)
+                             stage=(s0, s1) if args.lr_restart else None,
+                             sched=args.sched, decay_frac=args.decay_frac)
         t0 = time.perf_counter()
         batch = args.batch * (k if (args.batch_scale_k and args.coarse_mode == "merge") else 1)
         if pos + batch > len(train_idx):

@@ -121,16 +121,25 @@ class ZoomSchedule:
         return ",".join(f"{k}:{f:g}" for k, f in self.stages)
 
 
-def lr_at(frac, peak, warmup=0.05, final=0.1, stage=None):
-    """Linear warmup then cosine decay to final*peak, indexed by compute fraction.
+def lr_at(frac, peak, warmup=0.05, final=0.1, stage=None, sched="cosine", decay_frac=0.45):
+    """Learning rate at compute fraction `frac`.
 
-    stage=(start, end): restart the schedule inside that window (one warmup +
-    cosine per zoom stage), so every stage gets its own high-LR phase.
+    sched="cosine": linear warmup, cosine decay to final*peak.
+    sched="wsd":    linear warmup, flat at peak, then linear decay over the last
+                    `decay_frac` of the budget to final*peak (warmup-stable-decay;
+                    the NanoGPT-speedrun / budgeted-training choice).
+    stage=(start, end): restart the schedule inside that window.
     """
     if stage is not None:
         start, end = stage
         frac = (frac - start) / max(end - start, 1e-12)
     if frac < warmup:
         return peak * frac / warmup
+    if sched == "wsd":
+        d0 = 1.0 - decay_frac
+        if frac < d0:
+            return peak
+        p = min(1.0, (frac - d0) / max(1.0 - d0, 1e-12))
+        return peak * (1 - (1 - final) * p)
     p = min(1.0, (frac - warmup) / (1 - warmup))
     return peak * (final + (1 - final) * 0.5 * (1 + math.cos(math.pi * p)))
