@@ -320,6 +320,7 @@ def main(argv=None):
 
     if is_main:
         log["train_time"] = t_train
+        log["optimizer_state_bytes"] = state_bytes(opt)      # allocated lazily at step 1
         log["final_eval_loss"] = log["evals"][-1]["eval_loss"]
         if args.lora:
             torch.save(lora_state_dict(model), os.path.join(args.out, "adapter.pt"))

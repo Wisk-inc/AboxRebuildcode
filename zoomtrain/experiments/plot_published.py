@@ -58,7 +58,12 @@ def main():
         rows.append({"name": name, "family": r["family"], "params": r["params"], "bpb": r["bpb"],
                      "compute": c, "lo": lo, "hi": hi})
     rows.sort(key=lambda x: x["compute"])
-    ours = [(x["compute"], x["bpb"]) for x in rows if x["family"] == "ours"]
+    # "_fNN" checkpoints were saved mid-schedule (LR not yet decayed); they understate what a
+    # run *finished* at that budget reaches, so they are drawn hollow and never used for
+    # compute-to-match. Completed runs form the curve.
+    for x in rows:
+        x["mid"] = x["family"] == "ours" and "_f0." in x["name"]
+    ours = [(x["compute"], x["bpb"]) for x in rows if x["family"] == "ours" and not x["mid"]]
     print(f"eval: {ev['stories']} clean validation stories, {ev['bytes']} bytes, "
           f"end-of-story scored={ev['end_of_story_scored']}")
     print(f"\n{'model':32s} {'params':>8s} {'train FLOPs':>11s} {'BPB':>7s}  ours reaches this BPB at")
@@ -67,7 +72,8 @@ def main():
         reach = first_reach(ours, x["bpb"]) if x["family"] != "ours" else None
         ratio = (x["compute"] / reach) if reach else None
         s = (f"{reach:.2e} FLOPs = {ratio:,.0f}x less" if reach else
-             ("—" if x["family"] == "ours" else "not reached yet"))
+             ("(mid-schedule checkpoint)" if x["mid"] else
+              "—" if x["family"] == "ours" else "not reached yet"))
         print(f"{x['name']:32s} {x['params']/1e6:7.2f}M {x['compute']:11.2e} {x['bpb']:7.4f}  {s}")
         out_rows.append({**x, "ours_compute_to_match": reach, "compute_ratio": ratio})
     with open(path.replace(".json", "_table.json"), "w") as f:
@@ -84,8 +90,16 @@ def main():
         ys = np.array([p["bpb"] for p in pts])
         err = np.array([[p["compute"] - p["lo"] for p in pts], [p["hi"] - p["compute"] for p in pts]])
         if fam == "ours":
-            ax.plot(xs, ys, color=COL[fam], linewidth=2, marker="o", markersize=5, label=LABEL[fam],
+            done = [p for p in pts if not p["mid"]]
+            mid = [p for p in pts if p["mid"]]
+            ax.plot([p["compute"] for p in done], [p["bpb"] for p in done], color=COL[fam],
+                    linewidth=2, marker="o", markersize=5, label=LABEL[fam] + " (completed runs)",
                     zorder=3)
+            if mid:
+                ax.plot([p["compute"] for p in mid], [p["bpb"] for p in mid], color=COL[fam],
+                        linewidth=0, marker="o", markersize=5, markerfacecolor="none",
+                        label="Bantam mid-schedule checkpoints", zorder=3)
+            pts = done
         else:
             ax.errorbar(xs, ys, xerr=err, fmt="o", color=COL[fam], markersize=7, capsize=3,
                         linewidth=1.2, label=LABEL[fam], zorder=3)
