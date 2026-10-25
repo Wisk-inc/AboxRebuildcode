@@ -281,6 +281,8 @@ def main(argv=None):
     ap.add_argument("--rslora", type=int, default=-1, help="-1: auto (on when r >= 64)")
     ap.add_argument("--quant", default="0", choices=["0", "8", "4", "nf4"],
                     help="quantize the frozen base: 8, 4 (linear int4) or nf4 (QLoRA codebook)")
+    ap.add_argument("--embed_quant", default="8", choices=["same", "8", "none"],
+                    help="embeddings / output head: int8 (default), same as --quant, or float")
     ap.add_argument("--eval_only", type=int, default=0, help="evaluate the held-out loss and exit")
     ap.add_argument("--grad_ckpt", type=int, default=0)
     ap.add_argument("--ce_chunk", type=int, default=2048)
@@ -322,7 +324,8 @@ def main(argv=None):
     report = {}
     quant = {"0": 0, "8": 8, "4": 4, "nf4": "nf4"}[str(args.quant)]
     if quant:
-        report["quant"] = quantize_model(model, quant, min_numel=1 << 16)
+        eq = {"same": "same", "8": 8, "none": None}[args.embed_quant]
+        report["quant"] = quantize_model(model, quant, min_numel=1 << 16, embed_bits=eq)
     if args.lora:
         targets = tuple(t for t in args.lora_targets.split(",") if t) or DEFAULT_TARGETS
         rslora = (args.lora >= 64) if args.rslora < 0 else bool(args.rslora)

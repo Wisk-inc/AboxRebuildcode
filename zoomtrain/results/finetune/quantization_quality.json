@@ -1,0 +1,62 @@
+{
+ "model": "HuggingFaceTB/SmolLM2-135M",
+ "eval": "100 held-out Dolly examples, response tokens, before any training",
+ "rows": [
+  {
+   "linears": "0",
+   "embeddings": "8",
+   "label": "fp32 (no quantization)",
+   "eval_loss": 2.70177489293903,
+   "model_mb": 557.598208,
+   "delta": 0.0
+  },
+  {
+   "linears": "8",
+   "embeddings": "8",
+   "label": "int8 linears + int8 embeddings",
+   "eval_loss": 2.7043321203913675,
+   "model_mb": 200.38912,
+   "delta": 0.0025572274523373295
+  },
+  {
+   "linears": "4",
+   "embeddings": "8",
+   "label": "linear int4 linears + int8 embeddings",
+   "eval_loss": 3.0352711800643597,
+   "model_mb": 139.97824,
+   "delta": 0.3334962871253295
+  },
+  {
+   "linears": "nf4",
+   "embeddings": "8",
+   "label": "NF4 linears + int8 embeddings (QLoRA-style, default)",
+   "eval_loss": 2.8777129403543005,
+   "model_mb": 139.97824,
+   "delta": 0.1759380474152703
+  },
+  {
+   "linears": "nf4",
+   "embeddings": "none",
+   "label": "NF4 linears, float embeddings",
+   "eval_loss": 2.8751885755830946,
+   "model_mb": 189.326848,
+   "delta": 0.17341368264406443
+  },
+  {
+   "linears": "4",
+   "embeddings": "same",
+   "label": "linear int4 everything",
+   "eval_loss": 3.2215180697192585,
+   "model_mb": 106.161664,
+   "delta": 0.5197431767802283
+  },
+  {
+   "linears": "nf4",
+   "embeddings": "same",
+   "label": "NF4 everything",
+   "eval_loss": 3.042192470833222,
+   "model_mb": 106.161664,
+   "delta": 0.340417577894192
+  }
+ ]
+}

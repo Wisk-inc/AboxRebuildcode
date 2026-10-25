@@ -138,20 +138,37 @@ def model_bytes(model):
 
 
 @torch.no_grad()
-def quantize_model(model, bits=8, block=None, min_numel=4096):
+def quantize_model(model, bits=8, block=None, min_numel=4096, embed_bits="same",
+                   skip_names=()):
     """Replace every nn.Linear / nn.Embedding with >= min_numel weights, in place.
-    bits: 8, 4 (linear int4) or "nf4"."""
+    bits: 8, 4 (linear int4) or "nf4" for the linear layers.
+    embed_bits: "same", 8, 4, "nf4" or None (keep embeddings and a tied/untied
+    output head in float, as QLoRA does). skip_names: module-name suffixes to leave alone."""
     assert bits in (8, 4, "nf4")
     block = block or (128 if bits == 8 else 64)
+    eb = bits if embed_bits == "same" else embed_bits
+    eblock = 128 if eb == 8 else 64
+    head_ids = set()
+    get_out = getattr(model, "get_output_embeddings", None)
+    if callable(get_out) and get_out() is not None:
+        head_ids.add(id(get_out()))
     before = model_bytes(model)
     n_q = 0
     for name, mod in list(model.named_modules()):
         for cname, child in list(mod.named_children()):
-            if isinstance(child, nn.Linear) and child.weight.numel() >= min_numel:
+            full = f"{name}.{cname}" if name else cname
+            if any(full.endswith(sn) for sn in skip_names):
+                continue
+            is_head = id(child) in head_ids
+            if isinstance(child, nn.Linear) and child.weight.numel() >= min_numel and not is_head:
                 setattr(mod, cname, QLinear(child, bits, block))
                 n_q += 1
-            elif isinstance(child, nn.Embedding) and child.weight.numel() >= min_numel:
-                setattr(mod, cname, QEmbedding(child, bits, block))
+            elif isinstance(child, (nn.Embedding, nn.Linear)) and child.weight.numel() >= min_numel \
+                    and (isinstance(child, nn.Embedding) or is_head) and eb is not None:
+                if isinstance(child, nn.Embedding):
+                    setattr(mod, cname, QEmbedding(child, eb, eblock))
+                else:
+                    setattr(mod, cname, QLinear(child, eb, eblock))
                 n_q += 1
     after = model_bytes(model)
     return {"bits": bits, "block": block, "modules_quantized": n_q,

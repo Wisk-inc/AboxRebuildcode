@@ -116,9 +116,21 @@ Data: a HuggingFace dataset or `--jsonl` with `prompt`/`response` columns,
 Dolly-style `instruction`/`context`/`response`, or chat `messages`; the
 tokenizer's chat template is used when it has one and the loss covers only
 the response tokens. Output: `adapter.pt` (MBs) or, with `--save_merged 1`,
-a merged `save_pretrained()` model. Measured here on CPU: SmolLM2-135M with an
-int4 base and rank-16 LoRA, held-out loss 3.39 -> 3.18 in 40 steps, 106 MB of
-model memory instead of 538 MB (`results/finetune/`).
+a merged `save_pretrained()` model. Measured here on CPU with SmolLM2-135M
+(`results/finetune/`): rank-16 LoRA on an int4 base, held-out loss 3.39 -> 3.18
+in 40 steps; on the float base 2.87 -> 2.79. What the frozen base's format
+costs *before* training (100 held-out Dolly examples):
+
+| base weights | held-out loss | model RAM |
+|---|---|---|
+| fp32 | 2.702 | 558 MB |
+| int8 linears + int8 embeddings | 2.704 (+0.003) | 200 MB |
+| NF4 linears + int8 embeddings (`--quant nf4`, default embed handling) | 2.878 (+0.18) | 140 MB |
+| linear int4 linears + int8 embeddings | 3.035 (+0.33) | 140 MB |
+| NF4 everything | 3.042 (+0.34) | 106 MB |
+
+So for small models use `--quant 8` (free); 4-bit NF4 is for 7B+ bases where
+the literature finds it near-lossless (not measurable on this machine).
 
 ## Storing weights and data
 
