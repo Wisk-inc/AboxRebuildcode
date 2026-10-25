@@ -58,8 +58,9 @@ def main():
     out["ram"]["fp32"] = {"bytes": qweights.model_bytes(base), "val_loss": ref, "delta": 0.0}
 
     m = copy.deepcopy(base).to(torch.bfloat16)
-    lb = evaluate(m.float(), val, a, rt, args.eval_seqs)   # bf16-rounded weights, fp32 compute
-    out["ram"]["bf16"] = {"bytes": qweights.model_bytes(m), "val_loss": lb, "delta": lb - ref}
+    bf16_bytes = qweights.model_bytes(m)                     # measure before .float() (in place)
+    lb = evaluate(m.float(), val, a, rt, args.eval_seqs)    # bf16-rounded weights, fp32 compute
+    out["ram"]["bf16"] = {"bytes": bf16_bytes, "val_loss": lb, "delta": lb - ref}
 
     for bits in (8, 4):
         m = copy.deepcopy(base)

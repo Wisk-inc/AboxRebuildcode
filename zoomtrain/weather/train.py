@@ -150,6 +150,8 @@ def main():
     ap.add_argument("--layers", type=int, default=6)
     ap.add_argument("--heads", type=int, default=4)
     ap.add_argument("--batch", type=int, default=16)
+    ap.add_argument("--batch_scale_k", type=int, default=0,
+                    help="use batch*k samples at zoom k (constant tokens per step)")
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--warmup", type=float, default=0.05)
     ap.add_argument("--lr_restart", type=int, default=0,
@@ -218,10 +220,11 @@ def main():
             gr["lr"] = lr_at(frac, args.lr, warmup=args.warmup,
                              stage=(s0, s1) if args.lr_restart else None)
         t0 = time.perf_counter()
-        if pos + args.batch > len(train_idx):
+        batch = args.batch * (k if (args.batch_scale_k and args.coarse_mode == "merge") else 1)
+        if pos + batch > len(train_idx):
             pos = 0
-        t = train_idx[pos:pos + args.batch]
-        pos += args.batch
+        t = train_idx[pos:pos + batch]
+        pos += batch
         x, y = ds.batch(t)
         with rt.autocast():
             if k > 1 and args.coarse_mode == "lowres":
@@ -238,8 +241,8 @@ def main():
         dt = time.perf_counter() - t0
         train_time += dt
         limiter(dt)
-        flops += model.flops_per_step(args.batch, k)
-        samples += args.batch
+        flops += model.flops_per_step(batch, k)
+        samples += batch
         step += 1
         if step % 25 == 0:
             log["train"].append({"step": step, "frac": frac, "k": k, "loss": loss.item(),
