@@ -216,6 +216,9 @@ def main():
                 ck = args.save.replace(".pt", f"_f{frac:.2f}.pt")
                 torch.save(model.state_dict(), ck)
                 log["evals"][-1]["checkpoint"] = ck
+            log["in_progress"] = True
+            with open(os.path.join(args.out, f"{args.name}.json"), "w") as f:
+                json.dump(log, f, indent=1)
             next_eval += 1.0 / args.evals
         if frac >= 1.0:
             break
@@ -267,6 +270,7 @@ def main():
                            "train_time": train_time, "next_eval": next_eval}, log, mix_rng)
             return
 
+    log.pop("in_progress", None)
     log["final_val_loss"] = evaluate(model, val, args, rt, args.final_eval_seqs)
     log["optimizer_state_bytes"] = state_bytes(opt)
     log["param_bytes"] = sum(p.numel() * p.element_size() for p in model.parameters())
