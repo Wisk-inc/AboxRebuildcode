@@ -143,7 +143,8 @@ def test_finetune_data_pipeline_masks_prompt_and_packs():
     # bfd never splits an example and fills bins best-first
     big = [(list(range(9)), list(range(9)), [1.0] * 9)] * 3 + [(list(range(5)), list(range(5)), [1.0] * 5)]
     w = ft.pack(big, 16, pad, "bfd")          # capacity 17: {9+5}, {9}, {9} -> 3 bins, no splits
-    assert len(w) == 3 and sorted(17 - x.count(pad) for x, _, _ in w) == [9, 9, 14]
+    fill = sorted(sum(1 for v in z if v != 0.0) for _, _, z in w)   # weights are 0 on padding
+    assert len(w) == 3 and fill == [9, 9, 14]
     # prompt_loss_weight > 0 supervises prompt tokens with that weight
     items2 = ft.tokenize_examples(tok, exs[:1], seq=64, prompt_loss_weight=0.3)
     ids, labels, weights = items2[0]
