@@ -1,0 +1,38 @@
+{
+ "baseline_seed_losses": [
+  2.7341166734695435,
+  2.7272252291440964,
+  2.7495152726769447
+ ],
+ "zoom_seed_losses": [
+  2.6895963549613953,
+  2.6840604096651077,
+  2.681599199771881
+ ],
+ "baseline_mean": 2.7369523917635283,
+ "baseline_sd": 0.011412382917524213,
+ "zoom_mean": 2.685085321466128,
+ "zoom_sd": 0.004095907217112752,
+ "baseline_curve_completed_runs": [
+  [
+   68000000000000.0,
+   2.7341166734695435
+  ],
+  [
+   85000000000000.0,
+   2.636594705283642
+  ],
+  [
+   102000000000000.0,
+   2.563371889293194
+  ],
+  [
+   136000000000000.0,
+   2.460663042962551
+  ]
+ ],
+ "baseline_flops_to_match_zoom": 76073358598326.1,
+ "zoom_flops": 68000000000000.0,
+ "baseline_extra_compute_needed": 1.1187258617400897,
+ "note": "Each baseline point is a separate run with its own full LR schedule at that budget (seed 0). Zoom = k=2 for the first 50% of FLOPs with the batch doubled while zoomed, Muon lr 1.6e-2."
+}
