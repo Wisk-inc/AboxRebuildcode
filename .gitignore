@@ -7,3 +7,5 @@ zoomtrain/results/logs/
 *.gridpack
 *.npy
 *.parquet
+*.pt
+*.zwpk
