@@ -39,15 +39,26 @@ import argparse
 GB = 1e9
 
 
+def default_width(params):
+    """A conventional d_model for a parameter count (GPT-2/Llama-style aspect ratios)."""
+    for limit, d in ((2e7, 384), (6e7, 512), (2e8, 768), (5e8, 1024), (1.5e9, 2048),
+                     (4e9, 3072), (1e10, 4096), (2e10, 5120)):
+        if params <= limit:
+            return d
+    return 8192
+
+
 def model_dims(params, d, vocab):
     """Layers for a target parameter count: 12*L*d^2 + 2*V*d (untied embeddings)."""
+    d = d or default_width(params)
     L = max(1, round((params - 2 * vocab * d) / (12 * d * d)))
     return L, 12 * L * d * d + 2 * vocab * d
 
 
-def scoreboard(params=5e9, d=4096, vocab=32000, seq=2048, gpu_gb=96.0, peak_tflops=503.8,
+def scoreboard(params=5e9, d=0, vocab=32000, seq=2048, gpu_gb=96.0, peak_tflops=503.8,
                mfu=0.40, tokens=1e11, fp8_speedup=1.20, muon_flops=0.52, power_tput=0.95,
                overhead_gb=3.0, hidden_frac=None, act_factor=1.0):
+    d = d or default_width(params)
     L, N = model_dims(params, d, vocab)
     if hidden_frac is None:
         hidden_frac = 12 * L * d * d / N
@@ -88,7 +99,7 @@ def scoreboard(params=5e9, d=4096, vocab=32000, seq=2048, gpu_gb=96.0, peak_tflo
     rows.append(row("5. + 450 W power cap (75 % power)", 2, 2, muon_state, False, True,
                     tok_mult=muon_flops, speed=fp8_speedup * power_tput,
                     note=f"x{power_tput:.2f} throughput, 25 % less power"))
-    return {"layers": L, "params": N, "rows": rows}
+    return {"layers": L, "params": N, "d": d, "rows": rows}
 
 
 def storage_table(N, tokens, bits_per_token=5.97):
@@ -133,7 +144,7 @@ def fmt(sb, tokens, markdown=False):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--params", type=float, default=5e9)
-    ap.add_argument("--d", type=int, default=4096)
+    ap.add_argument("--d", type=int, default=0, help="d_model (0 = pick from --params)")
     ap.add_argument("--vocab", type=int, default=32000)
     ap.add_argument("--seq", type=int, default=2048)
     ap.add_argument("--gpu_gb", type=float, default=96)

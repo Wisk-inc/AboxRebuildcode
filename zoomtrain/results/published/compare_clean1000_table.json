@@ -9,6 +9,17 @@
  },
  "rows": [
   {
+   "name": "long_muon_10x_f0.10",
+   "family": "ours",
+   "params": 5770496,
+   "bpb": 1.1512897290097441,
+   "compute": 63706275840000,
+   "lo": 63706275840000,
+   "hi": 63706275840000,
+   "ours_compute_to_match": null,
+   "compute_ratio": null
+  },
+  {
    "name": "save_muon_base",
    "family": "ours",
    "params": 5770496,
@@ -20,6 +31,28 @@
    "compute_ratio": null
   },
   {
+   "name": "long_muon_10x_f0.20",
+   "family": "ours",
+   "params": 5770496,
+   "bpb": 1.074625610228285,
+   "compute": 127412551680000,
+   "lo": 127412551680000,
+   "hi": 127412551680000,
+   "ours_compute_to_match": null,
+   "compute_ratio": null
+  },
+  {
+   "name": "long_muon_10x_f0.30",
+   "family": "ours",
+   "params": 5770496,
+   "bpb": 1.038735400093908,
+   "compute": 191118827520000,
+   "lo": 191118827520000,
+   "hi": 191118827520000,
+   "ours_compute_to_match": null,
+   "compute_ratio": null
+  },
+  {
    "name": "stories260K",
    "family": "published-llama2c",
    "params": 260032,
@@ -27,8 +60,8 @@
    "compute": 1.001643264e+16,
    "lo": 1.001643264e+16,
    "hi": 1.001643264e+16,
-   "ours_compute_to_match": 63817069363200,
-   "compute_ratio": 156.9553841934327
+   "ours_compute_to_match": 63755831416381.18,
+   "compute_ratio": 157.106140998836
   },
   {
    "name": "roneneldan/TinyStories-1M",
