@@ -40,11 +40,14 @@ zoomtrain/
     data/tokpack.py          TokPack v2: rank-remap + LEB128 + zstd(dict), random access
     data/dedup.py            exact + MinHash-LSH near-duplicate removal on token streams
     data/gridpack.py         GridPack: error-bounded int16 + temporal delta + zstd
+    lora.py                  LoRA / QLoRA adapters on Linear or int8/int4 QLinear bases
+    losses.py                chunked cross-entropy (never materializes tokens x vocab logits)
+    finetune.py              python -m zoomtrain.finetune: SFT of any HF causal LM, torchrun DDP
   llm/                       prepare_data.py (HF -> tokens), pack_data.py, train.py
   weather/                   prepare_era5.py (WeatherBench2 -> npy), pack_data.py, train.py
   experiments/               run_queue.py, queues/*.txt, summarize.py, plots.py,
                              weights_eval.py, compare_published.py, plot_published.py, llama2c.py
-  tests/                     pytest suite (43 tests, CPU, ~2 min incl. a stop/resume run)
+  tests/                     pytest suite (50 tests, CPU, ~2.5 min incl. a stop/resume run)
   results/                   JSON log of every run, SUMMARY.md, plots/
   docs/                      METHOD.md, SCOREBOARD_5B.md
 ```
@@ -96,6 +99,26 @@ python weather/train.py --data data/era5_64x32 --budget 5.5e13 --zoom 4:0.6,1:0.
 python weather/train.py --data data/era5_64x32 --budget 5.5e13 --zoom 4:0.6,1:0.4 \
     --coarse_mode lowres --optim muon --lr 1.6e-2 --name progressive_resizing   # prior-art baseline
 ```
+
+## Fine-tuning any HuggingFace model (LoRA / QLoRA, full)
+
+```bash
+pip install transformers datasets
+python -m zoomtrain.finetune --model HuggingFaceTB/SmolLM2-135M \
+    --dataset databricks/databricks-dolly-15k --max_examples 2000 \
+    --lora 16 --quant 4 --optim muon --state_bits 8 --epochs 1 --out runs/dolly
+# multi-GPU:  torchrun --nproc_per_node 4 -m zoomtrain.finetune ...
+# full fine-tune: --lora 0 --param_dtype bf16 --state_bits 8 --grad_ckpt 1
+# size it first: python -m zoomtrain.memory --finetune --params 7e9 --gpu_gb 24
+```
+
+Data: a HuggingFace dataset or `--jsonl` with `prompt`/`response` columns,
+Dolly-style `instruction`/`context`/`response`, or chat `messages`; the
+tokenizer's chat template is used when it has one and the loss covers only
+the response tokens. Output: `adapter.pt` (MBs) or, with `--save_merged 1`,
+a merged `save_pretrained()` model. Measured here on CPU: SmolLM2-135M with an
+int4 base and rank-16 LoRA, held-out loss 3.39 -> 3.18 in 40 steps, 106 MB of
+model memory instead of 538 MB (`results/finetune/`).
 
 ## Storing weights and data
 

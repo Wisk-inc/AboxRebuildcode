@@ -268,8 +268,11 @@ def main(argv=None):
     total_steps = args.max_steps or max(1, int(steps_per_epoch * args.epochs))
     limiter = DutyCycleLimiter(args.duty, rt.device)
 
+    n_quant = sum(m.q.numel() * (2 if getattr(m, "bits", 8) == 4 else 1)
+                  for m in model.modules() if hasattr(m, "q") and hasattr(m, "s"))
     log = {"args": vars(args), "report": report, "trainable_params": trainable,
-           "total_params": sum(p.numel() for p in model.parameters()),
+           "total_params": sum(p.numel() for p in model.parameters()) + n_quant,
+           "quantized_base_params": n_quant,
            "model_bytes_before_quant": base_bytes_fp, "model_bytes": model_bytes(model),
            "optimizer_state_bytes": state_bytes(opt), "train_windows": len(train_w) * world,
            "eval_windows": len(eval_w), "examples": len(items), "steps": total_steps,
