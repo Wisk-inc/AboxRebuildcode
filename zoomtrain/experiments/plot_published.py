@@ -89,11 +89,15 @@ def main():
         else:
             ax.errorbar(xs, ys, xerr=err, fmt="o", color=COL[fam], markersize=7, capsize=3,
                         linewidth=1.2, label=LABEL[fam], zorder=3)
+        offsets = {"stories15M": (-8, -14), "roneneldan/TinyStories-33M": (8, 4),
+                   "roneneldan/TinyStories-28M": (-34, 6)}
         for p in pts:
             if fam != "ours" or p is pts[-1]:
                 short = p["name"].split("/")[-1].replace("TinyStories-", "TS-")
+                if fam == "ours":
+                    short = f"Bantam {p['params']/1e6:.1f}M"
                 ax.annotate(short, (p["compute"], p["bpb"]), textcoords="offset points",
-                            xytext=(6, 4), fontsize=7.5, color=INK)
+                            xytext=offsets.get(p["name"], (6, 4)), fontsize=7.5, color=INK)
     ax.set_xscale("log")
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)
