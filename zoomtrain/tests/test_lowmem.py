@@ -191,3 +191,23 @@ def test_weightpack_int4(tmp_path):
         assert back[k].shape == v.shape
         if v.dim() >= 2 and v.numel() >= 4096:
             assert (back[k] - v).abs().max() <= v.abs().max() / 7
+
+
+def test_nf4_quantization_roundtrip_and_beats_linear_int4_on_gaussian_weights():
+    from zoomtrain import qweights
+    torch.manual_seed(0)
+    w = torch.randn(64, 256) * 0.02
+    q, s, pad = qweights.quantize_rows(w, "nf4", 64)
+    assert q.dtype == torch.uint8 and q.shape == (64, 128) and pad == 0
+    r = qweights.dequantize_rows(q, s, pad, "nf4", 64)
+    assert r.shape == w.shape
+    err_nf4 = (r - w).pow(2).mean()
+    q4, s4, _ = qweights.quantize_rows(w, 4, 64)
+    err_i4 = (qweights.dequantize_rows(q4, s4, 0, 4, 64) - w).pow(2).mean()
+    assert err_nf4 < err_i4                                   # codebook fits Gaussian weights
+    m = ZoomGPT(512, 64, 2, 2).eval()
+    x = torch.randint(0, 512, (2, 33))
+    ref = m(x[:, :32], x[:, 1:], k=1).item()
+    rep = qweights.quantize_model(m, "nf4")
+    assert rep["ratio"] > 6.0
+    assert abs(m(x[:, :32], x[:, 1:], k=1).item() - ref) < 0.1

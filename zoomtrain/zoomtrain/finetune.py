@@ -279,7 +279,9 @@ def main(argv=None):
     ap.add_argument("--lora_dropout", type=float, default=0.05)
     ap.add_argument("--lora_targets", default="", help="comma list; default: all projections")
     ap.add_argument("--rslora", type=int, default=-1, help="-1: auto (on when r >= 64)")
-    ap.add_argument("--quant", type=int, default=0, choices=[0, 8, 4], help="quantize the frozen base")
+    ap.add_argument("--quant", default="0", choices=["0", "8", "4", "nf4"],
+                    help="quantize the frozen base: 8, 4 (linear int4) or nf4 (QLoRA codebook)")
+    ap.add_argument("--eval_only", type=int, default=0, help="evaluate the held-out loss and exit")
     ap.add_argument("--grad_ckpt", type=int, default=0)
     ap.add_argument("--ce_chunk", type=int, default=2048)
     ap.add_argument("--eval_every", type=int, default=50)
@@ -318,8 +320,9 @@ def main(argv=None):
         args.model, dtype=torch.bfloat16 if pdt == "bf16" else torch.float32)
     base_bytes_fp = model_bytes(model)
     report = {}
-    if args.quant:
-        report["quant"] = quantize_model(model, args.quant, min_numel=1 << 16)
+    quant = {"0": 0, "8": 8, "4": 4, "nf4": "nf4"}[str(args.quant)]
+    if quant:
+        report["quant"] = quantize_model(model, quant, min_numel=1 << 16)
     if args.lora:
         targets = tuple(t for t in args.lora_targets.split(",") if t) or DEFAULT_TARGETS
         rslora = (args.lora >= 64) if args.rslora < 0 else bool(args.rslora)
@@ -358,7 +361,7 @@ def main(argv=None):
     total_steps = args.max_steps or max(1, int(steps_per_epoch * args.epochs))
     limiter = DutyCycleLimiter(args.duty, rt.device)
 
-    n_quant = sum(m.q.numel() * (2 if getattr(m, "bits", 8) == 4 else 1)
+    n_quant = sum(m.q.numel() * (2 if getattr(m, "bits", 8) in (4, "nf4") else 1)
                   for m in model.modules() if hasattr(m, "q") and hasattr(m, "s"))
     log = {"args": vars(args), "report": report, "trainable_params": trainable,
            "total_params": sum(p.numel() for p in model.parameters()) + n_quant,
@@ -375,6 +378,11 @@ def main(argv=None):
         ev = evaluate(model, eval_w, rt, args.batch, args.ce_chunk)
         log["evals"].append({"step": 0, "eval_loss": ev})
         print(f"  step 0 eval={ev:.4f}", flush=True)
+        if args.eval_only:
+            log["final_eval_loss"] = ev
+            with open(os.path.join(args.out, "log.json"), "w") as f:
+                json.dump(log, f, indent=1)
+            return
 
     rng = random.Random(args.seed + rank)
     order = list(range(len(train_w)))
@@ -422,7 +430,7 @@ def main(argv=None):
             log["adapter_bytes"] = os.path.getsize(os.path.join(args.out, "adapter.pt"))
         else:
             model.save_pretrained(os.path.join(args.out, "model"))
-        if args.save_merged and args.lora and not args.quant:
+        if args.save_merged and args.lora and not quant:
             merge_lora(model)
             unwrap_lora(model)
             model.save_pretrained(os.path.join(args.out, "merged"))

@@ -5,10 +5,14 @@
     print(report)                                      # bytes before / after
 
 Each weight matrix is split into blocks of `block` consecutive input columns;
-every block stores one fp16 scale (absmax / qmax) and int codes:
+every block stores one fp16 scale (absmax) and codes:
 
-    bits=8: int8 in [-127, 127]                    ~1.03 B/param (block 128)
-    bits=4: int4 in [-7, 7], two codes per byte    ~0.53 B/param (block 64)
+    bits=8:  int8 in [-127, 127]                           ~1.03 B/param (block 128)
+    bits=4:  linear int4 in [-7, 7], two codes per byte    ~0.53 B/param (block 64)
+    "nf4":   4-bit NormalFloat (QLoRA, Dettmers 2023): 16 codebook values at the
+             quantiles of N(0,1), two codes per byte      ~0.53 B/param (block 64)
+NF4 is the right choice for pretrained weights (roughly Gaussian per block);
+linear int4 wastes codes on the rarely used extremes.
 
 The forward pass dequantizes the block-scaled codes to the activation dtype
 and runs a normal matmul, so the model's output is that of a model whose
@@ -21,7 +25,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-QMAX = {8: 127, 4: 7}
+QMAX = {8: 127, 4: 7, "nf4": 7}
+# NF4 codebook (bitsandbytes create_normal_map): 16 quantiles of N(0,1), 0 exactly representable
+NF4 = torch.tensor([-1.0, -0.6961928009986877, -0.5250730514526367, -0.39491748809814453,
+                    -0.28444138169288635, -0.18477343022823334, -0.09105003625154495, 0.0,
+                    0.07958029955625534, 0.16093020141124725, 0.24611230194568634,
+                    0.33791524171829224, 0.44070982933044434, 0.5626170039176941,
+                    0.7229568362236023, 1.0])
 
 
 def quantize_rows(w, bits, block):
@@ -32,6 +42,12 @@ def quantize_rows(w, bits, block):
     if pad:
         w = F.pad(w, (0, pad))
     b = w.view(R, -1, block)
+    if bits == "nf4":
+        s = b.abs().amax(dim=2).clamp_min(1e-12)           # scale to [-1, 1]
+        n = b / s[..., None]
+        u = (n[..., None] - NF4.to(n.device)).abs().argmin(dim=-1).to(torch.uint8).view(R, -1)
+        q = (u[:, 0::2] | (u[:, 1::2] << 4)).contiguous()
+        return q, s.to(torch.float16), pad
     s = (b.abs().amax(dim=2) / QMAX[bits]).clamp_min(1e-12)
     q = torch.round(b / s[..., None]).clamp_(-QMAX[bits], QMAX[bits]).to(torch.int8)
     if bits == 4:
@@ -42,6 +58,13 @@ def quantize_rows(w, bits, block):
 
 def dequantize_rows(q, s, pad, bits, block, dtype=torch.float32):
     R = q.shape[0]
+    if bits == "nf4":
+        lo = (q & 0x0F).long()
+        hi = (q >> 4).long()
+        idx = torch.stack([lo, hi], dim=-1).view(R, -1)
+        w = NF4.to(q.device)[idx].to(dtype).view(R, -1, block) * s.to(dtype)[..., None]
+        w = w.view(R, -1)
+        return w[:, :w.shape[1] - pad] if pad else w
     if bits == 4:
         lo = (q & 0x0F).to(torch.int8) - 8
         hi = (q >> 4).to(torch.int8) - 8
@@ -74,6 +97,10 @@ class QLinear(nn.Module):
     def nbytes(self):
         n = self.q.numel() * self.q.element_size() + self.s.numel() * 2
         return n + (0 if self.bias is None else self.bias.numel() * 4)
+
+    @property
+    def code_bits(self):
+        return 4 if self.bits in (4, "nf4") else 8
 
 
 class QEmbedding(nn.Module):
@@ -112,8 +139,9 @@ def model_bytes(model):
 
 @torch.no_grad()
 def quantize_model(model, bits=8, block=None, min_numel=4096):
-    """Replace every nn.Linear / nn.Embedding with >= min_numel weights, in place."""
-    assert bits in (8, 4)
+    """Replace every nn.Linear / nn.Embedding with >= min_numel weights, in place.
+    bits: 8, 4 (linear int4) or "nf4"."""
+    assert bits in (8, 4, "nf4")
     block = block or (128 if bits == 8 else 64)
     before = model_bytes(model)
     n_q = 0
