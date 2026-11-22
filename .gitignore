@@ -1,7 +1,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-zoomtrain/results/logs/
+bantam/results/logs/
 *.bin
 *.tokpack
 *.gridpack
