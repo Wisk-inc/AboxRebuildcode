@@ -9,7 +9,7 @@ any command is `bantam <command> --help`. Task-oriented recipes are in
 
 ```bash
 pip install bantamtrain                  # core: torch, numpy, zstandard
-pip install 'bantamtrain[data]'          # prepare-text, pack-text, generate (tokenizers, pyarrow, huggingface_hub)
+pip install 'bantamtrain[data]'          # prepare-text, generate (tokenizers, pyarrow, huggingface_hub)
 pip install 'bantamtrain[finetune]'      # finetune, chat (transformers>=4.56, safetensors, datasets, sentencepiece)
 pip install 'bantamtrain[weather]'       # prepare-era5 (xarray, zarr, fsspec, aiohttp)
 ```
@@ -71,9 +71,11 @@ Commands: [pretrain](#bantam-pretrain) ·
 ## bantam pretrain
 
 Trains a ZoomGPT language model from scratch at a fixed compute budget (`--budget`, in
-training FLOPs). Every run with the same budget gets the same compute, so runs with
-different options can be compared fairly. It reads token files written by
-`bantam prepare-text` (and `bantam pack-text`, if you ran it).
+training FLOPs). Every run with the same budget gets the same model FLOPs, so runs with
+different options can be compared fairly. Muon's own optimizer FLOPs are logged but not
+charged unless `--flops_mode total`; at the default model size they add about 20%
+(`opt_flops` in `results/published/save_muon_base_repro.json`). It reads token files
+written by `bantam prepare-text` (and `bantam pack-text`, if you ran it).
 
 Required: `--data`, `--budget`, `--name`.
 
@@ -119,10 +121,11 @@ et al., ICLR 2025); see [METHOD.md](METHOD.md).
 | `--mix_fine P` | 0 | in coarse stages, run a k=1 step with probability P |
 | `--lr_restart` | 0 | 1: restart warmup + cosine at each stage switch (measured worse) |
 
-On TinyStories at 5.8M parameters, the recipe that helped was k=2 only, with a larger
-batch while zoomed (`--zoom 2:0.5,1:0.5 --batch_scale_k 1` or
-`--zoom 2:0.33,1:0.67 --batch_scale 2`). Schedules with k=4 did worse than the baseline.
-Numbers and conditions are in [../RESULTS.md](../RESULTS.md).
+On TinyStories at 5.8M parameters (CPU, Muon, 2 or 3 seeds), the recipe that helped was
+k=2 only, with a larger batch while zoomed (`--zoom 2:0.5,1:0.5 --batch_scale_k 1` or
+`--zoom 2:0.33,1:0.67 --batch_scale 2`). Schedules with k=4 and no batch scaling did
+worse than the baseline; with `--batch_scale_k 1` the original k=4 schedule only
+matched it (1 seed). Numbers and conditions are in [../RESULTS.md](../RESULTS.md).
 
 **Optimizer and schedule**
 
@@ -558,8 +561,8 @@ assumptions, not a measurement: nothing in it has been checked on a GPU. Two tab
 | `--lora_r` | 16 | LoRA rank |
 | `--lora_dropout` | 0.05 | LoRA dropout (as `bantam finetune`) |
 
-Two rows of the scoreboard describe things Bantam cannot run today: there is no FP8 code
-path (the "FP8 linears" row is a literature estimate), and `bantam pretrain` has no
+Parts of the scoreboard describe things Bantam cannot run today: there is no FP8 code
+path (row 4, "FP8 linears", is a literature estimate), and `bantam pretrain` has no
 chunked cross-entropy flag although rows 2 to 5 assume it.
 
 ```bash

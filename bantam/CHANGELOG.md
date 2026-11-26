@@ -38,17 +38,19 @@ PyTorch 2.15 for CPU) with small models. Nothing has been run on a GPU.
   training format, which widened Bantam's gap to the TinyStories models. The 5B memory
   scoreboard is corrected from 2.56x to about 1.9x (GB versus GiB), bf16 runs are scored
   in fp32, and several claims were removed (see "Results corrected").
-- **New measured results** (TinyStories, 5.8M parameters, FLOP-matched at 6.8e13, Muon;
-  final validation loss in nats per token):
+- **New measured results** (TinyStories, 5.8M parameters, FLOP-matched at 6.8e13 model
+  FLOPs, Muon LR 1.6e-2, CPU only; final validation loss in nats per token on the first
+  2,048 validation windows, +- the sample standard deviation over seeds):
 
   | recipe | loss | seeds | baseline compute needed to match |
   |---|---|---|---|
   | Muon baseline | 2.737 +- 0.012 | 3 | 1.00x |
   | Zoom k=2 for half the budget, batch x2 | 2.685 +- 0.004 | 3 | 1.12x |
-  | QK-norm | 2.639 | 2 | 1.24x |
+  | QK-norm | 2.639 +- 0.003 | 2 | 1.24x |
   | QK-norm + Zoom k=2 for a third, batch x2 | 2.589 +- 0.006 | 2 | 1.41x |
 
-  QK-norm is a known technique and beat Zoom alone; the two stack. On weather, Zoom made
+  QK-norm is a known technique and beat Zoom alone; the two stack. On weather (ERA5
+  64x32, a 1.26M-parameter ViT, 5.5e13 FLOPs, scored on the 2018 test year), Zoom made
   results worse under Muon (one-step MSE 0.159 against 0.124, 2 seeds), while the
   established low-resolution warm-up helped (0.112, 1 seed).
 - **Quality checks.** 594 tests pass and 7 are skipped (CUDA-only or slow) on CPU. A
@@ -84,14 +86,16 @@ bit-identical to the code before the audit.
 **`bantam pretrain` and the ZoomGPT model**
 
 - A bf16-weight model computes its loss in fp32 and is evaluated as an fp32 copy of its
-  bf16 weights. Validation losses of `--param_dtype bf16` runs shift by about 0.003 to
-  0.01 against 0.2 logs. fp32 runs are bit-identical.
+  bf16 weights. Validation losses of `--param_dtype bf16` runs differ from 0.2 logs by
+  the rounding noise of 0.2's bf16 arithmetic: up to about 0.01 nats, of either sign
+  (`results/llm_lowmem/bf16_eval_bias.json`). fp32 runs are bit-identical.
 - The logged train loss is the mean over accumulation micro-batches and DDP ranks (was
   rank 0's last micro-batch). Identical for `--accum 1` on one process.
 - Data order: DDP ranks share one permutation and read disjoint slices (they used to read
   independent permutations). Epochs after the first are reshuffled with `[seed, epoch]`
   (they replayed epoch 0), and a wrap never returns a short batch. The first epoch on
-  one process is unchanged; every committed run used under 0.02 epochs.
+  one process is unchanged; every committed TinyStories run used under 0.04 epochs, so
+  none reached a second epoch.
 - A non-finite loss is checked every step (was every 25). A diverged run exits with
   status 3, its JSON says `"status": "diverged"`, and it runs no final eval and writes no
   `--save` model. Before, it exited 0 with a NaN final loss and a saved model.
@@ -147,9 +151,9 @@ bit-identical to the code before the audit.
 - `--muon_lora` defaults to -1 (auto): on with `--optim muon` and `--lora` > 0. The 0.2
   default 0 made `--optim muon` a silent no-op with LoRA. An explicit 0 now warns.
 - New `--save_peft`, on by default: a PEFT adapter is written next to `adapter.pt`.
-- With `--accum` > 1 or DDP, the objective and the logged loss are the sum of token
-  losses over the supervised tokens of the whole step (was the mean of per-micro-batch
-  means). Identical for `--accum 1` on one process.
+- With `--accum` > 1 or DDP, the objective and the logged loss are the mean token loss
+  over all supervised tokens of the whole step (every micro-batch and rank; was the mean
+  of per-micro-batch means). Identical for `--accum 1` on one process.
 - The eval loss counts response tokens only, also with `--prompt_loss_weight` > 0.
 - The final eval always runs at the last step, also with `--eval_every 0`, and the last
   train step is always logged.
@@ -431,7 +435,7 @@ bit-identical to the code before the audit.
 
 - `pretrain --auto_batch` (GPU only): the largest micro-batch that fits, keeping
   `batch x accum`, the schedule and the data order.
-- `pretrain --data_format`, `--flops_mode`, `--allow_arg_change`, `--stop_step`; DDP that
+- `pretrain --data_format`, `--flops_mode`, `--allow_arg_change`; DDP that
   shards the data, evaluates on rank 0 only and stops every rank together on a
   non-finite loss.
 - `weather --val_year`; latitude-weighted ACC against a train-years climatology plus a
@@ -468,7 +472,8 @@ bit-identical to the code before the audit.
   `bpb_no_end`) and scores a verified local copy of a Hub model (`--hf repo=dir`).
   `run_queue.py --dry_run`.
 - GitHub Actions CI: CPU tests on Python 3.10 and 3.13, a build with `twine check
-  --strict`, and a core-only install that runs `--help` for the commands and `doctor`.
+  --strict`, and a core-only install that runs `--help` for seven of the commands
+  (pretrain, finetune, weather, pack-text, pack-era5, memory, doctor) and `doctor`.
   Pytest markers `slow`, `network`, `gpu` and `dist`.
 - `packaging/release.sh` rebuilt for the new layout.
 
@@ -579,7 +584,8 @@ bit-identical to the code before the audit.
 **Pretraining and the ZoomGPT model**
 
 - bf16-weight models computed the loss in bf16 (GPU-17, ZG-3) and were evaluated in bf16
-  arithmetic, about 0.01 nats off (CLM-18, PRE-9).
+  arithmetic, with rounding errors of up to about 0.01 nats, of either sign (CLM-18,
+  PRE-9).
 - `generate()` crashed for a vocabulary under 40, batched prompts with EOS, temperature 0
   and `top_k` 0 or None, and its context was fixed at 256 (ZG-4).
 - The RoPE cache stored inference tensors (breaking later training) and grew without
@@ -684,7 +690,7 @@ bit-identical to the code before the audit.
   PRE-1), resolved a relative `--out` against the wrong directory and could overwrite
   results (RQ-2), substituted `$NAME` variables by plain string replacement and shared
   log files between trainers (PRE-16).
-- `compare_published.py` charged the roneneldan models about 25 nats per story through
+- `compare_published.py` charged the roneneldan models 19 to 37 nats per story through
   the boundary convention (EXP-1/exp), mixed conventions in one file (EXP-6), scored a
   contaminated story set by default (EXP-7), had a default validation path that no
   command created (CLM-11, EXP-11), matched checkpoint compute by a cwd-relative path
@@ -717,8 +723,9 @@ bit-identical to the code before the audit.
 ### Results corrected
 
 - **Published-model comparison.** 0.2 scored the roneneldan TinyStories models with
-  `[eos] story [eos]`, all scored, which cost them 11.5 to 12.7 nats per story at the end
-  token. Each family is now scored in its own training format (EXP-1/exp, EXP-6, EXP-7).
+  `[eos] story [eos]`, all scored, which cost them 19 to 37 nats per story (11.5 to 12.7
+  of it at the end-of-story token; `results/published/compare_clean1000_legacy_eos.json`).
+  Each family is now scored in its own training format (EXP-1/exp, EXP-6, EXP-7).
   On 1,000 of the 4,194 clean validation stories (the 0.2 docs said 4,194; CLM-11,
   EXP-11), in bits per byte: TinyStories-1M 0.873 -> 0.822, 3M 0.719 -> 0.677,
   8M 0.651 -> 0.581, 28M 0.586 -> 0.538, 33M 0.578 -> 0.542. The llama2.c rows are
@@ -746,17 +753,24 @@ bit-identical to the code before the audit.
 - **Fine-tune quantization table.** It used 88 held-out examples, not 100, and its sizes
   included 19.5 MB of LoRA adapters inconsistently. The base-only sizes are fp32 538 MB,
   int8 181 MB, NF4 with int8 embeddings 120 MB, int4 everywhere 87 MB (CLM-16, FT-20).
+  These are 0.2 sizes: they count SmolLM2's tied output head a second time and include
+  int8 block padding (QNT-6, QNT-8), so 0.3 stores the same bases in less memory.
   The 0.2 headline "QLoRA 3.39 -> 3.18" was an int4-everything base that stayed worse
   than the untouched float base (2.87; 2.79 after LoRA), on 8 eval windows of about 17
   examples, one seed (PKG-X1).
-- **Low-memory saving.** Weights plus optimizer state shrink 2.7x (50.4 to 18.5 MB), not
-  3x (CLM-17, OPT-12). The bf16 path also ran 2.6x slower in wall-clock on this CPU.
+- **Low-memory saving.** On the 5.8M-parameter model with Muon, weights plus optimizer
+  state shrink 2.7x (50.4 MB for fp32 weights and 32-bit state, 18.5 MB for bf16 weights
+  and 8-bit state), not 3x (CLM-17, OPT-12). The bf16 path also ran 2.6x slower in
+  wall-clock on this CPU (718 s against 271 s for 100 steps, 1 thread, 1 run each).
 - **WeightPack 16** rounds fp32 weights to bf16 (+0.00002 loss on the 5.8M model). It is
   lossless only for weights already in bf16 (DOC-1, WP-2).
 - **Wall-clock.** The claim that Zoom's coarse steps run faster per FLOP on CPU was
-  wrong. At a fixed batch, k=2 steps cost about 1.2x and k=4 about 1.4x more time per
-  FLOP, and the logged Zoom runs without batch scaling took 6 to 15% more wall-clock than
-  their baselines at equal FLOPs (CLM-12, WX-8, ZG-2).
+  wrong. At a fixed batch, k=2 steps took about 1.2x and k=4 steps about 1.4x the time
+  per FLOP of k=1 steps (Muon runs, 2 threads, shared CPU). At equal FLOPs, the
+  seed-paired 4->2->1 Zoom runs without batch scaling took 15 to 20% more wall-clock than
+  their Muon baselines (6% more with AdamW), and the weather Zoom-merge runs took 8%
+  (AdamW) and 33 to 52% (Muon) more. The machine was shared, so these timings are noisy
+  (CLM-12, WX-8, ZG-2).
 - **Compute-to-target.** The Zoom figure (1.12x, 3 seeds; 1.11x to 1.13x per seed) is now
   generated by `summarize.py` from final losses with log-FLOP interpolation. The
   baseline points above 1x are single seeds (CLM-14, CLM-2).
@@ -766,8 +780,10 @@ bit-identical to the code before the audit.
   now says which (CLM-15, PRE-8).
 - **Muon against AdamW.** In Muon runs, the AdamW part (embeddings, head, norms) runs at
   Muon's LR, 16x the best AdamW-only LR, so the comparison changes two things, and the
-  AdamW side is one seed. The claim that both "share one learning rate" by design of the
-  update scaling is withdrawn: the sweep shows they do not (CLM-5).
+  AdamW side is one seed. Muon's Newton-Schulz step also adds about 20% arithmetic on
+  top of the charged model FLOPs at this size; it is now logged as `opt_flops` but still
+  not charged by default (MEM-10, ZG-1). The claim that both "share one learning rate"
+  by design of the update scaling is withdrawn: the sweep shows they do not (CLM-5).
 - **Weather.** The finished matrix is reported, including Zoom hurting under Muon. Its
   LRs were chosen on the 2018 test year (CLM-7, CLM-8, WX-3), and its rollouts covered 1
   January to 13 October at 00 UTC (WX-10).
@@ -869,10 +885,11 @@ script).
 - Runtime: flush-to-zero on CPU, AMP, TF32, `torch.compile`, a duty-cycle limiter.
 - The single-GPU memory and time estimator behind the 5B scoreboard.
 - Experiment tooling: queues, `run_queue.py`, `summarize.py`, a published-model
-  comparison in bits per byte, and a 1B-parameter CPU benchmark.
+  comparison in bits per byte, and a CPU benchmark of a 0.92B-parameter model (labelled
+  1B at the time).
 
 Credit: Zoom Training is a learned-gate variant of patch-level training (Shao et al.,
 ICLR 2025) and is related to Hourglass, Funnel-Transformer and sequence-length warm-up.
-Muon (Jordan et al. 2024), Polar Express (Amsel et al.), QK-norm, 8-bit optimizer state
-(Dettmers et al.), bf16 stochastic rounding and LoRA/QLoRA are other people's methods
-that Bantam implements.
+Muon (Jordan et al. 2024), Polar Express (Amsel et al.), QK-norm (Henry et al. 2020),
+8-bit optimizer state (Dettmers et al.), bf16 stochastic rounding, LoRA/QLoRA, and (in
+0.3) DoRA, LoRA+ and rsLoRA are other people's methods that Bantam implements.

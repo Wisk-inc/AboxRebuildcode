@@ -55,9 +55,9 @@ bantam prepare-text --hf roneneldan/TinyStories --out data/tinystories --vocab 4
 
 This downloads one training shard (`--max_shards 1`, the default) and the validation
 split, trains a 4,096-token BPE tokenizer and writes `train.bin`, `val.bin`,
-`tokenizer.json` and `meta.json`. For TinyStories that is 529,875 training stories and
-about 122M tokens. Training documents that are identical to a validation document are
-dropped, so the validation loss is honest.
+`tokenizer.json` and `meta.json` (which records the document and token counts).
+Training documents that are identical to a validation document are dropped, so the
+validation loss is honest.
 
 For another dataset, name its text column and, if needed, its config:
 
@@ -82,8 +82,9 @@ bantam pack-text --data data/tinystories
 
 This removes exact and near-duplicate training documents (MinHash) and writes compressed
 `train.tokpack` / `val.tokpack` files. `bantam pretrain` uses them automatically, and the
-run log records which source it read (`data_source`). On TinyStories the training stream
-went from about 122M to 117M tokens.
+run log records which source it read (`data_source`). The packed TinyStories training
+stream behind the committed runs holds 116.8M tokens (the `data_source` of
+`results/published/save_muon_base_repro.json`).
 
 ### Step 3: train a baseline
 
@@ -105,9 +106,9 @@ so the curve reads about 0.27 to 0.30 nats lower than the final eval. Compare fi
 finals.
 
 **Choosing the learning rate.** The committed LRs came from a sweep at a third of the
-budget (2.3e13 FLOPs). The best were Muon 1.6e-2 (loss 3.176 at that budget) and AdamW
-1e-3 (3.961). With `--optim muon`, the AdamW part of the model (embeddings, tied head,
-norms) runs at the same LR, so the Muon recipe gives those parameters 16x the best
+budget (2.3e13 FLOPs, final loss on the first 512 windows, 1 seed per LR). The best were
+Muon 1.6e-2 (3.176) and AdamW 1e-3 (3.961). With `--optim muon`, the AdamW part of the
+model (embeddings, tied head, norms) runs at the same LR, so the Muon recipe gives those parameters 16x the best
 AdamW-only LR. AdamW settings do not transfer to Muon runs, so sweep the LR again when you
 change the model, data or batch size:
 
@@ -130,8 +131,8 @@ model FLOPs. Loss is `final_val_loss` (nats per token, first 2,048 validation wi
 | Muon baseline | `--zoom 1` | 2.737 +- 0.012 | 3 | 1.00x |
 | AdamW baseline (LR 1e-3) | `--optim adamw --lr 1e-3` | 3.332 | 1 | below 1x (worse than the Muon baseline) |
 | Zoom, k=2 for half the budget, batch x2 | `--zoom 2:0.5,1:0.5 --batch_scale_k 1` | 2.685 +- 0.004 | 3 | 1.12x |
-| Zoom, k=2 for a third, batch x2 | `--zoom 2:0.33,1:0.67 --batch_scale 2` | 2.680 | 2 | 1.14x |
-| QK-norm | `--qk_norm 1` | 2.639 | 2 | 1.24x |
+| Zoom, k=2 for a third, batch x2 | `--zoom 2:0.33,1:0.67 --batch_scale 2` | 2.680 +- 0.005 | 2 | 1.14x |
+| QK-norm | `--qk_norm 1` | 2.639 +- 0.003 | 2 | 1.24x |
 | QK-norm + Zoom (k=2 for a third, batch x2) | `--qk_norm 1 --zoom 2:0.33,1:0.67 --batch_scale 2` | 2.589 +- 0.006 | 2 | 1.41x |
 
 "Baseline compute needed to match" reads each loss off the curve of plain Muon runs
@@ -142,7 +143,8 @@ three Zoom seeds alone give 1.11x to 1.13x.
 How to read this:
 
 - Muon is the biggest single gain at this size. The AdamW baseline is one seed, and the
-  two runs differ in more than the optimizer (see the LR note above).
+  two runs differ in more than the optimizer: the LR of the AdamW part (see the LR note
+  above), and Muon's uncharged Newton-Schulz arithmetic (see the budget point below).
 - QK-norm is a known technique (Henry et al. 2020; it is in the modded-nanogpt speedrun
   stack). It beat Zoom alone here.
 - Zoom saved about 11 to 12% of compute (QK-norm plus Zoom: about 29%), and its gain
@@ -153,13 +155,15 @@ How to read this:
   parameters is real but smaller than that prior art reports, and it is untested at
   larger scale.
 - The budget counts model FLOPs only. Muon's optimizer FLOPs (Newton-Schulz) are logged
-  as `opt_flops` but not charged; they are a few percent of a step at this size. The
-  Zoom recipes above take fewer optimizer steps than the baseline (422 or 432 against
-  450), so this does not favour them.
+  as `opt_flops` but not charged. At this size they are not small: about 20% on top of
+  the model FLOPs (1.37e13 against 6.81e13 for a baseline run,
+  `results/published/save_muon_base_repro.json`), so the Muon runs did about 1.2x the
+  arithmetic of the AdamW run. The Zoom recipes above take fewer optimizer steps than
+  the baseline (422 or 432 against 450), so this does not favour them.
 - Zoom does not save wall-clock time on this CPU in proportion to FLOPs. At a fixed
-  batch, k=2 steps cost about 1.2x and k=4 steps about 1.4x more time per FLOP (the
-  optimizer step is a fixed cost per step); with the batch scaled by k the cost per FLOP
-  is about the same as at k=1.
+  batch, k=2 steps took about 1.2x and k=4 steps about 1.4x the time per FLOP of k=1
+  steps (the optimizer step is a fixed cost per step; Muon runs, 2 threads, shared CPU);
+  with the batch scaled by k the cost per FLOP is about the same as at k=1.
 
 What did not help (one seed each unless noted, against the 2.737 baseline):
 
@@ -168,7 +172,8 @@ What did not help (one seed each unless noted, against the 2.737 baseline):
 | original Zoom schedule, no batch scaling (3 seeds) | `--zoom 4:0.35,2:0.25,1:0.4` | 2.874 |
 | mean merge instead of the learned gate | `--gated 0` (with the schedule above) | 2.943 |
 | bag-of-tokens loss | `--out_mode bag` (same) | 2.860 |
-| k=4 schedules | `--zoom 4:0.5,1:0.5` and others | 2.80 to 3.02 |
+| other k=4 schedules, no batch scaling | `--zoom 4:0.5,1:0.5` and two others | 2.80 to 3.02 |
+| original schedule with batch x k | `--zoom 4:0.35,2:0.25,1:0.4 --batch_scale_k 1` | 2.730 (about equal) |
 | LR restart at the stage switch | `--zoom 2:0.5,1:0.5 --lr_restart 1` | 2.760 |
 | warmup-stable-decay schedule | `--sched wsd` | 2.773 |
 | ReLU squared MLP | `--mlp relu2` | 2.829 |
@@ -290,15 +295,17 @@ bantam finetune --model HuggingFaceTB/SmolLM2-135M --dataset databricks/databric
   default (`--embed_quant 8`; `same` follows `--quant`, `none` keeps them in float).
 - `--low_ram 1` builds the model with its weights quantized one tensor at a time, so the
   float model never sits in RAM. It needs `.safetensors` weights. In one end-to-end check
-  on SmolLM2-135M, peak RSS was 2,339 MB with `--low_ram 1`, 2,733 MB with the default
-  `--quant` path and 2,668 MB for float LoRA.
+  during the 0.3 review (SmolLM2-135M, `--quant nf4`, `--seq 256 --batch 2`, 20 steps,
+  one run each; not a committed result), peak RSS was 2,339 MB with `--low_ram 1`,
+  2,733 MB with the default `--quant` path (it loads the float model first) and 2,668 MB
+  for float LoRA.
 - `--grad_ckpt 1` (activation checkpointing) is recommended with `--quant`.
 - Everything is pure PyTorch. There is no bitsandbytes dependency and no fused GPU
   kernel, so expect it to be slower than GPU tools that have them.
 
 What the frozen base's format costs before any training, on SmolLM2-135M (88 held-out
-Dolly examples, response tokens, one run each; sizes are the base weights without
-adapters):
+Dolly examples, response tokens, 256-token windows, one run each; sizes are the base
+weights without adapters):
 
 | base weights | flags | held-out loss | change | size |
 |---|---|---|---|---|
@@ -309,8 +316,11 @@ adapters):
 | NF4 everything | `--quant nf4 --embed_quant same` | 3.042 | +0.34 | 87 MB |
 
 This was measured with 0.2 code, whose packed eval windows let examples attend to each
-other, so the differences are indicative. On a small model, int8 is nearly free and 4-bit
-costs a lot. The QLoRA paper reports NF4 close to 16-bit quality for large models (up to
+other, so the differences are indicative. The 0.2 sizes also count SmolLM2's tied output
+head twice and include int8 block padding; 0.3 stores the head once. In the 0.3 review,
+the NF4 model with int8 embeddings took 105 MB and the int8 model 157 MB, adapters
+included (0.2: 140 and 200 MB). On a small model, int8 is nearly free and 4-bit costs a
+lot. The QLoRA paper reports NF4 close to 16-bit quality for large models (up to
 65B); that cannot be checked on this machine.
 
 The 0.2 fine-tunes in `results/finetune/` (40 steps, 8 eval windows of about 17
@@ -354,9 +364,10 @@ refuses a checkpoint if training options differ.
 
 ### Outputs, PEFT export and merging
 
-A LoRA run writes to `--out`: `adapter.pt` and `adapter_meta.json` (Bantam format, a few
-MB), `adapter_config.json` and `adapter_model.safetensors` (PEFT format, on by default),
-the tokenizer, and `log.json`. To use the adapter in the Hugging Face stack:
+A LoRA run writes to `--out`: `adapter.pt` and `adapter_meta.json` (Bantam format; about
+20 MB for SmolLM2-135M at r=16, since the adapters are fp32), `adapter_config.json` and
+`adapter_model.safetensors` (PEFT format, on by default), the tokenizer, and `log.json`.
+To use the adapter in the Hugging Face stack:
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -454,7 +465,7 @@ the 2018 test year; RMSE values are from seed 0):
 | AdamW + Zoom merge | `--optim adamw --lr 2e-3 --zoom 4:0.6,1:0.4` | 0.180 | 1 | 282 | 647 |
 | AdamW + low-resolution warm-up | `... --coarse_mode lowres` | 0.158 | 1 | 257 | 601 |
 | Muon baseline at 2x compute | `--budget 1.1e14` | 0.094 | 1 | 172 | 461 |
-| persistence (no model) | | | | 569 | |
+| persistence (no model) | | | | 569 | 907 |
 
 How to read this:
 
@@ -508,8 +519,11 @@ How to read it:
   with activations. The textbook count for its model state is 16 bytes per parameter
   (about 80 GB at 5B; the tool charges 18). bf16 weights with 8-bit state need about 6
   bytes per parameter (about 30 GB) and fit.
-- The 1.87x for Muon comes from the literature (Muon reaching AdamW's loss with 0.52x the
-  FLOPs at 1-16B), not from a Bantam measurement.
+- The 1.87x for Muon comes from the literature, not from a Bantam measurement: the tool
+  assumes Muon reaches AdamW's loss with 0.52x the FLOPs (`--muon_flops`), from Liu et
+  al. 2025, "Muon is Scalable for LLM Training", which reports about 2x compute
+  efficiency in compute-optimal scaling-law runs. The Newton-Schulz cost is then added
+  back.
 - Row 4 is a literature estimate: Bantam has no FP8 code. Rows 2 to 5 assume chunked
   cross-entropy, which `bantam pretrain` does not expose.
 - None of this is new. ZeRO-Offload trained models over 13B on one 32 GB V100 in 2021,
@@ -533,7 +547,8 @@ QLoRA r=16: int4 base (bantamtrain.qweights) + adapters           yes      41.3M
 ```
 
 (The rows without activation checkpointing, which all say NO, are left out here.) Only
-QLoRA with activation checkpointing fits a 7B model in 24 GB by this estimate. The
+QLoRA with activation checkpointing fits a 7B model in 24 GB by this estimate, at the
+default micro-batch of 4 and sequence of 2,048. The
 matching run is `bantam finetune --quant nf4 --low_ram 1 --grad_ckpt 1`.
 
 ### Ways to save memory, by command
@@ -593,8 +608,12 @@ torchrun --standalone --nproc_per_node 4 -m bantamtrain pretrain \
     --device cuda --precision auto --compile --name gpu_base
 ```
 
-`experiments/gpu_smoke.sh` is the first thing to run on a new card. Its LR (2e-3) and
-batch (64) are not the CPU-tuned recipe. Re-sweep the LR when you change the batch size.
+`experiments/gpu_smoke.sh` is the first thing to run on a new card (set `DATA=` to your
+prepared data directory). It checks that the bf16, compile and duty-cycle paths run; it
+is not a benchmark. Its LR (2e-3) and batch (64) are not the CPU-tuned recipe, and its
+Zoom runs use the original 4->2->1 schedule, which lost to the baseline on CPU. The
+script's header expects the Zoom run to complete more steps per second; nothing measured
+so far supports that. Re-sweep the LR when you change the batch size.
 
 What is untested or missing:
 
@@ -626,8 +645,10 @@ bantam pack-era5 --data data/era5_64x32
 ```
 
 The committed runs used data prepared by 0.2 (see section 2 for the difference). The
-queue files point at the original machine's paths, so first set the `D=` line at the top
-of each file to your data directory.
+queue files point at the original machine's paths, so first change them to your data
+directories: the `D=` (and, in `followup.txt`, `W=`) line at the top of most files, and
+the `--data` path on every line of the sweep files (`llm_sweep.txt`, `llm_sweep2.txt`,
+`sweep3.txt`, `weather_sweep.txt`, `weather_sweep4.txt`), which have no `D=` line.
 
 ### Queues
 
@@ -649,22 +670,23 @@ The queues, roughly in the order they were run:
 | `llm_sweep.txt`, `llm_sweep2.txt`, `sweep3.txt` | LLM LR sweeps at 2.3e13 FLOPs (`sweep3.txt` also extends the weather sweep) |
 | `weather_sweep.txt`, `weather_sweep4.txt` | weather LR sweeps at 1.8e13 FLOPs |
 | `llm_main.txt` | Muon and AdamW baselines, the original Zoom schedule, Zoom ablations, seeds |
-| `followup.txt` | Zoom follow-ups, including `fu_2-50_bk_s0` (k=2, batch x k) |
+| `followup.txt` | Zoom follow-ups, including `fu_2-50_bk_s0` (k=2, batch x k). Only 3 of its 13 runs were run; the other 10 (including both linear-merge runs) have no results, and `run_queue.py` will start them |
 | `zoom_confirm.txt` | seeds 1 and 2 of that recipe |
 | `compute_to_target.txt` | the Muon baseline at 1.25x, 1.5x and 2x the budget (the compute-to-target curve) |
-| `upgrades.txt` | QK-norm, WSD, ReLU squared, soft cap, zero-init, Polar Express, Zoom batch variants |
+| `upgrades.txt` | QK-norm, WSD, ReLU squared, soft cap, zero-init, Polar Express, Zoom batch variants, and all five upgrades together (with and without Zoom) |
 | `lowmem.txt`, `lowmem2.txt` | 8-bit state and bf16 weights, short and full budget; `save_muon_base` |
 | `published_cmp.txt` | a long run (killed at 30%; not used) |
 | `weather_main.txt` | the weather matrix: Muon and AdamW, base, Zoom and low-res, ablations, seeds, 2x baseline |
 
 `all_remaining.sh` is an old helper that runs three of them in sequence.
 
-The last five language-model runs are not in a queue file. Their commands, from the run
-logs (each ran with `--threads 1`):
+The last six language-model runs are not in a queue file. Their commands, rebuilt from
+the arguments in their run logs (each ran with `--threads 1`):
 
 ```bash
 D=data/tinystories
 C="--data $D --budget 6.8e13 --optim muon --lr 1.6e-2 --threads 1"
+bantam pretrain $C --zoom 1 --seed 0 --name up_base_s0
 bantam pretrain $C --zoom 1 --seed 1 --name up_base_s1
 bantam pretrain $C --zoom 1 --qk_norm 1 --seed 1 --name up_qknorm_s1
 bantam pretrain $C --zoom 2:0.33,1:0.67 --batch_scale 2 --seed 1 --name up_zoom_2-33_bs2_s1
@@ -704,11 +726,12 @@ python experiments/plot_published.py results/published/compare_clean1000.json
 ```
 
 The llama2.c checkpoints and tokenizers come from Karpathy's llama2.c releases (the
-`karpathy/tinyllamas` Hub repository). On that set, Bantam's 5.8M model scored 1.029 bits
-per byte. It beats llama2.c's stories260K (1.097) with at least 157x less training
-compute, but stories260K has 0.26M parameters, so this is partly a model-size effect. It
-is behind every TinyStories model: TinyStories-1M scores 0.822 with about 3,350x more
-compute.
+`karpathy/tinyllamas` Hub repository). On that set, Bantam's 5.8M model (one run, 6.4e13
+training FLOPs) scored 1.029 bits per byte. It beats llama2.c's stories260K (1.097,
+1.0e16 FLOPs) with at least 157x less training compute. That is an upper bound read off
+a single point, and stories260K has 0.26M parameters, so it is partly a model-size
+effect. Bantam is behind every TinyStories model: TinyStories-1M scores 0.822 with about
+3,350x more compute.
 
 ### The fine-tuning race
 
