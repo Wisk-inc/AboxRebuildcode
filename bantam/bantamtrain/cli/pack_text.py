@@ -141,9 +141,11 @@ def main(argv=None):
             if n_read >= 20_000_000:
                 break
         read_dt = max(time.time() - t1, 1e-9)
+        raw = n * dtype.itemsize                 # the .bin's dtype (uint32 above 65536 ids)
         stats[name] = {"tokens": n, "uint16_bytes": 2 * n, "tokpack_bytes": int(nbytes),
                        "bits_per_token": 8 * nbytes / n if n else 0.0,
                        "ratio_vs_uint16": 2 * n / nbytes if nbytes else 0.0,
+                       "raw_bytes": raw, "ratio_vs_raw": raw / nbytes if nbytes else 0.0,
                        "write_seconds": dt, "stream_tokens_per_s": n_read / read_dt,
                        "docs": tp.h["doc_index"]["n_docs"],
                        "doc_index_bytes": tp.h["doc_index"]["bytes"]}

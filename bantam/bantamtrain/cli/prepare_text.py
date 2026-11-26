@@ -325,7 +325,6 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if not args.hf and not args.train:
         ap.error("give --hf REPO or --train FILE.parquet")
-    os.makedirs(args.out, exist_ok=True)
 
     if args.hf:
         train_paths, val_paths = hf_shards(args.hf, args.max_shards, args.cache, args.config)
@@ -372,7 +371,8 @@ def main(argv=None):
         tok = train_tokenizer(itertools.islice(train_texts(), args.tok_docs), args.vocab)
         eos_tok = EOS
         vocab = tok.get_vocab_size()
-    gone = clear_stale(args.out)    # only now: a run that failed on its inputs leaves DIR as it was
+    os.makedirs(args.out, exist_ok=True)   # only now: a run that failed on its inputs leaves
+    gone = clear_stale(args.out)           # DIR as it was (or absent)
     if gone:
         print(f"removed files of an earlier preparation: {gone}")
     tok.save(os.path.join(args.out, "tokenizer.json"))
