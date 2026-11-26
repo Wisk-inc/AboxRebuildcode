@@ -1,5 +1,6 @@
 """Parameter routing (Muon / AdamW, weight decay by role, lr_scale groups, Muon splits and
 transposed Conv1D weights) and optimizer FLOPs."""
+import copy
 import math
 import os
 import sys
@@ -99,10 +100,17 @@ def test_muon_splits_method_is_used():
     torch.manual_seed(0)
     m = ZoomGPT(64, 32, 1, 2)
     qkv = m.blocks[0].qkv.weight
+    hidden = m.muon_params()
+    m.muon_params = lambda: hidden                      # ZoomGPT's own would re-tag qkv
     del qkv.muon_split                                  # only the model-level map remains
     m.muon_splits = lambda: {"blocks.0.qkv.weight": 3}
     opt = build_optimizer(m, "muon", 0.1, 0.0, fused=False)
+    assert not hasattr(qkv, "muon_split")
     assert opt.optimizers[1].layout(qkv) == (3, False)
+    # the map survives a deep copy of the optimizer, whose param copies have no attribute
+    twin = copy.deepcopy(opt)
+    q2 = twin.optimizers[1].param_groups[0]["params"][0]
+    assert q2 is not qkv and q2.shape == qkv.shape and twin.optimizers[1].layout(q2) == (3, False)
     x = torch.randint(0, 64, (2, 17))
     m(x[:, :16], x[:, 1:], k=1).backward()
     g, before = qkv.grad.clone(), qkv.detach().clone()
