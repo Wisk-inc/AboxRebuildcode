@@ -10,6 +10,8 @@ coarse_mode="lowres" instead implements classic progressive resizing: the
 fields are area-averaged to a coarser grid and the model is trained on that
 coarser problem (the fine-scale data is simply not seen in that stage).
 """
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -41,8 +43,13 @@ class ZoomViT(nn.Module):
     def __init__(self, c_in, c_out, grid=(32, 64), patch=2, d=128, n_layer=6, n_head=4,
                  zoom_ks=(), gated=True, merge_mode=None):
         super().__init__()
+        self._config = dict(c_in=c_in, c_out=c_out, grid=[int(g) for g in grid], patch=patch, d=d,
+                            n_layer=n_layer, n_head=n_head, zoom_ks=[int(k) for k in zoom_ks],
+                            gated=bool(gated), merge_mode=merge_mode)
         self.c_in, self.c_out, self.patch, self.d, self.n_layer = c_in, c_out, patch, d, n_layer
         self.gh, self.gw = grid[0] // patch, grid[1] // patch    # fine token grid
+        for k in zoom_ks:
+            self.zoom_factor(k)
         self.embed = nn.Linear(c_in * patch * patch, d)
         self.pos = nn.Parameter(torch.randn(1, self.gh, self.gw, d) * 0.02)
         self.blocks = nn.ModuleList(Block(d, n_head) for _ in range(n_layer))
@@ -53,9 +60,25 @@ class ZoomViT(nn.Module):
         self.merge = nn.ModuleDict({str(k): SlotMerge(k, d, gated, merge_mode) for k in zoom_ks})
         self.unmerge = nn.ModuleDict({str(k): SlotUnmerge(k, d, gated, merge_mode) for k in zoom_ks})
 
+    def config(self):
+        """Constructor kwargs: ZoomViT(**m.config()) rebuilds this architecture."""
+        return dict(self._config)
+
+    def zoom_factor(self, k):
+        """f with k = f*f; f must divide both sides of the fine token grid (k = 1, 4, 16, ...)."""
+        f = math.isqrt(k) if k >= 1 else 0
+        if f == 0 or f * f != k or self.gh % f or self.gw % f:
+            raise ValueError(f"zoom level {k}: weather zoom levels must be perfect squares "
+                             f"f*f with f dividing the {self.gh}x{self.gw} token grid (4, 16, ...)")
+        return f
+
     def muon_params(self):
         return [p for b in self.blocks for p in
                 (b.qkv.weight, b.proj.weight, b.fc.weight, b.fc_out.weight)]
+
+    def muon_splits(self):
+        """{param name: row blocks} for Muon: the fused qkv is orthogonalized as q, k, v."""
+        return {f"blocks.{i}.qkv.weight": 3 for i in range(self.n_layer)}
 
     # -- (B, C, H, W) <-> (B, H/p, W/p, C*p*p)
     def patchify(self, x):
@@ -87,7 +110,7 @@ class ZoomViT(nn.Module):
         tok = self.embed(self.patchify(x)) + self.pos               # (B, gh, gw, d)
         B, h, w, d = tok.shape
         if k > 1:
-            f = int(round(k ** 0.5))
+            f = self.zoom_factor(k)
             z = self.merge[str(k)](self._group(tok, f))              # (B, N/k, d)
         else:
             z = tok.view(B, h * w, d)
@@ -102,6 +125,11 @@ class ZoomViT(nn.Module):
 
     def forward_lowres(self, x_coarse, f):
         """Progressive-resizing stage: whole problem on an f-times coarser grid."""
+        self.zoom_factor(f * f)
+        want = (self.gh // f * self.patch, self.gw // f * self.patch)
+        if tuple(x_coarse.shape[-2:]) != want:
+            raise ValueError(f"forward_lowres(f={f}) expects a {want} grid, got "
+                             f"{tuple(x_coarse.shape[-2:])}")
         pos = F.avg_pool2d(self.pos.permute(0, 3, 1, 2), f).permute(0, 2, 3, 1)
         tok = self.embed(self.patchify(x_coarse)) + pos
         B, h, w, d = tok.shape
@@ -111,9 +139,15 @@ class ZoomViT(nn.Module):
         z = self.ln_f(z).view(B, h, w, d)
         return self.unpatchify(self.decode(z), self.c_out)
 
-    def flops_per_step(self, batch, k):
-        n = self.gh * self.gw // k                       # tokens through the body
+    def flops_per_step(self, batch, k, lowres=False):
+        """Training FLOPs (3x forward) of one step; lowres=True: forward_lowres at f = sqrt(k)."""
+        f = self.zoom_factor(k)
+        n = (self.gh // f) * (self.gw // f)              # tokens through the body
         d, L = self.d, self.n_layer
         body = n * L * (24 * d * d + 4 * n * d)          # full (non-causal) attention
-        io = self.gh * self.gw * 2 * d * self.patch ** 2 * (self.c_in + self.c_out)
+        patches = n if lowres else self.gh * self.gw     # embedded and decoded
+        io = patches * 2 * d * self.patch ** 2 * (self.c_in + self.c_out)
+        mg = self.merge[str(k)] if (k > 1 and not lowres and str(k) in self.merge) else None
+        if mg is not None and mg.mode == "linear":
+            io += 4 * self.gh * self.gw * d * d          # per-slot d x d merge + unmerge maps
         return 3 * batch * (body + io)
