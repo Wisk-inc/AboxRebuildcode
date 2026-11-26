@@ -1,4 +1,5 @@
 """bantam pretrain: argument validation, divergence, run-log fields, checkpoints (in-process, tiny)."""
+import argparse
 import json
 import os
 import sys
@@ -14,6 +15,7 @@ from bantamtrain.data import tokpack  # noqa: E402
 from bantamtrain.device import Runtime  # noqa: E402
 from bantamtrain.lowmem import QState  # noqa: E402
 from bantamtrain.models import ZoomGPT  # noqa: E402
+from bantamtrain.zoom import ZoomSchedule  # noqa: E402
 
 V = 64
 TINY = ["--d", "16", "--layers", "1", "--heads", "1", "--seq", "32", "--batch", "4",
@@ -191,6 +193,26 @@ def test_auto_batch_split_and_cpu_noop(data, run, capsys):
     assert pretrain.split_batch(a, [2, 1], 1) is None            # round(1.5) x 16 != 24
     assert run(data, "--auto_batch", "--stop_step", "1") == 0
     assert "not a CUDA device" in capsys.readouterr().out
+
+
+def test_auto_batch_probe_does_not_change_the_model_init(monkeypatch):
+    # the probe builds and steps throwaway models before the real one is built
+    def find(try_step, start, limit, device):
+        try_step(1)
+        try_step(2)
+        return 2
+    monkeypatch.setattr(pretrain, "find_batch_size", find)
+    a = argparse.Namespace(d=16, layers=1, heads=1, zoom="2:0.5,1:0.5", grad_ckpt=0,
+                           param_dtype="bf16", optim="muon", lr=1e-3, wd=0.1, state_bits=32,
+                           ns="quintic", seq=32, batch=4, accum=1, batch_scale=0.0,
+                           batch_scale_k=0, mix_fine=0.0)
+    rt = Runtime(torch.device("cpu"), None, None, False)
+    torch.manual_seed(0)
+    want = pretrain.build_model(a, V).state_dict()
+    torch.manual_seed(0)
+    assert pretrain.auto_micro_batch(a, V, ZoomSchedule.parse(a.zoom), rt) == 2
+    got = pretrain.build_model(a, V).state_dict()
+    assert all(torch.equal(want[k], got[k]) for k in want)
 
 
 def test_eval_schedule_and_eval_checkpoint_names():

@@ -4,10 +4,10 @@ Every run gets the same FLOP budget and reads the same pre-tokenized chunks in
 the same order: one seeded permutation of the windows, of which DDP ranks read
 disjoint slices. Baseline: --zoom 1. Zoom Training: e.g.
 --zoom 4:0.35,2:0.25,1:0.4 (zoom level : fraction of the FLOP budget).
-Validation is always plain next-token loss at k=1 (the deployable model) in
-fp32 arithmetic (a bf16-weight model is scored as an fp32 copy). Periodic evals
-use the first --eval_seqs val windows, the final eval the first
---final_eval_seqs; the final model is also scored on the periodic subset
+Validation is always plain next-token loss at k=1 (the deployable model) in the
+arithmetic of an fp32-weight run (a bf16-weight model is scored as an fp32
+copy). Periodic evals use the first --eval_seqs val windows, the final eval the
+first --final_eval_seqs; the final model is also scored on the periodic subset
 (final_val_loss_eval_seqs) so curves and finals can be compared.
 
     python llm/train.py --data DIR --budget 6.8e13 --zoom 4:0.35,2:0.25,1:0.4 \
@@ -105,8 +105,9 @@ class ChunkStream:
 
 @torch.no_grad()
 def evaluate(model, val, args, rt, n_seqs):
-    """Mean k=1 loss over the first n_seqs windows of val, in fp32 arithmetic for every run:
-    a bf16/fp16-weight model is scored as an fp32 copy (exactly its rounded weights)."""
+    """Mean k=1 loss over the first n_seqs windows of val, with the arithmetic of an fp32-weight
+    run (fp32 on CPU, the run's autocast on GPU): a bf16/fp16-weight model is scored as an fp32
+    copy (exactly its rounded weights)."""
     m = model
     if any(p.dtype in (torch.bfloat16, torch.float16) for p in model.parameters()):
         m = copy.deepcopy(model).float()
@@ -327,7 +328,7 @@ def split_batch(args, ks, fits):
 def auto_micro_batch(args, vocab, sched, rt):
     """--auto_batch probe: the largest power-of-two micro-batch <= batch*accum whose
     fwd/bwd/step fits under the GPU memory headroom at every zoom stage, run on a throwaway
-    model and optimizer (None: not even 1 fits)."""
+    model and optimizer with the RNG states restored afterwards (None: not even 1 fits)."""
     ks = sorted({k for k, _ in sched.stages} | ({1} if args.mix_fine > 0 else set()))
     probe_rt = copy.copy(rt)
     probe_rt.scaler = None                    # leave the real loss scale untouched
@@ -345,7 +346,10 @@ def auto_micro_batch(args, vocab, sched, rt):
             probe_rt.backward(loss, o, m.parameters())
             o.zero_grad(set_to_none=True)
 
-    return find_batch_size(try_step, start=1, limit=args.batch * args.accum, device=rt.device)
+    # the probe models' init and stochastic rounding draw from the global RNGs: without the
+    # fork the real model would start from other weights than the same run without --auto_batch
+    with torch.random.fork_rng(devices=[rt.device] if rt.device.type == "cuda" else []):
+        return find_batch_size(try_step, start=1, limit=args.batch * args.accum, device=rt.device)
 
 
 # ------------------------------------------------------------------ main
