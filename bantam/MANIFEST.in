@@ -1,0 +1,4 @@
+# The sdist holds the package and what pyproject.toml names (packaging/README.md,
+# packaging/LICENSE). tests/ is left out: it needs conftest.py, experiments/ and results/,
+# which are not shipped, so a partial copy could not run.
+prune tests

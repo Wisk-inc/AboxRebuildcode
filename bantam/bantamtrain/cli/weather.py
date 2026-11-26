@@ -581,11 +581,11 @@ def main(argv=None):
         ap.error(f"--duty must be in (0, 1], got {args.duty}")
     args.ckpt = args.ckpt or os.path.join(args.out, f"{args.name}.ckpt")
 
-    os.makedirs(args.out, exist_ok=True)
     rt = setup_runtime(args.device, args.precision, args.compile, args.threads, args.seed)
     if rt.device.type == "cpu":
         rt.amp_dtype = None
     meta = json.load(open(os.path.join(args.data, "meta.json")))
+    os.makedirs(args.out, exist_ok=True)            # after --data is readable: no empty --out
     times = np.array(meta["times"], dtype="datetime64[h]")
     test_start, n_total = first_test_row(meta), meta["n_total"]
     if n_total - 13 <= test_start:

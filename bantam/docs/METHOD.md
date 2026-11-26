@@ -324,6 +324,11 @@ bantam pretrain --data DATA/tok4k --budget 6.8e13 --optim muon --lr 1.6e-2 \
     --qk_norm 1 --zoom 2:0.33,1:0.67 --batch_scale 2 --name qk_zoom --out results/mine
 ```
 
+`--recipe best` sets the second command's optimizer, LR, QK-norm and Zoom flags for
+every one of them the command line does not give (`bantam pretrain --data DATA/tok4k
+--budget 6.8e13 --recipe best --name qk_zoom`). It is the best combination measured at
+this one size (2 seeds, CPU), not a recipe tested at larger scale.
+
 ---
 
 ## 2. Muon
@@ -395,7 +400,10 @@ OPT-8 fix), so it should be rerun before it is quoted as a 0.3 result.
   matrices go to Muon (`--muon_lora -1`, auto). This is new in 0.3. In 0.2
   `--optim muon` with LoRA silently trained the adapters with 8-bit AdamW, so
   the old "Muon with 8-bit state" fine-tuning results were really 8-bit AdamW
-  results. No learning rate has been tuned for Muon on LoRA here.
+  results. No learning rate has been tuned for Muon on LoRA here. In the
+  fine-tuning race (SmolLM2-135M, one run per arm, [RESULTS.md §15.2](../RESULTS.md))
+  it did not beat AdamW at either LR tried: 2.303 vs 2.259 at 2e-4, 2.241 vs 2.228
+  at 1e-3.
 
 ### 2.3 Learning rate: one LR for both halves
 
@@ -486,8 +494,9 @@ checkpoint, so they cannot be re-scored. Their evaluation error is about
 ±0.001 (full budget) and ±0.004 (short run)
 (`results/llm_lowmem/bf16_eval_bias.json`); both are marked for a rerun.
 Weights plus optimizer state went from 50.4 MB to 18.5 MB (2.7x) for this
-model. The bf16 path ran 1.6-2.7x slower in wall-clock on this CPU (5039 s vs
-3072 s at full budget; 718 s vs 271 s for the short runs, 1 thread each). The
+model. The bf16 path ran 1.6-2.6x slower in wall-clock on this CPU (5039 s vs
+3072 s at full budget, against fp32 weights and 32-bit state; 718 s vs 271 s for
+the short runs, against the same 8-bit run with fp32 weights; 1 thread each). The
 cause was not profiled.
 
 The same techniques are available elsewhere: bitsandbytes ships fused CUDA
@@ -584,7 +593,9 @@ Other pieces:
   block by block per chunk, so no full float vocabulary table exists.
 - `load_quantized` (`--low_ram 1`) builds the model on the meta device and
   quantizes each safetensors tensor as it is read, so the float model is never
-  in RAM at once.
+  in RAM at once. A checkpoint with only `pytorch_model.bin` weights falls back
+  to `from_pretrained` + `quantize_model` with a warning (the float model is then
+  in RAM first; `report.quant.low_ram` is `false`).
 - `--embed_quant 8` (default) keeps embeddings and the head at int8 whatever
   `--quant` is; `same` uses the `--quant` format; `none` keeps them in float.
 - Linear subclasses with their own forward (Gemma's scaled embeddings, OPT's
@@ -664,7 +675,7 @@ Example:
 ```bash
 bantam finetune --model HuggingFaceTB/SmolLM2-135M \
     --dataset databricks/databricks-dolly-15k --max_examples 2000 \
-    --lora 16 --quant nf4 --optim muon --out runs/dolly
+    --lora 16 --quant nf4 --low_ram 1 --out runs/dolly
 ```
 
 ---
@@ -699,9 +710,10 @@ Details:
 - A loss with nothing supervised returns 0, never NaN.
 
 Where it is used: `bantam finetune --ce_chunk 2048` (default; 0 turns it off),
-and `ZoomGPT(ce_chunk=...)` from Python. `bantam pretrain` has no `--ce_chunk`
-flag yet, so pretraining always builds the full logits (fine for a 4K
-vocabulary).
+`bantam pretrain --ce_chunk N` (off by default, which builds the full logits; fine
+for a 4K vocabulary), and `ZoomGPT(ce_chunk=...)` from Python. In pretraining the
+budget is unchanged; the recomputed head is counted only in `model_flops_exact`, and
+`--out_mode bag` at `k > 1` is not chunked.
 
 When it does not help: if a micro-batch holds fewer tokens than one chunk,
 there is nothing to save (the fine-tuning race uses about 1,024 tokens per
@@ -774,6 +786,27 @@ The mask is passed in the form the model's attention implementation expects:
 a boolean mask for SDPA, and an additive float mask (0 or the dtype's minimum)
 for eager and flex attention, which add the mask to the scores.
 
+**Sliding-window layers.** A prepared 4-D mask replaces the mask transformers
+would build, including its sliding window. So for models with a window
+(`window_layout` reads it from the config and the decoder's code),
+`packed_attention` also cuts the block-diagonal mask to the window, with
+transformers' rule (a key is visible when `q − window < kv ≤ q`):
+
+- every layer has the window (`sliding_window` set and no `layer_types`:
+  Mistral, Mixtral, Phi-3, Starcoder2; or `layer_types` all sliding): one
+  windowed mask;
+- sliding and full layers mixed (`layer_types`: Gemma-2/3, Cohere2, Qwen2/3 with
+  `use_sliding_window`) and a decoder that accepts transformers' prepared mapping:
+  `{"full_attention": mask, "sliding_attention": windowed mask}`;
+- any other mix: a note is printed once and the layers get the plain mask.
+
+Models without a window are unchanged. The test suite checks packed logits
+against each example run alone for Mistral, Gemma-2 (eager), Gemma-3 and Qwen2 at
+a window of 8 tokens; the 0.3 review also checked Mixtral, Phi-3, Starcoder2,
+Qwen3 and Cohere2 by hand (within 2e-5). Before this, every layer got the
+unwindowed mask, which changed the logits of packed examples longer than the
+window.
+
 ### 8.4 The leak in 0.2
 
 - Early 0.2 builds packed examples with no mask at all: an example could attend
@@ -788,16 +821,14 @@ for eager and flex attention, which add the mask to the scores.
 
 ### 8.5 Known limits
 
-- A prepared 4-D mask overrides sliding-window attention. Layers with a window
-  (Gemma-3 above 512/1024 tokens, Mistral/Phi-3/Starcoder2 above their window,
-  Gemma-2 above 4096) lose it when `--seq` exceeds the window. The default
-  `--seq 512` is unaffected.
+- A decoder that mixes sliding-window and full layers but takes only one mask
+  cannot give its sliding layers their window in packed or padded windows (see
+  §8.3; a note is printed). Remote-code models whose source cannot be read get
+  the plain mask too.
 - `flash_attention_*` implementations cannot take a 4-D mask. The CLI never
   selects them.
 - A dense `T × T` mask is slower than FlashAttention's variable-length packing
   (used by TRL padding-free and Axolotl multipack). That matters on GPUs.
-- "1 epoch" drops the last windows that do not fill a whole optimizer step (up
-  to `batch × accum − 1` windows; 3 of 235 in the race protocol).
 
 ### 8.6 Loss normalisation
 
@@ -805,6 +836,22 @@ With `--accum > 1` or several processes, the loss is the sum of token losses
 over the whole step divided by the number of supervised tokens in the step. In
 0.2 it was the mean of per-micro-batch means, which over-weights short
 micro-batches. The two agree for `--accum 1` on one process.
+
+### 8.7 Epochs and optimizer steps
+
+- An epoch trains on every window once (`step_windows`). Steps per epoch are
+  `ceil(ceil(windows / batch) / accum)` per process; the last step may hold fewer
+  micro-batches, and its loss is the mean over its own supervised tokens (§8.6).
+  The window order is reshuffled when an epoch starts.
+- `--drop_last 1` gives the 0.2 schedule: full steps only, `windows // (batch ×
+  accum)` per epoch, which skips up to `batch × accum − 1` windows (3 of 235 in
+  the race's 2 x 2 arms, which ran on that code). A checkpoint written before
+  full epochs resumes with it.
+- Packing puts several examples in one window, so a step sees more examples
+  than `batch × accum`. `log.json` records `examples_per_window`,
+  `examples_per_step` and `steps_per_epoch`. `--examples_per_step N` sets
+  `accum = max(1, round(N / (batch × processes × examples per window)))` after
+  packing; it cannot go below one micro-batch per step.
 
 ---
 
@@ -1069,19 +1116,23 @@ same tokens as the no-cache reference at 351 vs 59 tokens/s.
 - `bantam finetune --save_every N` writes `<out>/checkpoint/state.pt`
   (trainable parameters, optimizer, step, every rank's data order and RNG,
   GradScaler, log). `--resume DIR` continues and refuses changed model, data,
-  schedule, weight-decay, orthogonalizer or dropout options and a different
-  world size. Outputs are `adapter.pt` plus `adapter_meta.json`, a PEFT
-  adapter, and the tokenizer, all a few MB; `--save_merged 1` adds a merged
-  model.
+  schedule, weight-decay, orthogonalizer or dropout options (also `--drop_last`
+  and `--examples_per_step`) and a different world size. A checkpoint written
+  before full epochs (§8.7) resumes with `--drop_last 1`, with a note. Outputs
+  are `adapter.pt` plus `adapter_meta.json` (with the run's `--quant` and
+  `--embed_quant`, which `bantam chat` reuses by default), a PEFT adapter, and
+  the tokenizer, all a few MB; `--save_merged 1` adds a merged model.
 
 ### 12.3 Saved language models
 
 `bantam pretrain --save PATH` writes, before the final evaluation:
 
 - `PATH`: the raw `state_dict` (with the zoom modules).
-- `<root>_pretrained/`: `config.json` (constructor arguments, dtype, EOS id),
-  `model.safetensors` (or `model.pt` without safetensors), and the data
-  directory's `tokenizer.json`. The zoom modules are stripped.
+- `<root>_pretrained/`: `config.json` (constructor arguments, dtype, EOS id and
+  `weights_file`), `model.safetensors` (or `model.pt` without safetensors), and
+  the data directory's `tokenizer.json`. The zoom modules are stripped.
+  `from_pretrained` loads the file `weights_file` names, so a directory re-saved
+  without safetensors never loads an older `model.safetensors`.
 
 `bantam generate --model <root>_pretrained --prompt "Once upon a time"` samples
 from it. `ZoomGPT.from_pretrained` rebuilds the model on the meta device and
@@ -1094,16 +1145,18 @@ A run whose loss becomes non-finite stops at once, writes its log with status
 
 ## 13. Runtime details
 
-- **Flush-to-zero on CPU.** Denormal numbers in gradients slow CPU matmuls
-  sharply. `bantam pretrain`, `weather` and `finetune` call
-  `torch.set_flush_denormal(True)` at start-up. A hand-timed check on this CPU
-  found a 15-23x slowdown from denormals in one large matmul; that measurement
-  is not committed as a result file. Note: importing `bantamtrain.finetune`
-  turns flush-to-zero on for the whole process.
+- **Flush-to-zero on CPU.** Denormal numbers in gradients can slow CPU matmuls
+  sharply; with flush-to-zero they are treated as zero. No timing of this is
+  committed, so no speed-up is claimed. `bantam pretrain` and `weather` call
+  `torch.set_flush_denormal(True)` when their modules are imported, so importing
+  them turns it on for the whole process. `bantam finetune` and `bantam chat` set
+  it in `main()` with `--ftz` (default 1; 0 keeps IEEE denormals), and importing
+  `bantamtrain.finetune` no longer changes the process (it did before 0.3.0;
+  the fine-tuning race ran on that code).
 - **CPU precision.** Bantam never uses autocast on CPU, so a default CPU run
   is fp32 throughout. With `--param_dtype bf16` the weights are bf16, so the
   forward and backward run in bf16 arithmetic (the loss and the evaluation are
-  computed in fp32). On the sandbox that was 1.6-2.7x slower than fp32 (§3).
+  computed in fp32). On the sandbox that was 1.6-2.6x slower than fp32 (§3).
   The run logs do not record the CPU model; the CPU of the 0.3 sandbox reports
   `avx512_bf16` and `amx_bf16`, the 2026-10 development box did not.
 - **GPU path (untested here).** Precision `auto` picks bf16 autocast on compute
@@ -1124,21 +1177,23 @@ A run whose loss becomes non-finite stops at once, writes its log with status
   multi-GPU training.
 - The 5B-on-one-96 GB-GPU scoreboard ([SCOREBOARD_5B.md](SCOREBOARD_5B.md) and
   `bantam memory`) is arithmetic, not a measurement. Bantam has no FP8 code
-  path, so the scoreboard's FP8 row is a literature-based estimate, and the
-  chunked loss its later rows assume cannot be switched on from
-  `bantam pretrain`.
+  path, so the scoreboard's FP8 row is a literature-based estimate. The chunked
+  loss its later rows assume is `bantam pretrain --ce_chunk` (off by default);
+  its memory saving has not been measured on a GPU.
 - Zoom above 5.8M parameters, on other data, against sequence-length warm-up at
   equal FLOPs, or in wall-clock.
 - Mean merge and bag loss under the `k = 2`, batch × 2 recipe.
 - Muon with a separate (AdamW-tuned) LR for the embedding/head.
 - The Polar Express, 8-bit and bf16 runs with 0.3 numerics (the committed
   ones used the 0.2 coefficient list, log map and bf16 evaluation).
-- A tuned LR for Muon on LoRA matrices.
+- A tuned LR for Muon on LoRA matrices (the race tried 2e-4 and 1e-3 only).
 - Weather Zoom with batch scaling, and weather results on a held-out
   validation year.
-- Fine-tuning speed against other tools: the fine-tuning race (Hugging Face
-  Trainer + PEFT vs Bantam on SmolLM2-135M) is described in
-  [COMPARISON.md](COMPARISON.md).
+- Fine-tuning speed against GPU tools (Unsloth, TRL, Axolotl). The one
+  comparison so far is the CPU race against Hugging Face Trainer + PEFT on
+  SmolLM2-135M, one run per arm ([RESULTS.md §15](../RESULTS.md),
+  [COMPARISON.md §4](COMPARISON.md)).
+- `--examples_per_step`, which was added after the race.
 
 ---
 

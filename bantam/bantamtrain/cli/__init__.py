@@ -94,6 +94,11 @@ def main(argv=None):
             raise
         print(f"bantam {cmd}: {msg}", file=sys.stderr)
         return 1
+    except (FileNotFoundError, IsADirectoryError, NotADirectoryError) as e:
+        # a mistyped --data / --jsonl / --adapter / --load path: one line, as argparse's usage
+        # errors (exit 2), not a traceback
+        print(f"bantam {cmd}: error: {e}", file=sys.stderr)
+        return 2
     except SystemExit as e:                         # argparse --help / usage errors, sys.exit()
         rc = e.code
     finally:

@@ -2,7 +2,7 @@
 
     python -m bantamtrain.finetune --model HuggingFaceTB/SmolLM2-135M \
         --dataset databricks/databricks-dolly-15k --max_examples 2000 \
-        --lora 16 --quant nf4 --epochs 1 --examples_per_step 8 --out runs/dolly
+        --lora 16 --quant nf4 --epochs 1 --batch 1 --examples_per_step 8 --out runs/dolly
 
 What it gives you
   * LoRA / QLoRA: frozen base (optionally int8 / int4 / NF4 blockwise, bantamtrain.qweights)
@@ -769,6 +769,31 @@ def _match_embedding_dtype(model, dtype):
             m.register_forward_hook(hook)
 
 
+def data_summary(st, seq):
+    """The one-line data report: rows kept, why the others were dropped, and what changed."""
+    why = [f"{k}: {n}" for k, n in sorted(st["skipped"].items())] + [
+        f"no assistant turn: {st['no_assistant_turn']}",
+        f"no response token within --seq {seq}: {st['no_target_after_truncation']}"]
+    return (f"[finetune] data: kept {st['kept']}/{st['rows']} rows (dropped: {', '.join(why)}); "
+            f"truncated to --seq {seq}: {st['truncated']}; prompt not a token prefix: "
+            f"{st['boundary_fallback']}")
+
+
+def enable_grad_ckpt(model):
+    """Turn on transformers' activation checkpointing; False when the model has no API for it.
+    transformers 5 names it activation_checkpointing_enable (it also honours a subclass's
+    gradient_checkpointing_enable override); gradient_checkpointing_enable, the only name
+    before 5, is its deprecated alias there (a FutureWarning) and goes away in v6."""
+    for name in ("activation_checkpointing_enable", "gradient_checkpointing_enable"):
+        fn = getattr(model, name, None)
+        if callable(fn):
+            fn()
+            if hasattr(model, "enable_input_require_grads"):
+                model.enable_input_require_grads()
+            return True
+    return False
+
+
 def auto_param_dtype(device, lora):
     """--param_dtype auto: bf16 weights where bf16 runs natively (CUDA sm80+, see
     device.auto_precision; older GPUs only emulate it) and for full fine-tuning (--lora 0),
@@ -1022,10 +1047,9 @@ def main(argv=None):
     else:
         for p in model.parameters():
             p.requires_grad_(True)
-    if args.grad_ckpt and hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable()
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
+    if args.grad_ckpt and not enable_grad_ckpt(model) and is_main:
+        print(f"[finetune] note: {type(model).__name__} has no activation checkpointing API; "
+              "--grad_ckpt is ignored", flush=True)
     model.to(rt.device)
     model.train()
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -1072,10 +1096,7 @@ def main(argv=None):
         raise SystemExit(f"[finetune] no example has a supervised token after tokenization: {dstats}")
     dropped = dstats["examples"] - dstats["kept"]
     if is_main and (dropped or dstats["truncated"] or dstats["skipped"] or dstats["boundary_fallback"]):
-        print(f"[finetune] data: kept {dstats['kept']}/{dstats['rows']} rows (skipped {dstats['skipped']}, "
-              f"no assistant turn {dstats['no_assistant_turn']}, no target left after truncation to --seq "
-              f"{dstats['no_target_after_truncation']}); truncated {dstats['truncated']}; prompt not a token "
-              f"prefix {dstats['boundary_fallback']}", flush=True)
+        print(data_summary(dstats, args.seq), flush=True)
     random.Random(args.seed).shuffle(items)
     if args.eval_jsonl:
         ev_args = argparse.Namespace(**{**vars(args), "jsonl": args.eval_jsonl, "max_examples": 0})
@@ -1181,7 +1202,7 @@ def main(argv=None):
         log = {**log, **st["log"], "args": vars(args), "resumed_from": args.resume}
     if is_main:
         print(f"[finetune] {args.model} trainable={trainable/1e6:.2f}M "
-              f"model={log['model_bytes']/1e6:.0f}MB state={log['optimizer_state_bytes']/1e6:.0f}MB "
+              f"model={log['model_bytes']/1e6:.0f}MB "
               f"windows={per_rank * world} steps={total_steps} ({spe}/epoch, ~{ex_step:.1f} examples "
               f"each) {describe(rt)}" + (f" resumed at step {start}" if start else ""), flush=True)
     if not start:
@@ -1298,7 +1319,8 @@ def main(argv=None):
             log["merged"] = "base + adapters"
         write_log()
         print(f"[finetune] done: eval {log['evals'][0]['eval_loss']:.4f} -> "
-              f"{log['final_eval_loss']:.4f} in {t_train:.0f}s", flush=True)
+              f"{log['final_eval_loss']:.4f} in {t_train:.0f}s; optimizer state "     # allocated
+              f"{log['optimizer_state_bytes'] / 1e6:.2f} MB", flush=True)             # at step 1
     if world > 1:
         dist.barrier()
         dist.destroy_process_group()

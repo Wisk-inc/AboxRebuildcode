@@ -46,8 +46,9 @@ The `llm/` and `weather/` scripts exist only in the source repository, not in th
 package. The repository's old package name is gone; see [../CHANGELOG.md](../CHANGELOG.md).
 
 Exit status, for every command: 0 means success, 1 means an error (a message or a
-traceback), and 2 means bad arguments (argparse usage error). `bantam pretrain` also uses 3 for a run
-that diverged (non-finite loss).
+traceback), and 2 means bad arguments (argparse usage error, or through `bantam` an input
+path that does not exist: one `bantam <command>: error: ...` line). `bantam pretrain` also
+uses 3 for a run that diverged (non-finite loss).
 
 **Hardware note.** Every command was developed and measured on a 4-core CPU with no GPU.
 The CUDA code paths (`--device cuda`, `--precision`, `--compile` on GPU, NCCL DDP) exist
@@ -290,7 +291,7 @@ lines for chat data.
 |---|---|---|
 | `--quant` | `0` | quantize the frozen base: `8` (int8), `4` (linear int4) or `nf4` (QLoRA codebook). Needs `--lora` > 0 |
 | `--embed_quant` | `8` | embeddings and output head: `8` (int8), `same` as `--quant`, or `none` (float) |
-| `--low_ram` | 0 | 1 (with `--quant`): load and quantize tensor by tensor, never holding the float model. Needs `.safetensors` weights: with `pytorch_model.bin` only, it warns and loads the float model first (`report.quant.low_ram` is `false` in `log.json`) |
+| `--low_ram` | 0 | 1 (with `--quant`): load and quantize tensor by tensor, never holding the float model. Needs `.safetensors` weights: with `pytorch_model.bin` only, it warns and loads the float model first (`report.quant.low_ram` is `false` in `log.json`; transformers loads `.bin` weights only on torch >= 2.6) |
 | `--grad_ckpt` | 0 | 1: activation checkpointing. Recommended with `--quant` (a note is printed otherwise) |
 | `--ce_chunk` | 2048 | chunked cross-entropy: tokens per chunk, so the full logits are never built |
 
@@ -312,7 +313,7 @@ lines for chat data.
 | `--drop_last` | 0 | 1: the 0.2 schedule, full optimizer steps only, so an epoch skips the windows that do not fill a last step. A checkpoint written before 0.3's full epochs resumes with it |
 | `--batch` | 4 | rows per micro-batch |
 | `--accum` | 1 | gradient accumulation; the loss is averaged over every supervised token of the step |
-| `--examples_per_step N` | 0 | after packing, set `--accum` to `max(1, round(N / (batch x processes x mean examples per window)))`, so an optimizer step sees about N examples (0 = off; it overrides `--accum`) |
+| `--examples_per_step N` | 0 | after packing, set `--accum` to `max(1, round(N / (batch x processes x mean examples per window)))`, so an optimizer step sees about N examples (0 = off; it overrides `--accum`). It cannot go below one micro-batch per step, so lower `--batch` for fewer examples per step |
 
 **Evaluation, runtime, output**
 
@@ -345,10 +346,19 @@ or a higher `--lr`.
 **Examples**
 
 ```bash
-# LoRA r=16 on SmolLM2-135M with Dolly; Muon on the LoRA matrices, 8-bit state
+# LoRA r=16 on SmolLM2-135M with Dolly; 8-bit AdamW (the default optimizer)
 bantam finetune --model HuggingFaceTB/SmolLM2-135M \
     --dataset databricks/databricks-dolly-15k --max_examples 2000 \
-    --lora 16 --optim muon --epochs 1 --out runs/dolly
+    --lora 16 --epochs 1 --out runs/dolly
+
+# the same with Muon on the LoRA matrices (in the fine-tuning race it did not beat AdamW)
+bantam finetune --model HuggingFaceTB/SmolLM2-135M \
+    --dataset databricks/databricks-dolly-15k --max_examples 2000 \
+    --lora 16 --optim muon --epochs 1 --out runs/dolly_muon
+
+# ask for about 4 examples per optimizer step after packing (the chosen --accum is printed)
+bantam finetune --model HuggingFaceTB/SmolLM2-135M --jsonl my_data.jsonl \
+    --batch 1 --examples_per_step 4 --out runs/mine
 
 # QLoRA-style: NF4 base with int8 embeddings, loaded tensor by tensor, checkpointing
 bantam finetune --model HuggingFaceTB/SmolLM2-135M --jsonl my_data.jsonl \
@@ -593,7 +603,7 @@ assumptions, not a measurement: nothing in it has been checked on a GPU. Two tab
 | `--fp8_speedup` | 1.20 | assumed FP8 throughput gain |
 | `--power_tput` | 0.95 | throughput kept under the power cap |
 | `--act_factor` | 1.0 | scale the measured activation constants (0.7 approximates fused kernels) |
-| `--ce_chunk` | 2048 | chunked cross-entropy chunk (`--finetune`: 0 = unchunked) |
+| `--ce_chunk` | 2048 | chunked cross-entropy chunk; 0 = unchunked (the full logits, as `bantam pretrain` without `--ce_chunk`), which also drops "+ chunked CE" from row 2 |
 | `--bits_per_token` | 5.97 | TokPack size for the storage lines (measured on TinyStories with a 4k vocab; a 32k-vocab web corpus needs roughly 7.3-9) |
 | `--markdown` | off | print a Markdown table |
 
@@ -606,9 +616,10 @@ assumptions, not a measurement: nothing in it has been checked on a GPU. Two tab
 | `--lora_r` | 16 | LoRA rank |
 | `--lora_dropout` | 0.05 | LoRA dropout (as `bantam finetune`) |
 
-Parts of the scoreboard describe things Bantam cannot run today: there is no FP8 code
-path (row 4, "FP8 linears", is a literature estimate), and `bantam pretrain` has no
-chunked cross-entropy flag although rows 2 to 5 assume it.
+Part of the scoreboard describes something Bantam cannot run today: there is no FP8
+code path (row 4, "FP8 linears", is a literature estimate). Rows 2 to 5 assume chunked
+cross-entropy, which `bantam pretrain` turns on with `--ce_chunk 2048` (off by default);
+`bantam memory --ce_chunk 0` shows the rows without it.
 
 ```bash
 bantam memory                                        # 5B model on one 96 GiB card

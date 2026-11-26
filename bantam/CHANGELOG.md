@@ -28,6 +28,18 @@ PyTorch 2.15 for CPU) with small models. Nothing has been run on a GPU.
   accumulation weighted micro-batches wrongly. All are fixed. New: DoRA, LoRA+,
   all-linear targets (including GPT-2 Conv1D), PEFT export and import, a low-RAM
   quantized loader, and exact resume.
+- **Packed fine-tuning: windows and epochs.** Sliding-window layers (Mistral, Mixtral, Phi-3,
+  Starcoder2, Gemma-2/3, Cohere2, Qwen2/3 with `use_sliding_window`) keep their window
+  inside the block-diagonal mask. An epoch now trains on every packed window once (it
+  used to drop the windows that did not fill a last optimizer step; `--drop_last 1`
+  restores that). Because a window holds several examples, the new
+  `--examples_per_step N` picks `--accum` for about N examples per optimizer step, and
+  `log.json` reports `examples_per_step` and `steps_per_epoch`.
+- **`--recipe best`** for `bantam pretrain` and `bantam weather` sets the best settings
+  measured so far for every option the command line does not give. They were measured
+  at one small size on a CPU only (pretrain: QK-norm + Zoom below, 2 seeds; weather:
+  the low-resolution warm-up, 1 seed). `bantam pretrain --ce_chunk N` adds chunked
+  cross-entropy to pretraining (off by default).
 - **Weather.** A validation year, ACC and climatology metrics, saved models, resumable
   checkpoints and forecasts.
 - **Streaming data pipeline.** Text preparation, deduplication and packing now stream, so memory
@@ -53,7 +65,14 @@ PyTorch 2.15 for CPU) with small models. Nothing has been run on a GPU.
   64x32, a 1.26M-parameter ViT, 5.5e13 FLOPs, scored on the 2018 test year), Zoom made
   results worse under Muon (one-step MSE 0.159 against 0.124, 2 seeds), while the
   established low-resolution warm-up helped (0.112, 1 seed).
-- **Quality checks.** 594 tests pass and 7 are skipped (CUDA-only or slow) on CPU. A
+- **Fine-tuning race** against Hugging Face Trainer + PEFT (SmolLM2-135M, 800 Dolly
+  examples, fp32 on the 4-core CPU, one run per arm; RESULTS.md section 15): with the
+  same AdamW and one packed window per optimizer step, the same held-out loss (2.259
+  against 2.260), 1.36x faster and 38 % less peak RAM, mostly from packing. With 2 x 2
+  packed windows per step Bantam took 58 steps instead of 200 and lost 0.056. Muon on
+  the LoRA matrices did not beat AdamW. The race ran on the code before full epochs
+  and before flush-to-zero moved to `--ftz` (`--drop_last 1` reproduces its epochs).
+- **Quality checks.** 671 tests pass and 7 are skipped (CUDA-only or slow) on CPU. A
   GitHub Actions workflow runs the suite and a packaging check.
 
 ### Breaking and behaviour changes
@@ -80,6 +99,12 @@ bit-identical to the code before the audit.
 - `bantam <command> --help` works without the optional extras. A command whose extra is
   missing prints the `pip install 'bantamtrain[...]'` to run and exits 1 instead of a
   traceback. `bantam` returns the command's exit status; an unknown command returns 2.
+- `import bantamtrain` no longer imports torch: `bantamtrain.ZoomSchedule`, `lr_at`,
+  `SlotMerge` and `SlotUnmerge` are imported on first use. `bantam --help` and
+  `bantam --version` took 0.04 s instead of 1.7 s on the 4-core sandbox. The sdist no
+  longer holds `tests/` (setuptools added the test files without `conftest.py` or the
+  `experiments/` and `results/` they read), and `packaging/release.sh` now checks that
+  the wheel holds only `bantamtrain/`.
 - An unknown `--precision` value is now an error. `pretrain` checks it with argparse
   choices (`auto`, `fp32`, `bf16`, `fp16`; exit 2); `weather` and `finetune` raise a
   ValueError. Before, any typo silently trained in fp32 on a GPU.
@@ -542,9 +567,9 @@ bit-identical to the code before the audit.
   `--bits_per_token`, `--lora_dropout`, `--global_batch_tokens`, `--ns_steps`.
 - `experiments/race_finetune.py`: a fine-tuning race of Hugging Face Trainer + PEFT
   against `bantam finetune` on SmolLM2-135M and Dolly (protocol in
-  [docs/GUIDE.md](docs/GUIDE.md)). Its results are not in this file. Its replay of
-  bantam's data plan follows an arm's `--drop_last` flag (`--drop_last 1` reproduces the
-  published runs).
+  [docs/GUIDE.md](docs/GUIDE.md)); results in [RESULTS.md](RESULTS.md) section 15 and
+  the Highlights above. Its replay of bantam's data plan follows an arm's `--drop_last`
+  flag (`--drop_last 1` reproduces the published runs).
 - `compare_published.py` reports the end-of-story cost apart (`nll_end_nats`,
   `bpb_no_end`) and scores a verified local copy of a Hub model (`--hf repo=dir`).
   `run_queue.py --dry_run`.
@@ -618,6 +643,15 @@ bit-identical to the code before the audit.
 - `--low_ram 1` crashed on checkpoints with only `pytorch_model.bin` weights.
 - `bantam chat --quant` always used int8 embeddings, whatever the run's `--embed_quant`.
 - A missing `datasets`, data source or model left an empty `--out` directory.
+- `--grad_ckpt 1` called `gradient_checkpointing_enable`, which transformers 5 deprecates
+  (a FutureWarning on every run) and removes in v6, where `--grad_ckpt` would have done
+  nothing without a word. It now calls `activation_checkpointing_enable` when the model
+  has it, and prints a note when a model has neither (0.3.0 walkthrough).
+- The data line printed "no target left after truncation to --seq 2", which reads as a
+  `--seq` value; it now names the reason and the count apart ("no response token within
+  --seq 512: 2"). The start line printed `state=0MB` for every run, because the
+  optimizer state is allocated at the first step; the size is now printed at the end
+  (0.3.0 walkthrough).
 
 **Quantization, LoRA and WeightPack**
 
@@ -645,6 +679,12 @@ bit-identical to the code before the audit.
   larger than bf16) and tied tensors stored twice (WP-6). `bits=8`/`4` re-quantized the
   scale matrices of a qweights-quantized state_dict.
 - `experiments/weightpack_eval.py` rebuilt the wrong architecture (EXP-1/quant).
+- `qweights.load_quantized` (`finetune --low_ram 1`) warned "12 checkpoint tensors not
+  used" for GPT-2's `attn.bias` causal-mask buffers, which `from_pretrained` drops on
+  purpose. It now skips the keys the model class lists in
+  `_keys_to_ignore_on_load_unexpected` and old rotary `inv_freq` / `position_ids`
+  buffers, as transformers does; any other unused tensor still warns (0.3.0
+  walkthrough).
 
 **Optimizers and low-memory state**
 
@@ -765,6 +805,11 @@ bit-identical to the code before the audit.
   Newton-Schulz FLOPs were not counted (MEM-10). The FLOP convention was not stated
   (MEM-11). The cross-entropy chunk did not match the code (MEM-12). `model_dims`
   silently substituted a different model at small sizes (MEM-15).
+- `bantam memory --ce_chunk 0` (the scoreboard, not `--finetune`) left rows 2-5 marked
+  "chunked" with a 0-token chunk, so it charged no loss memory at all and showed less
+  memory than the chunked default. 0 now means the full logits, as `bantam pretrain`
+  without `--ce_chunk`: one sequence less per micro-batch in rows 2 and 3 (5 and 6),
+  which SCOREBOARD_5B section 3 had worked out by hand (0.3.0 walkthrough).
 
 **Experiment tooling**
 
@@ -800,12 +845,22 @@ bit-identical to the code before the audit.
   returned None (PKG-12). The end-to-end resume test needed a machine-specific path
   (PKG-8). The version was defined twice (GAP-3/pkg).
 - CI skipped the `prepare-era5` tests (no weather extra) (1902d92).
+- A mistyped input path (`pack-text`/`pack-era5`/`weather --data`, `finetune --jsonl`,
+  `chat --adapter`, `weather --forecast --load`, `prepare-text --train`) ended in a
+  FileNotFoundError traceback. `bantam` now prints one `bantam <command>: error: ...`
+  line and exits 2, as `pretrain` and `generate` already did, and `bantam weather`
+  creates `--out` only after it has read `--data` (0.3.0 walkthrough).
 
 **Documentation**
 
 - The docs were rewritten for 0.3. Commands, imports and paths use `bantamtrain` and
   `bantam` (CLM-3, EXPV-2, FT-19, MEM-7, PKG-11, DATA-14), and `pip install` lines quote
   the extras for zsh (PKG-13). The corrected claims are listed in the next section.
+- The PEFT loading snippets in the README, GUIDE and PyPI page called
+  `AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M")`. transformers 5
+  loads a checkpoint in its stored dtype, bf16 for SmolLM2, so the "same logits as
+  Bantam" claim did not hold for the snippet as written (up to 4 apart in one check).
+  They now pass `dtype=torch.float32` (0.3.0 walkthrough).
 
 ### Results corrected
 
@@ -827,8 +882,9 @@ bit-identical to the code before the audit.
   a 0.85 headroom, the standard AMP row no longer fits, and the Muon row is about 1.9x
   the first row that fits (1.87x at the `bantam memory` defaults) (MEM-1 to MEM-6,
   MEM-14). It is still arithmetic, not a measurement. The FP8 row is a literature
-  estimate with no code behind it, and the chunked cross-entropy the rows assume cannot
-  be turned on in `bantam pretrain` (GPU-16, MEM-8, GAP-5/gpu). The memory saving is not
+  estimate with no code behind it (GPU-16, MEM-8, GAP-5/gpu); the chunked cross-entropy
+  the rows assume could not be turned on in `bantam pretrain` until `--ce_chunk` (added
+  in 0.3.0, off by default). The memory saving is not
   new: ZeRO-Offload trained over 13B on one 32 GB V100 in 2021, and torchao ships 8-bit
   AdamW with bf16 stochastic rounding.
 - **bf16 runs.** bf16-weight runs had been scored with bf16 arithmetic. The two committed
@@ -914,7 +970,9 @@ bit-identical to the code before the audit.
   8-bit and rounding changes; the weather sweeps have not been rerun on a validation
   year; there is no linear-merge run; the long published-comparison run was stopped at
   30%; llama2.c stories110M was not re-scored. The fine-tuning race against Hugging Face
-  Trainer + PEFT is one run per arm on a CPU (see RESULTS.md section 15.2).
+  Trainer + PEFT is one run per arm on a CPU, made with the code before full epochs
+  (`--drop_last 1` reproduces it), and `--examples_per_step` has not been raced (see
+  RESULTS.md section 15.2).
 
 ## [0.2.0] - 2026-10-25
 

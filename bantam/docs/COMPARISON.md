@@ -25,8 +25,9 @@ behind them is in [RESEARCH.md](../RESEARCH.md). Bantam's full results are in
   against Hugging Face + FlashAttention-2 on H100 and Blackwell GPUs. Liger
   Kernel reports +20% throughput and −60% memory on 8×A100. Bantam has no GPU
   number at all, so the honest statement is "not measured", not "good" or
-  "bad". A first CPU comparison with Hugging Face Trainer + PEFT is running
-  now (§4).
+  "bad". The one direct comparison is on a CPU, against Hugging Face Trainer +
+  PEFT (§4): the same held-out loss, 1.36x faster and 38% less peak RAM, mostly
+  from packing, one run per arm.
 - **Almost everything in Bantam is known and already shipped elsewhere.**
   Muon, Polar Express, 8-bit optimizer state, bf16 stochastic rounding, QLoRA,
   DoRA, LoRA+, packing and chunked cross-entropy all exist in other tools,
@@ -214,6 +215,10 @@ The harness is `experiments/race_finetune.py`
 - `bantam_nf4`: the `bantam` arm on an NF4-quantized base
   (`--quant nf4 --low_ram 1`, int8 embeddings), judged on its NF4 base and
   also on the float base.
+- Follow-up arms: `bantam_adamw_steps`, `bantam_muon_steps` and
+  `bantam_nf4_adamw_steps` take one packed window per optimizer step (235
+  steps, close to Hugging Face's 200); `bantam_muon_steps_lr1e-3` and
+  `bantam_adamw_steps_lr1e-3` do the same at LR 1e-3.
 
 **What is measured**
 - Training speed: real (non-padding) trained tokens divided by training-only
@@ -227,7 +232,7 @@ The harness is `experiments/race_finetune.py`
 
 **Fairness checks built into the harness**
 - Token parity: the same token ids in every arm (0 mismatches on all 800
-  examples in a dry run).
+  examples in the full run).
 - Bantam's own eval loss and the judge agree to about 1e-7 on the same
   examples, which also checks that packed examples do not see each other.
 
@@ -236,13 +241,19 @@ The harness is `experiments/race_finetune.py`
   1,024 real tokens, so Bantam takes about 3.4x fewer, larger optimizer steps
   (58 vs 200) at the same LR.
 - Hugging Face's first update has LR 0 (warm-up starts at 0).
-- Bantam's "1 epoch" skips the last windows that do not fill a whole optimizer
-  step (3 of 235 windows, about 1.2% of supervised tokens); tokens/s counts only
-  tokens actually trained.
+- The race ran on the code before two 0.3.0 changes. Its "1 epoch" took only
+  full optimizer steps, so the 2 x 2 arms skipped the last 3 of 235 windows
+  (about 1.2% of supervised tokens; tokens/s counts only tokens actually
+  trained). 0.3.0 trains every window once per epoch; `--drop_last 1`
+  reproduces the old epoch. The one-window-per-step arms train the same windows
+  either way. Importing `bantamtrain.finetune` also turned on flush-to-zero
+  then; in 0.3.0 `--ftz 1`, the default, does, so the Bantam arms still run
+  with it.
 - The chunked loss saves nothing at this shape (1,024 tokens per micro-batch is
   below the 2,048-token chunk).
-- The machine is shared; timing varied by about 10% between identical smoke
-  runs, while quality was bit-identical.
+- The full run had the machine to itself; two Bantam arms that differ only in
+  LR took 9.7 and 8.9 min, so wall time varies by about 9%. Identical smoke
+  runs varied by about 10% in time, while quality was bit-identical.
 
 **Result.** With the same optimizer and a comparable number of optimizer steps,
 Bantam matched Hugging Face Trainer + PEFT's held-out loss (2.259 vs 2.260) 1.36x
@@ -250,8 +261,12 @@ faster with 38 % less peak RSS (2.57 vs 4.17 GB), on a 4-core CPU in fp32, one r
 per arm. Most of the gain is packing: Hugging Face's dynamic padding computes padding
 tokens, and Bantam's packed windows do not. TRL and Axolotl also pack (with
 FlashAttention varlen on GPUs), so against them this advantage would shrink or
-vanish; Unsloth and Liger add fused kernels that Bantam does not have. Muon on LoRA
-did not beat AdamW. Full numbers: `RESULTS.md` section 15.2.
+vanish; Unsloth and Liger add fused kernels that Bantam does not have. Packing
+also gives fewer, larger optimizer steps: at 2 x 2 packed windows per step Bantam
+took 58 steps and lost 0.056, so match the steps (one window per step here, or
+`--examples_per_step` with a small `--batch`, which was added after the race) or
+raise the LR. Muon on LoRA did not beat AdamW. Full numbers: `RESULTS.md` section
+15.2.
 
 ---
 
@@ -272,7 +287,9 @@ did not beat AdamW. Full numbers: `RESULTS.md` section 15.2.
   thin ([Can Muon fine-tune Adam-pretrained models?](https://arxiv.org/abs/2605.10468)
   reports that LoRA narrows the penalty of switching to Muon;
   [another study](https://arxiv.org/abs/2610.22650) finds Muon competitive
-  with AdamW for full SFT up to 14B). Bantam has not tuned it.
+  with AdamW for full SFT up to 14B). Bantam has not tuned it, and in the race
+  (§4, one run per arm) it did not beat AdamW: 2.303 vs 2.259 at LR 2e-4,
+  2.241 vs 2.228 at LR 1e-3.
 - **Moving adapters between tools.** Bantam reads and writes PEFT adapter
   files.
 

@@ -216,6 +216,7 @@ def test_release_script_builds_with_readme_and_license(tmp_path):
     assert len(files) == 2 and files[0].endswith(".whl") and files[1].endswith(".tar.gz")
     assert bantamtrain.__version__ in files[0]
     assert "README and LICENSE present" in p.stdout
+    assert "contents: the wheel holds only bantamtrain/" in p.stdout
     assert not os.path.exists(os.path.join(ROOT, "bantamtrain.egg-info"))
 
 

@@ -14,4 +14,14 @@ Components
 # the single source of the version: pyproject.toml reads it (setuptools dynamic attr)
 __version__ = "0.3.0"
 
-from .zoom import SlotMerge, SlotUnmerge, ZoomSchedule, lr_at  # noqa: F401,E402
+# bantamtrain.ZoomSchedule etc. are imported on first use: `import bantamtrain` (and so
+# `bantam --help` / `bantam --version`) does not import torch
+_ZOOM = ("SlotMerge", "SlotUnmerge", "ZoomSchedule", "lr_at")
+__all__ = list(_ZOOM)
+
+
+def __getattr__(name):
+    if name in _ZOOM:
+        from . import zoom
+        return getattr(zoom, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

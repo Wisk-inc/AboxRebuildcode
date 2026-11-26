@@ -29,11 +29,16 @@ assert any(n.endswith("licenses/packaging/LICENSE") for n in names), "LICENSE no
 head, _, body = meta.partition("\n\n")
 assert "License-File: packaging/LICENSE" in head and len(body.strip()) > 100, \
     "wheel METADATA has no README body or License-File"
+stray = [n for n in names if not n.startswith(("bantamtrain/", "bantamtrain-"))]
+assert not stray, f"the wheel holds files outside bantamtrain/: {stray[:5]}"
 with tarfile.open(sdist) as t:
     names = t.getnames()
 for f in ("packaging/README.md", "packaging/LICENSE", "pyproject.toml"):
     assert any(n.endswith("/" + f) for n in names), f"{f} not in the sdist"
+stray = [n for n in names if n.split("/")[1:2] in (["tests"], ["experiments"], ["results"])]
+assert not stray, f"the sdist holds {stray[:5]}"
 print("README and LICENSE present in", whl.rsplit("/", 1)[-1], "and", sdist.rsplit("/", 1)[-1])
+print("contents: the wheel holds only bantamtrain/; no tests, experiments or results in the sdist")
 EOF
 if [ "${1:-}" = "upload" ]; then
   TWINE_USERNAME=__token__ python3 -m twine upload --non-interactive "$OUT"/dist/*

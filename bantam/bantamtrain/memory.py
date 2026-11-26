@@ -159,6 +159,8 @@ def scoreboard(params=5e9, d=0, vocab=32000, seq=2048, gpu_gb=96.0, peak_tflops=
     cap = capacity_bytes(gpu_gb, headroom)
     logits_seq = seq * vocab * LOGIT_BYTES             # unchunked loss, per sequence
     logits_chunk = ce_chunk * vocab * LOGIT_BYTES      # chunked cross-entropy, once
+    ce = ce_chunk > 0                                   # 0: rows 2-5 build the full logits too
+    ce_name = " + chunked CE" if ce else ""
     ns_step = muon_ns_flops(d, L, ns_steps)
 
     def row(name, w, g, state, act, chunked, tok_mult=1.0, speed=1.0, muon=False, note=""):
@@ -194,13 +196,13 @@ def scoreboard(params=5e9, d=0, vocab=32000, seq=2048, gpu_gb=96.0, peak_tflops=
     rows = [
         row("1. Standard: AMP bf16, fp32 master + fp32 AdamW", 4 + 2, 4, 8, "amp", False,
             note="fp32 weights + bf16 autocast copies"),
-        row("2. + bf16 weights (stochastic rounding) + 8-bit AdamW + chunked CE",
-            2, 2, 2, "bf16", True, note="no fp32 master"),
-        row("3. + Muon (8-bit momentum)", 2, 2, muon_state, "bf16", True, tok_mult=muon_flops,
+        row(f"2. + bf16 weights (stochastic rounding) + 8-bit AdamW{ce_name}",
+            2, 2, 2, "bf16", ce, note="no fp32 master"),
+        row("3. + Muon (8-bit momentum)", 2, 2, muon_state, "bf16", ce, tok_mult=muon_flops,
             muon=True, note=f"same loss with {muon_flops:.2f}x the FLOPs + Newton-Schulz"),
-        row("4. + FP8 linears", 2, 2, muon_state, "bf16", True, tok_mult=muon_flops,
+        row("4. + FP8 linears", 2, 2, muon_state, "bf16", ce, tok_mult=muon_flops,
             speed=fp8_speedup, muon=True, note=f"x{fp8_speedup:.2f} throughput (literature)"),
-        row("5. + 450 W power cap (75 % power)", 2, 2, muon_state, "bf16", True,
+        row("5. + 450 W power cap (75 % power)", 2, 2, muon_state, "bf16", ce,
             tok_mult=muon_flops, speed=fp8_speedup * power_tput, muon=True,
             note=f"x{power_tput:.2f} throughput, 25 % less power"),
     ]
@@ -352,7 +354,8 @@ def main(argv=None):
     ap.add_argument("--act_factor", type=float, default=1.0,
                     help="scale the measured activation constants (0.7 ~ fused/compiled kernels)")
     ap.add_argument("--ce_chunk", type=int, default=2048,
-                    help="chunked cross-entropy tokens per chunk (fine-tune table: 0 = unchunked)")
+                    help="chunked cross-entropy tokens per chunk (0 = unchunked: the full "
+                         "logits, as `bantam pretrain` without --ce_chunk)")
     ap.add_argument("--bits_per_token", type=float, default=5.97,
                     help="TokPack size (5.97 measured on TinyStories with a 4k vocab; a 32k-vocab "
                          "web corpus needs roughly 7.3-9)")
