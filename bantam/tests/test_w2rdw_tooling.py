@@ -83,3 +83,25 @@ def test_run_queue_dry_run_and_weather_resume(tmp_path, monkeypatch, capsys):
     assert out[1] == ("killed: missing -> resume: bantam weather --data /data --budget 1 --name "
                       f"killed --ckpt_every 50 --threads 3 --resume {wx / 'killed.ckpt'}")
     assert out[2].startswith("fresh: missing -> run: ") and "--resume" not in out[2]
+
+
+def test_summarize_lists_diverged_runs_apart(tmp_path):
+    """A diverged pretrain log ("status": "diverged", no final) was listed as running, and a
+    pre-0.3 NaN final_val_loss was tabulated, so its seed group's mean became NaN."""
+    import json
+    from test_tooling_summarize import write
+    res = tmp_path / "results"
+    write(str(res / "llm" / "a_s0.json"), llm_run(2.7, seed=0))
+    write(str(res / "llm" / "a_s1.json"), llm_run(2.8, seed=1))
+    write(str(res / "llm" / "a_s2.json"), json.dumps(llm_run(2.9, seed=2)).replace("2.9", "NaN"))
+    d = llm_run(1.0)                                   # as pretrain writes it: no final loss
+    del d["final_val_loss"]
+    write(str(res / "llm" / "d_s0.json"), {**d, "status": "diverged", "diverged": True,
+                                           "diverged_at_step": 37})
+    assert summarize.main(["--results", str(res)]) == 0
+    summ = json.loads((res / "summary.json").read_text())
+    assert summ["diverged"] == {"llm": {"a_s2": 100, "d_s0": 37}} and summ["running"] == {}
+    g, = summ["llm_seed_groups"]
+    assert g["n"] == 2 and g["mean"] == pytest.approx(2.75)
+    md = (res / "SUMMARY.md").read_text()
+    assert "## Diverged" in md and "| llm/d_s0 | 37 |" in md and "| a_s2 |" not in md
