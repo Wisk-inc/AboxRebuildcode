@@ -15,9 +15,9 @@ from bantamtrain import lora
 
 @pytest.fixture(scope="module")
 def trained(tmp_path_factory):
-    """(model dir, finetune output dir) after a few LoRA steps."""
+    """(model dir, finetune output dir) after a few LoRA steps (big=True: --quant quantizes it)."""
     root = tmp_path_factory.mktemp("chat")
-    d = save_model_dir(root / "m", "chatml")
+    d = save_model_dir(root / "m", "chatml", big=True)
     out = root / "out"
     ft.main(run_args(d, write_jsonl(root / "d.jsonl", rows(24)), out, "--max_steps", 3, "--lr", 1e-2))
     return d, str(out)
@@ -80,15 +80,19 @@ def test_chat_repl_keeps_and_resets_the_conversation(trained, monkeypatch):
     assert "hello" not in prompts[2] and "be brief" in prompts[2]   # /reset keeps the system message
 
 
-def test_chat_with_a_quantized_base_and_an_old_run_dir(trained, tmp_path, capsys):
+def test_chat_with_a_quantized_base_and_an_old_run_dir(trained, tmp_path, capsys, monkeypatch):
+    from bantamtrain import qweights
     from bantamtrain.cli import chat
     d, out = trained
     old = tmp_path / "old"                       # a run from before adapter_meta.json: log.json only
     shutil.copytree(out, old)
     os.remove(old / "adapter_meta.json")
-    for q in ("0", "8"):
-        assert chat.main(["--model", d, "--adapter", str(old), "--quant", q, "--prompt", "hi",
+    reports, real = [], qweights.quantize_model
+    monkeypatch.setattr(qweights, "quantize_model", lambda *a, **k: reports.append(real(*a, **k)) or reports[-1])
+    for q, dt in (("0", "auto"), ("8", "auto"), ("8", "bf16")):     # bf16: int8 embeddings meet bf16 layers
+        assert chat.main(["--model", d, "--adapter", str(old), "--quant", q, "--dtype", dt, "--prompt", "hi",
                           "--max_new", "4", "--temperature", "0.7"]) == 0
+    assert len(reports) == 2 and all(r["modules_quantized"] > 0 for r in reports)
     with pytest.raises(SystemExit):
         os.remove(old / "log.json")
         chat.main(["--model", d, "--adapter", str(old), "--prompt", "hi"])
