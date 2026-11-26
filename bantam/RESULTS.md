@@ -84,9 +84,10 @@ Published models (1,000 clean TinyStories validation stories, bits per byte,
 each family scored in its own training format):
 
 - Bantam 5.8M scores **1.029 BPB** with 6.4e13 training FLOPs. llama2.c
-  stories260K scores 1.097 with 1.0e16 FLOPs. Bantam matches it with
-  **at least 157x less compute**. That is an upper-bound match from one point,
-  and partly a model-size effect: stories260K has 22x fewer parameters.
+  stories260K scores 1.097 with 1.0e16 FLOPs. Bantam beats it with
+  **at least 157x less compute** (6.4e13 is an upper bound on what Bantam
+  needs, read off its one completed run). This is mostly a model-size effect:
+  stories260K has 22x fewer parameters and is capacity-limited.
 - **Bantam is behind every TinyStories model.** TinyStories-1M scores 0.822,
   0.207 BPB better, with about 3,350x more compute.
 
@@ -155,11 +156,13 @@ Not charged:
   optimizer compute, and still lost. AdamW's update costs about 12 FLOPs per
   parameter per step, which is negligible. 0.3 logs `opt_flops` and offers
   `--flops_mode total` to charge it; the committed runs predate that.
-- **The rest of attention.** The kernels compute the full n x n score matrix
-  and the SDPA backward recomputes it. Counting what the kernels execute
-  (`flops_per_step(..., exact=True)`, logged by 0.3 as `model_flops_exact`)
+- **The rest of attention.** Counting attention as `torch.utils.flop_counter`
+  does (the full n x n score matrix, recomputed by the SDPA backward;
+  `flops_per_step(..., exact=True)`, logged by 0.3 as `model_flops_exact`)
   gives 8.5 % more than the budget charge for a k=1 step and 3.7 % more for a
-  k=2 batch-x2 step. So the default convention slightly under-credits Zoom.
+  k=2 batch-x2 step. Kernels that skip the masked half (CPU flash attention)
+  do less work than that count. Either way, the default convention does not
+  over-credit Zoom; if anything it slightly under-credits it.
 - Elementwise work (norms, the gate/mean merges, the optimizer's elementwise
   terms), the embedding lookup, and evaluation.
 
@@ -320,7 +323,8 @@ Patch-level training (Shao et al.) reports about 0.5x training cost at
 370M-2.7B parameters on the Pile. Bantam's best measured gain is 1.12-1.14x
 (about 11-12 % saved) on one 5.8M-parameter model on an easy dataset. Shao et
 al. also found that learned projections at the input and output hurt the later
-token-level model, and that their advantage shrank from 370M to 2.7B. Whether
+token-level model, and that their advantage shrank with size: test loss was
+better than token-level training at 370M and slightly worse at 2.7B. Whether
 Bantam's learned gate helps or hurts at larger scale is unknown. The closest
 untested competitor is sequence-length warm-up at equal FLOPs.
 
@@ -373,9 +377,10 @@ the two `up_base` runs from the same batch of experiments.
 The effects add up: Zoom gives about -0.05 nats with and without QK-norm, and
 QK-norm about -0.09 with and without Zoom. Per seed, the Zoom effect was
 -0.053 / -0.049 without QK-norm and -0.051 / -0.047 with it.
-QK-norm + Zoom needs 1.41x baseline compute to match (1.42x, 1.39x per seed).
-That figure is measured against the plain baseline curve; no QK-norm baseline
-curve at larger budgets exists, so how much compute Zoom saves *on top of*
+The plain baseline needs 1.41x the compute to match QK-norm + Zoom (1.42x,
+1.39x per seed). That figure is measured against the plain baseline curve; no
+QK-norm baseline curve at larger budgets exists, so how much compute Zoom
+saves *on top of*
 QK-norm is not known in FLOP terms.
 
 ## 7. Compute-to-target and long-budget baselines
@@ -430,6 +435,8 @@ Within that noise:
 | comparison (equal FLOPs) | Zoom | baseline |
 |---|---|---|
 | 4→2→1, same batch, 2 threads, seeds 0-2 | 1,087 / 944 / 957 s | 942 / 790 / 807 s |
+| k=2 50 % batch x2 (the 1.12x recipe), seed 0, 2 threads | 1,484 s | 942 s |
+| k=2 50 % batch x2, seeds 1-2, 1 thread | 1,275 / 1,274 s | 1,067 / 1,039 s (1-thread seeds 0-1) |
 | k=2 33 % batch x2, 1 thread, seeds 0-1 | 967 / 1,068 s | 1,067 / 1,039 s |
 | QK-norm + Zoom vs QK-norm, 1 thread | 1,082 / 1,111 s | 1,041 / 1,069 s |
 | weather, Muon, k=4 merge 60 %, 1 thread | 1,061 / 1,087 s | 700 / 817 s |
@@ -439,8 +446,11 @@ Within that noise:
   Zoom was 15-20 % slower at equal FLOPs on the LLM, 33-52 % slower on weather
   with Muon and 8 % slower with AdamW. Coarse steps cost more wall-clock per
   charged FLOP because the optimizer step is a fixed per-step cost (about
-  0.3 s for Muon on the LLM). With batch x2 the wall-clock was about the same as the
-  baseline. The 0.2 claim that coarse steps "run faster per FLOP, so the
+  0.3 s for Muon on the LLM). With batch x2 the result was mixed. The 33 %
+  schedule ran about as fast as its baselines. The 50 % schedule behind the
+  1.12x headline was slower: +19-23 % at 1 thread and +58 % for seed 0 at
+  2 threads. The shared machine makes these timings noisy, but none of them
+  shows a gain. The 0.2 claim that coarse steps "run faster per FLOP, so the
   wall-clock gain is larger than the FLOP gain" was wrong.
 - GPU wall-clock has not been measured.
 
@@ -454,11 +464,11 @@ Same model and data as section 2. Muon LR 1.6e-2, AdamW LR 1e-3, seed 0,
 | AdamW, 32-bit state | 100 | 1,024 | 4.4824 | 46.2 MB | 23.1 MB | 230 s |
 | AdamW, 8-bit state | 100 | 1,024 | 4.4792 | 11.8 MB | 23.1 MB | 279 s |
 | Muon, 32-bit state | 100 | 1,024 | 3.5719 | 27.3 MB | 23.1 MB | 266 s |
-| Muon, 8-bit state | 100 | 1,024 | 3.5812 | 7.0 MB | 23.1 MB | 271 s |
-| Muon, 8-bit + bf16 weights (stochastic rounding) | 100 | 1,024 | 3.5752 * | 7.0 MB | 11.5 MB | 718 s |
-| Muon, 32-bit + activation recompute + grad accumulation x2 | 100 | 1,024 | 3.5719 (bit-identical) | 27.3 MB | 23.1 MB | 383 s |
+| Muon, 8-bit state | 100 | 1,024 | 3.5812 | 6.9 MB | 23.1 MB | 271 s |
+| Muon, 8-bit + bf16 weights (stochastic rounding) | 100 | 1,024 | 3.5752 * | 6.9 MB | 11.5 MB | 718 s |
+| Muon, 32-bit + activation recompute + grad accumulation x2 | 100 | 1,024 | 3.5719 (same to 1e-8) | 27.3 MB | 23.1 MB | 383 s |
 | **full budget:** Muon, 32-bit (`save_muon_base`) | 450 | 2,048 | 2.7365 | 27.3 MB | 23.1 MB | 3,072 s |
-| **full budget:** Muon, 8-bit + bf16 weights | 450 | 2,048 | 2.7280 * | 7.0 MB | 11.5 MB | 5,039 s |
+| **full budget:** Muon, 8-bit + bf16 weights | 450 | 2,048 | 2.7280 * | 6.9 MB | 11.5 MB | 5,039 s |
 
 \* **Needs a rerun.** These two bf16 runs were scored by the 0.2 evaluator,
 which computed the whole loss in bf16. No checkpoint was saved, so they cannot
@@ -472,17 +482,18 @@ is noise-like, not a fixed offset: about ±0.001 at 2,048 windows and ±0.004 at
 - **Weights + optimizer state: 50.4 MB → 18.5 MB (2.7x smaller).** Not 3x, as
   0.2 said.
 - 8-bit state is 3.9x smaller than 32-bit state for both optimizers.
-- **bf16 with stochastic rounding is 1.6-2.6x slower on this CPU** (718 vs 271 s;
+- **bf16 with stochastic rounding is 1.6-2.7x slower on this CPU** (718 vs 271 s;
   5,039 vs 3,072 s), because CPU bf16 matmuls and the rounding writes are
   emulated. GPU speed is unmeasured.
-- Recompute + accumulation gives the bit-identical loss at +44 % time (it also
-  halves the micro-batch).
+- Recompute + accumulation gives the same loss (3.571913 both times; the two
+  differ by 1.5e-8, so not bit for bit) at +44 % time. It also halves the
+  micro-batch.
 - 0.3 changed the 8-bit numerics (OPT-4: code 0 is now exact zero and the
   log map uses positive entries only) and the stochastic-rounding generator
   (OPT-1: counter-based, rank- and resume-safe). The whole low-memory set
   should be rerun with 0.3 before these rows are quoted as 0.3 results.
 - 8-bit Muon momentum is also published prior art (Gupta et al. 2025, parity up
-  to 2.7B), as are 8-bit Adam (Dettmers et al. 2021) and bf16 stochastic
+  to 2.7B), as are 8-bit Adam (Dettmers et al. 2022) and bf16 stochastic
   rounding (Zamirai et al. 2020; Ozkara et al. 2025).
 
 ## 10. Storing trained weights
@@ -578,9 +589,11 @@ Final val 2.7352 vs 2.7365 for the 0.2 run.
 Plot: `results/plots/published_bpb_vs_compute.png`.
 
 - **Bantam vs stories260K:** better BPB with **at least 157x less compute**.
-  This is an upper bound read off one completed point, and mostly a model-size
-  effect: stories260K has 22x fewer parameters (and a 512-token vocabulary),
-  so it is capacity-limited and most of its compute could not improve it.
+  6.4e13 is an upper bound on the compute Bantam needs to match it (read off
+  one completed run), so 157x is a lower bound on the ratio. It is mostly a
+  model-size effect: stories260K has 22x fewer parameters (and a 512-token
+  vocabulary), so it is capacity-limited and most of its compute could not
+  improve it.
 - **Bantam is behind every TinyStories model.** The gap to TinyStories-1M is
   0.207 BPB; TinyStories-1M used about 3,350x more compute. No run reaches any
   model of 3.7M parameters or more.
@@ -656,8 +669,8 @@ models such as FengWu-GHR). Bantam implements it; it did not invent it.
 ### 13.4 Uncharged optimizer compute in the weather comparison (WX-2)
 
 Muon's Newton-Schulz step costs about 3.8e9 FLOPs per step for this model and
-is not in the budget. The baseline takes 567 steps (2.1e12 uncharged, 3.9 % of
-the budget). The Zoom and low-res runs take 2,128 steps (8.0e12, 14.6 %).
+is not in the budget. The baseline takes 567 steps (2.2e12 uncharged, 3.9 % of
+the budget). The Zoom and low-res runs take 2,128 steps (8.1e12, 14.7 %).
 So under Muon the coarse runs got about 10 % more total compute than the
 baseline.
 - Zoom lost anyway, so this makes the negative result stronger.
@@ -686,7 +699,8 @@ The committed runs predate it and have not been rerun.
 - The model beats persistence clearly at every lead (z500 at 24 h: 217 vs 569).
 - For orientation only (different test period and initial conditions):
   WeatherBench (Rasp et al. 2020) lists 3-day z500 RMSE at 5.625° of 936 for
-  persistence, 489 for IFS T42 and 268 for the best CMIP-pretrained ResNet.
+  persistence and 489 for IFS T42; the CMIP-pretrained ResNet of Rasp and
+  Thuerey (2021) reaches 268.
   Bantam's 1.3M-parameter ViT is at 511-551 at the 5.5e13 budget (461 at 2x).
   A proper comparison needs WeatherBench's test years, metrics and
   climatology. 0.3 logs latitude-weighted ACC against a train-years
@@ -695,11 +709,12 @@ The committed runs predate it and have not been rerun.
 ## 14. Fine-tuning SmolLM2-135M
 
 All fine-tuning results so far are on `HuggingFaceTB/SmolLM2-135M` with
-Dolly-15k on the CPU, loss on response tokens only. **They were produced
-before packed examples got block-diagonal masks** (commit 60759d3, the end of
-the 0.2 line): in a packed window, each example could attend to the examples
-packed before it. All formats in a table share that effect, so comparisons
-within a table hold, but the absolute losses are not clean. The race in
+Dolly-15k on the CPU, loss on response tokens only. **They were produced by
+the 0.2 code, before packed examples got block-diagonal masks** (added in
+commit 60759d3, the first change after 0.2): in a packed window, each example
+could attend to the examples packed before it. All formats in a table share
+that effect, so comparisons within a table hold, but the absolute losses are
+not clean. The race in
 section 15 uses the 0.3 masks and scores examples one at a time.
 
 ### 14.1 LoRA and QLoRA (0.2 runs, 1 seed)
@@ -745,7 +760,7 @@ adapters that every row carried; the last column includes them.
 
 - **int8 is nearly free** (+0.003) for a 135M model. **4-bit is not**: +0.18
   with NF4 and int8 embeddings, +0.52 with plain int4 everywhere. NF4 beats
-  linear int4 by 0.16.
+  linear int4 by 0.16-0.18.
 - So for a small base, `--quant 8` is the better choice; `--quant` defaults to
   no quantization. The QLoRA paper finds NF4 close to lossless at 7B and
   above; that was not measurable here.
@@ -800,14 +815,19 @@ Measurements:
   cross-entropy over the response tokens of the 200 held-out examples, one
   example at a time, no packing, fp32 logits from the model's own forward.
   Bootstrap 95 % confidence intervals and paired differences against
-  `hf_peft`. Bantam arms are judged through their PEFT export loaded with
-  `peft`. Plus one greedy answer to each of three fixed prompts.
+  `hf_peft`. The `bantam` and `bantam_adamw` arms are judged through their
+  PEFT export loaded with `peft`; `bantam_nf4` through
+  `qweights.load_quantized` plus its adapter, and also on the float base.
+  Plus one greedy answer to each of three fixed prompts.
 
-Fairness checks built into the harness:
-- Token parity: both sides tokenize the 800 examples identically (0 mismatches).
+Fairness checks built into the harness (the values in brackets are from the
+32-example smoke run; the full race reports its own):
+- Token parity: both sides must tokenize the training examples identically
+  (smoke: 32 of 32, 0 mismatches).
 - The same LoRA modules and parameter count in every arm.
-- Bantam's own final eval matches the judge on the same examples to about
-  1e-7, and Bantam's step-0 eval matches the `base` judge.
+- Bantam's own final eval must match the judge on the same examples (smoke:
+  to about 1e-7), and Bantam's step-0 eval must match the `base` judge
+  (smoke: to 3e-8).
 
 Known asymmetries (by design, reported rather than hidden):
 - Packing puts about 1,024 real tokens in each Bantam micro-batch, so Bantam
@@ -851,8 +871,9 @@ corrected in this report. Audit finding ids are in brackets.
 **LLM pretraining**
 - Muon vs AdamW: the AdamW part of every Muon run uses a 16x higher LR than
   AdamW-only runs, so the comparison changes two things at once. The claim
-  that both parts can share one LR is not supported. One defined compute
-  figure replaces "~1/3" vs "~40 %" (section 3) [CLM-5].
+  that both parts can share one LR is not supported. The two compute figures
+  ("~1/3" and "~40 %") are now each defined: a separate 1/3-budget run, and a
+  mid-curve crossing at 38-39 % (section 3) [CLM-5].
 - Zoom: the 0.1 design (4→2→1) lost on all seeds; the measured recipe is k=2
   with a larger batch. The upgrade ablations are now reported, including the
   two that were worse than baseline (WSD, ReLU²) and the 2-seed QK-norm/Zoom
@@ -876,7 +897,7 @@ corrected in this report. Audit finding ids are in brackets.
 - Weights + state shrink 2.7x, not 3x [CLM-17, OPT-12, MEM-14].
 - The bf16 rows were scored with bf16 arithmetic; they carry a ±0.001 / ±0.004
   uncertainty and are marked for rerun.
-- bf16 with stochastic rounding is 1.6-2.6x slower on this CPU [CLM-12].
+- bf16 with stochastic rounding is 1.6-2.7x slower on this CPU [CLM-12].
 - WeightPack 16 is bf16 rounding (+0.00002 from fp32), not "lossless" or
   "bit-exact"; it is exact only for bf16 weights [DOC-1].
 - Unsourced runtime numbers were removed: the flush-to-zero timing, the
@@ -942,8 +963,10 @@ belong to those files: CLM-19 (0.3 wires the batch finder into
   Prior art suggests the gain shrinks with scale.
 - How much of Muon's lead remains with a separately tuned LR for its AdamW
   part, and against a more carefully tuned AdamW?
-- Single-seed rows: every upgrade except QK-norm, every Zoom variant except
-  the two headline schedules, all AdamW runs, low-res weather, all fine-tuning.
+- Single-seed rows: every upgrade except QK-norm and QK-norm + Zoom; every
+  Zoom variant except the two headline schedules and the 4→2→1 design (3
+  seeds); all AdamW runs; every weather run except the Muon baseline and the
+  Muon k=4 merge (2 seeds each); the long-budget baselines; all fine-tuning.
 - Rerun with 0.3: the low-memory set (bf16 scoring, OPT-4 8-bit map, new
   stochastic rounding), Polar Express (OPT-8), the weather LR sweeps on a
   separate `--val_year`, and the four older upgrade runs.
@@ -957,10 +980,14 @@ belong to those files: CLM-19 (0.3 wires the batch finder into
 ## 18. Reproducing
 
 All LLM commands assume the prepared data in `$D`
-(`bantam prepare-text` then `bantam pack-text`). `python3 llm/train.py` is the
+(`bantam prepare-text` then `bantam pack-text`). The committed runs used data
+prepared by 0.2. 0.3 `prepare-text` drops validation copies before it trains
+the BPE, so its tokenizer differs slightly. Pass `--drop_val_overlap 0` to
+`prepare-text` to rebuild the 0.2 files byte for byte; `pack-text` drops the
+copies from the training stream either way. `python3 llm/train.py` is the
 same trainer as `bantam pretrain`. Queue files run with
 `python3 experiments/run_queue.py <queue> --workers 2 --threads 2`, which skips
-finished runs and resumes unfinished ones.
+finished runs and resumes unfinished ones from their checkpoint when one exists.
 
 | results | queue file |
 |---|---|
@@ -971,6 +998,12 @@ finished runs and resumes unfinished ones.
 | low-memory | `lowmem.txt`, `lowmem2.txt` |
 | published comparison | `published_cmp.txt` plus `experiments/compare_published.py` |
 | weather sweeps and matrix | `weather_sweep.txt`, `weather_sweep4.txt`, `sweep3.txt`, `weather_main.txt` |
+
+The two bundle lines in `upgrades.txt` (`up_bundle_base_s0`,
+`up_bundle_zoom_s0`) now also pass `--sched wsd --mlp relu2 --ns polar`. The
+committed bundle runs used only `--softcap 15 --zero_init_proj 1` (see the
+`args` in their JSON logs), which is what section 6 reports. Running the queue
+as it stands produces a different bundle.
 
 Most runs of the 2-seed QK-norm/Zoom factorial (section 6.1) have no queue
 file. Seed 1 is shown; seed 0 is the same with `--seed 0` and `_s0` names:

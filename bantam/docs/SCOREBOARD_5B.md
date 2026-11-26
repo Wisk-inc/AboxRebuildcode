@@ -16,8 +16,9 @@ and storage does each recipe need?
   keeps 16-18 bytes per parameter of model state (76-85 GiB for 5.09B
   parameters), so its activations fit only if they are recomputed. In the
   tool's 18-byte accounting it **does not fit** with a 15 % safety margin even
-  then, and just fits with no margin. A 16-byte variant would fit with
-  recompute, by 2-3 GiB (section 1.1).
+  then, and just fits with no margin. A 16-byte variant would just fit with
+  recompute and a 15 % margin: one 2048-token sequence, with 0.7 GiB to spare
+  (section 1.1).
 - Bantam's memory stack (bf16 weights with stochastic rounding, 8-bit
   optimizer state, chunked cross-entropy) keeps **6 bytes per parameter
   (28 GiB)** and fits without recompute.
@@ -90,14 +91,16 @@ instead of 6·N·D FLOPs). Row 2's 1.33x is exactly that saving; row 3's further
 **A fairer standard recipe.** The tool charges row 1 at 18 bytes/param:
 fp32 weights (4), the bf16 weight copies autocast keeps during the forward
 pass (2), fp32 gradients (4) and AdamW's two fp32 moments (8). The ZeRO paper's
-accounting for mixed-precision AdamW is 16 bytes/param (bf16 weights and
+accounting for mixed-precision Adam is 16 bytes/param (16-bit weights and
 gradients, fp32 master copy and moments): 81.5 GB = 75.9 GiB. By the tool's own
 per-sequence constants, that variant would leave about 2.7 GiB for activations
-at 85 % headroom, enough for one 2048-token sequence with full recompute.
-It would then take about 234 days, like row 1 in section 1.1. Whether the
-standard recipe fits at all therefore comes down to 2-3 GiB of margin, which
-only a measurement on the card can settle. (This paragraph is hand arithmetic
-with the tool's constants; the tool does not model the 16-byte variant.)
+at 85 % headroom. One 2048-token sequence with full recompute needs about
+2.0 GiB (1.1 GiB of stored block inputs and one recomputed layer, 0.9 GiB for
+the unchunked loss), so it fits with 0.7 GiB to spare. It would then take
+about 234 days, like row 1 in section 1.1. Whether the standard recipe fits at
+all therefore comes down to less than 1 GiB, which only a measurement on the
+card can settle. (This paragraph is hand arithmetic with the tool's constants;
+the tool does not model the 16-byte variant.)
 
 ### 1.2 A 20B-token run
 
@@ -121,7 +124,7 @@ Every assumption is a flag of `bantam memory` (`bantam memory --help`).
 | utilisation (MFU) | 0.40 (`--mfu`) | conservative; nanochat measured about 59 % on one card at 600 W |
 | training FLOPs | 6·N·D, embeddings included, no attention term | standard; nanochat's MFU convention counts +5.3 % for this model |
 | activation recompute | 8·N·D | one extra forward pass |
-| Muon compute to the same loss | 0.52x AdamW's (`--muon_flops`) | Liu et al. 2025 (Moonshot), compute-optimal 1-16B runs |
+| Muon compute to the same loss | 0.52x AdamW's (`--muon_flops`) | Liu et al. 2025 (Moonshot): about 2x compute efficiency in compute-optimal scaling-law runs |
 | Muon Newton-Schulz cost | 4.9e14 FLOPs per optimizer step at 524,288 tokens per step (`--global_batch_tokens`), about +3 % | computed like `bantamtrain.optim.ns_flops` |
 | FP8 speed-up | x1.20 (`--fp8_speedup`) | reports of 20-30 %; not implemented in Bantam |
 | power cap throughput | x0.95 (`--power_tput`) | ResNet-50 sweep on this card; one LLM data point (nanochat at 300 W) lost 32 % |
@@ -168,7 +171,8 @@ matrix optimizers give about 1.4x at 0.1B parameters and only about 1.1x at
   5.8M model), not lossless. The tool's 1.42 bytes/param is close to the 1.39
   measured on that 5.8M model; it has not been measured at 5B.
 - int8 / int4 cost +0.0002 / +0.026 nats on the trained 5.8M model, but +0.003 /
-  +0.18-0.52 on the pretrained SmolLM2-135M ([`../RESULTS.md`](../RESULTS.md)
+  +0.17-0.52 (4-bit, depending on NF4 vs int4 and the embedding format) on the
+  pretrained SmolLM2-135M ([`../RESULTS.md`](../RESULTS.md)
   sections 10 and 14.2).
 - 5.97 bits/token was measured on 117M TinyStories tokens with a 4,096-token
   vocabulary. A 32k-vocabulary web corpus needs roughly 7.3-9 bits/token,
@@ -206,10 +210,14 @@ tokens.
 
 `bantam pretrain` (or `python3 llm/train.py`) has these flags for the rows. The
 command shows the flags for a 5B shape (d=4096, 24 layers, 524,288 tokens per
-step); it is not a tuned recipe, and the LR has not been tested at this size:
+step) and a budget of about 100B tokens (3.1e21 FLOPs in the trainer's
+convention, about 190,000 steps). It is not a tuned recipe, and the LR has not
+been tested at this size. ZoomGPT ties the output head to the embedding, so
+with a 32k vocabulary this shape has about 4.96B parameters, not the untied
+5.09B of section 1:
 
 ```bash
-bantam pretrain --data DIR --budget 2e14 --zoom 1 --optim muon --lr 1.6e-2 \
+bantam pretrain --data DIR --budget 3.1e21 --zoom 1 --optim muon --lr 1.6e-2 \
     --param_dtype bf16 --state_bits 8 --device cuda --precision bf16 --compile \
     --d 4096 --layers 24 --heads 32 --seq 2048 --batch 4 --accum 64 \
     --name gpu_5b --out results/gpu
@@ -245,7 +253,7 @@ Gaps:
 3. **Whether row 1 fits at all**, with 16- and 18-byte standard recipes.
 4. **Throughput and MFU per row** (tokens/s), including the 8-bit
    dequantize/update transient, bf16 stochastic rounding and Newton-Schulz on
-   the GPU. On this CPU, bf16 + stochastic rounding was 1.6-2.6x slower than
+   the GPU. On this CPU, bf16 + stochastic rounding was 1.6-2.7x slower than
    fp32, so the GPU cost must not be assumed.
 5. **Loss parity at scale**: bf16 + stochastic rounding + 8-bit state against
    fp32-master AdamW, and Muon's compute multiplier against a tuned AdamW at
@@ -262,9 +270,9 @@ schedule.
 ## 8. What is not in the table
 
 - **Zoom training.** On the 5.8M CPU model, the k=2 batch-x2 schedule saved
-  about 11 % of compute (1.12x, 3 seeds), and QK-norm + Zoom needed 1.41x
-  baseline compute (2 seeds). It gets no credit here: one tiny model, a gain
-  smaller than the prior art reports (patch-level training: about 0.5x cost at
+  about 11 % of compute (1.12x, 3 seeds), and the plain baseline needed 1.41x
+  the compute to match QK-norm + Zoom (2 seeds). It gets no credit here: one
+  tiny model, a gain smaller than the prior art reports (patch-level training: about 0.5x cost at
   370M-2.7B, with the advantage shrinking with size), no wall-clock gain on
   the CPU, and a loss on weather under Muon.
 - **QK-norm** (1.24x at 5.8M, 2 seeds) is also uncredited; its effect at 5B is
@@ -279,8 +287,8 @@ schedule.
 |---|---|---|
 | bf16 weights + stochastic rounding | matches fp32-master mixed precision up to 6.7B (Ozkara et al. 2025); prior art Zamirai et al. 2020 | 8-bit Muon + bf16 weights at full budget: 2.728 vs 2.7365 (fp32, same seed); scored with 0.2 bf16 arithmetic, ±0.001, marked for rerun |
 | 8-bit optimizer state | 8-bit Adam matches 32-bit up to 1.5B (Dettmers et al.) | 100 steps: AdamW 4.4792 vs 4.4824; Muon 3.5812 vs 3.5719; state 3.9x smaller. 0.3 changed the 8-bit map (OPT-4); rerun pending |
-| activation recompute | +30-40 % wall-clock in Megatron (theory +33 %) | bit-identical loss (3.5719) with recompute + accumulation x2; +44 % time on the CPU |
-| Muon | 0.52x AdamW's FLOPs at 1-16B (Moonshot); 1.4x at 0.1B and 1.1x at 1.2B against tuned AdamW (Wen et al.) | equal model FLOPs: 2.737 ± 0.012 (3 seeds) vs AdamW 3.332 (1 seed). The AdamW part of the Muon runs used a 16x higher LR, and Newton-Schulz adds an uncharged 20 % of model FLOPs here. The table credits only the published 0.52x |
+| activation recompute | +30-40 % wall-clock in Megatron (theory +33 %) | the same loss (3.5719, to 1e-8) with recompute + accumulation x2; +44 % time on the CPU |
+| Muon | 0.52x AdamW's FLOPs in compute-optimal scaling-law runs (Moonshot); 1.4x at 0.1B and 1.1x at 1.2B against tuned AdamW (Wen et al.) | equal model FLOPs: 2.737 ± 0.012 (3 seeds) vs AdamW 3.332 (1 seed). The AdamW part of the Muon runs used a 16x higher LR, and Newton-Schulz adds an uncharged 20 % of model FLOPs here. The table credits only the published 0.52x |
 | chunked cross-entropy | torchtune: -15.8 % memory on Llama 3.2 3B | used by `bantam finetune`; not a `bantam pretrain` flag |
 | FP8 | Transformer Engine supports SM 12.0; reports of 20-30 % speed-up | not implemented |
 | 450 W cap | ResNet-50 keeps 94.8 % throughput at 450 W on this card | not measurable on a CPU |
