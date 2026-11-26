@@ -18,9 +18,22 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from bantamtrain import weightpack  # noqa: E402
 from bantamtrain.device import setup_runtime  # noqa: E402
-from bantamtrain.models import ZoomGPT  # noqa: E402
-from bantamtrain.zoom import ZoomSchedule  # noqa: E402
-from bantamtrain.cli.pretrain import evaluate, open_tokens  # noqa: E402
+from bantamtrain.cli.pretrain import build_model, evaluate, open_tokens  # noqa: E402
+
+
+def build(a, vocab):
+    """The run's exact architecture (mlp, softcap, merge_mode, ... from its logged args)."""
+    return build_model(a, vocab)
+
+
+def load_weights(path):
+    """A state_dict from a .pt (tensors only), a .safetensors file or a save_pretrained dir."""
+    if os.path.isdir(path):
+        path = os.path.join(path, "model.safetensors")
+    if path.endswith(".safetensors"):
+        from safetensors.torch import load_file
+        return load_file(path)
+    return torch.load(path, map_location="cpu", weights_only=True)
 
 
 def main():
@@ -34,11 +47,8 @@ def main():
     a = argparse.Namespace(**log["args"])
     rt = setup_runtime("cpu", "fp32", False, args.threads, 0)
     meta = json.load(open(os.path.join(a.data, "meta.json")))
-    sched = ZoomSchedule.parse(a.zoom)
-    model = ZoomGPT(meta["vocab_size"], a.d, a.layers, a.heads, zoom_ks=sched.ks,
-                    gated=bool(a.gated), out_mode=a.out_mode, rope_pos=a.rope_pos,
-                    qk_norm=bool(a.qk_norm))
-    model.load_state_dict(torch.load(args.weights, map_location="cpu"))
+    model = build(a, meta["vocab_size"])
+    model.load_state_dict(load_weights(args.weights))
     val = open_tokens(a.data, "val")
     ev = lambda m: evaluate(m, val, a, rt, args.eval_seqs)  # noqa: E731
     out = {"torch_save_fp32_bytes": weightpack.torch_save_bytes(model.state_dict()),
