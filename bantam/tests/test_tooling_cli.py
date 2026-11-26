@@ -40,6 +40,8 @@ def test_every_command_has_help(cmd, capsys):
     out, err = capsys.readouterr()
     if importlib.util.find_spec(cli.COMMANDS[cmd]) is None:    # written by another group
         assert rc == 1 and "this installation has no" in err
+    elif rc == 1:                                  # an extra this environment lacks (CI: weather)
+        assert "which is not installed: pip install" in err
     else:
         assert rc == 0 and "usage: bantam " + cmd in out
 
@@ -88,6 +90,9 @@ def test_missing_optional_dependency_gives_install_hint(monkeypatch, capsys):
     monkeypatch.setitem(cli.EXTRAS, "pyarrow_not_installed", "data")
     assert cli.main(["fake"]) == 1
     assert "pip install 'bantamtrain[data]'" in capsys.readouterr().err
+    monkeypatch.setitem(cli.EXTRAS, "pyarrow_not_installed", None)    # in no extra
+    assert cli.main(["fake"]) == 1
+    assert capsys.readouterr().err.rstrip().endswith("pip install pyarrow_not_installed")
 
     def main_submodule(argv=None):                    # installed package, missing submodule
         import json.no_such_submodule  # noqa: F401
@@ -153,6 +158,17 @@ def test_declared_minimums():
         assert os.path.exists(os.path.join(ROOT, f)), f
 
 
+def test_install_hints_name_an_extra_that_installs_the_module():
+    from bantamtrain.cli import doctor
+    extras = {e: {re.split(r"[<>=\[ ]", r)[0] for r in reqs}
+              for e, reqs in _toml()["project"]["optional-dependencies"].items()}
+    for mod, extra in cli.EXTRAS.items():
+        if extra is not None:
+            assert mod in extras[extra], (mod, extra)
+    for extra, mods in doctor.EXTRAS.items():
+        assert set(mods) <= extras[extra], extra
+
+
 def test_doctor_report(capsys):
     from bantamtrain.cli import doctor
     assert cli.main(["doctor", "--json"]) == 0
@@ -169,6 +185,23 @@ def test_doctor_report(capsys):
     assert (float(torch.tensor([1e-40]) * 2) == 0.0) == state
     text = doctor.format_report(rep)
     assert "flush-denormal" in text and "threads" in text and "extra finetune" in text
+
+
+def test_doctor_survives_odd_platforms(monkeypatch):
+    """No psutil, no /proc, no os.sysconf (Windows), a stub module without __spec__."""
+    from bantamtrain.cli import doctor
+
+    def no_proc(path, *a, **kw):
+        raise OSError(path)
+
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(doctor, "open", no_proc, raising=False)
+    monkeypatch.delattr(os, "sysconf")
+    monkeypatch.setitem(sys.modules, "zarr", types.ModuleType("zarr"))
+    rep = doctor.collect()
+    assert rep["ram"] == {"available_bytes": None, "total_bytes": None}
+    assert rep["extras"]["weather"]["zarr"] is False
+    assert "ram         ? available of ?" in doctor.format_report(rep)
 
 
 @pytest.mark.slow

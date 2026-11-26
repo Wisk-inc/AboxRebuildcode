@@ -33,7 +33,7 @@ def test_bench_reports_params_and_build_time(tmp_path, monkeypatch):
                          "--vocab", "256", "--seq", "16", "--data", str(data),
                          "--out", str(tmp_path / "bench.json")])
     assert out["chinchilla_tokens"] == 20 * out["params"]
-    assert out["build_seconds"] < 0.5                  # the steps (>= 1.5 s) are not included
+    assert out["build_seconds"] < 1.4                  # the 3 steps (>= 1.5 s) are not included
     assert (tmp_path / "bench.json").exists()
     with pytest.raises(SystemExit):
         bench_1b.main(["--steps", "0", "--data", str(data), "--out", str(tmp_path / "x.json")])

@@ -55,9 +55,8 @@ def _free_ram():
                 k, v = line.split(":", 1)
                 info[k] = int(v.split()[0]) * 1024
         return info.get("MemAvailable"), info.get("MemTotal")
-    except OSError:
-        pg = os.sysconf("SC_PAGE_SIZE")
-        return None, _try(lambda: os.sysconf("SC_PHYS_PAGES") * pg)
+    except OSError:                              # no /proc (macOS); no sysconf at all on Windows
+        return None, _try(lambda: os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
 
 
 def _disk(path):
@@ -117,8 +116,8 @@ def collect():
     avail, total = _free_ram()
     rep["ram"] = {"available_bytes": avail, "total_bytes": total}
     rep["disk"] = [_disk(os.getcwd()), _disk(tempfile.gettempdir())]
-    rep["extras"] = {extra: {m: importlib.util.find_spec(m) is not None for m in mods}
-                     for extra, mods in EXTRAS.items()}
+    rep["extras"] = {extra: {m: bool(_try(lambda: importlib.util.find_spec(m) is not None, False))
+                             for m in mods} for extra, mods in EXTRAS.items()}
     return rep
 
 

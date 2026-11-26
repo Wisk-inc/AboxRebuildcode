@@ -32,13 +32,13 @@ COMMANDS = {
     "chat": "bantamtrain.cli.chat",
     "doctor": "bantamtrain.cli.doctor",
 }
-# optional dependency (top-level module) -> the pip extra that installs it
+# optional dependency (top-level module) -> the pip extra that installs it (None: pip install it)
 EXTRAS = {
     "pyarrow": "data", "tokenizers": "data", "huggingface_hub": "data",
     "transformers": "finetune", "datasets": "finetune", "sentencepiece": "finetune",
-    "safetensors": "finetune", "peft": "finetune", "accelerate": "finetune",
+    "safetensors": "finetune", "peft": None, "accelerate": None,
     "xarray": "weather", "zarr": "weather", "fsspec": "weather", "aiohttp": "weather",
-    "gcsfs": "weather", "matplotlib": "test",
+    "gcsfs": None, "matplotlib": "test",
 }
 
 
@@ -50,7 +50,8 @@ def _missing_extra(e, module):
     top = name.split(".")[0]
     if top not in EXTRAS or _installed(top):    # a missing submodule is a version problem: re-raise
         return None
-    return f"needs `{top}`, which is not installed: pip install 'bantamtrain[{EXTRAS[top]}]'"
+    how = f"'bantamtrain[{EXTRAS[top]}]'" if EXTRAS[top] else top
+    return f"needs `{top}`, which is not installed: pip install {how}"
 
 
 def _installed(module):
