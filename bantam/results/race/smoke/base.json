@@ -1,0 +1,218 @@
+{
+ "arm": "base",
+ "kind": "base",
+ "desc": "base model, no training (reference)",
+ "status": "done",
+ "train_hash": "72938d4515c1ef07",
+ "judge_hash": "dba0215f785042e2",
+ "protocol": {
+  "model": "HuggingFaceTB/SmolLM2-135M",
+  "data": "databricks/databricks-dolly-15k",
+  "split_seed": 1234,
+  "n_train": 800,
+  "n_judge": 200,
+  "max_examples": 32,
+  "bantam_eval_n": 32,
+  "seq": 512,
+  "batch": 2,
+  "accum": 2,
+  "epochs": 1.0,
+  "lr": 0.0002,
+  "warmup": 0.03,
+  "lora_r": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05,
+  "targets": [
+   "q_proj",
+   "k_proj",
+   "v_proj",
+   "o_proj",
+   "gate_proj",
+   "up_proj",
+   "down_proj"
+  ],
+  "seed": 1234,
+  "threads": 1,
+  "matched": {
+   "betas": [
+    0.9,
+    0.95
+   ],
+   "eps": 1e-08,
+   "weight_decay": 0.0,
+   "min_lr_rate": 0.1,
+   "max_grad_norm": 1.0
+  },
+  "hf_flush_denormal": false
+ },
+ "versions": {
+  "torch": "2.15.0+cpu",
+  "transformers": "5.24.0",
+  "peft": "0.22.0",
+  "accelerate": "1.16.0",
+  "datasets": "5.2.0",
+  "tokenizers": "0.23.3",
+  "safetensors": "0.8.0",
+  "numpy": "2.5.3",
+  "psutil": "7.2.2",
+  "bantamtrain": "0.3.0.dev0",
+  "python": "3.13.18",
+  "bantam_git": "bbc473cc15419b777f6f374cedce3e9290bb37ea"
+ },
+ "machine": {
+  "platform": "Linux-6.18.44-fc-v880-x86_64-with-glibc2.39",
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "logical_cpus": 4,
+  "usable_cpus": 4,
+  "mem_total_gb": 15.71017837524414,
+  "loadavg": [
+   2.81005859375,
+   2.98388671875,
+   2.71875
+  ]
+ },
+ "commands": {
+  "judge": "/usr/local/bin/python3 /home/user/wt2/race/bantam/experiments/race_finetune.py _judge --out /home/user/wt2/race/bantam/results/race/smoke --arm base"
+ },
+ "train": null,
+ "judge": {
+  "how": "base model",
+  "judge_n": 16,
+  "skipped": 0,
+  "load_s": 0.9947169059996668,
+  "judge_loss": 2.560642722759554,
+  "judge_ppl": 12.944134132162572,
+  "judge_ci95": [
+   2.159013853787599,
+   2.939260071785219
+  ],
+  "judge_macro_loss": 2.8616395080106263,
+  "judge_examples": 16,
+  "judge_tokens": 1366,
+  "subset_loss": 2.3833200558852865,
+  "subset_examples": 32,
+  "scores": [
+   [
+    4740,
+    100.4056167602539,
+    36
+   ],
+   [
+    1135,
+    182.2025146484375,
+    66
+   ],
+   [
+    10954,
+    68.91460418701172,
+    36
+   ],
+   [
+    13472,
+    259.0687255859375,
+    99
+   ],
+   [
+    10251,
+    38.41928482055664,
+    34
+   ],
+   [
+    12358,
+    116.57754516601562,
+    46
+   ],
+   [
+    2720,
+    345.6585998535156,
+    207
+   ],
+   [
+    2837,
+    360.49249267578125,
+    147
+   ],
+   [
+    11190,
+    47.36396789550781,
+    8
+   ],
+   [
+    5489,
+    135.247314453125,
+    66
+   ],
+   [
+    4951,
+    66.86521911621094,
+    12
+   ],
+   [
+    7796,
+    58.56446075439453,
+    30
+   ],
+   [
+    4346,
+    53.58756637573242,
+    12
+   ],
+   [
+    3205,
+    1059.682373046875,
+    379
+   ],
+   [
+    14171,
+    49.45881652832031,
+    30
+   ],
+   [
+    115,
+    555.328857421875,
+    158
+   ]
+  ],
+  "scored_examples": 32,
+  "score_s": 17.36275237800146,
+  "generations": [
+   {
+    "prompt": "What is the capital of France?",
+    "answer": "What is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?",
+    "new_tokens": 64
+   },
+   {
+    "prompt": "Give me three tips for staying healthy.",
+    "answer": "Give me three tips for staying healthy.\n\nThe first tip is to eat a balanced diet. This means eating a variety of foods, including fruits, vegetables, whole grains, and lean proteins.\n\nThe second tip is to get enough sleep. Getting enough sleep can help you feel better and help you stay healthy",
+    "new_tokens": 64
+   },
+   {
+    "prompt": "Summarize in one sentence: The Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Steppe.",
+    "answer": "Summarize in one sentence: The Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Steppe.\n\nThe Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them",
+    "new_tokens": 64
+   }
+  ],
+  "generate_s": 12.460058394000953,
+  "judge_hash": "dba0215f785042e2",
+  "command": "/usr/local/bin/python3 /home/user/wt2/race/bantam/experiments/race_finetune.py _judge --out /home/user/wt2/race/bantam/results/race/smoke --arm base",
+  "process": {
+   "returncode": 0,
+   "wall_s": 35.03177583800061,
+   "cpu_s": 34.771224000000004,
+   "maxrss_mb": 1178.875,
+   "peak_rss_mb": 1152.453125,
+   "samples": 173,
+   "loadavg_before": [
+    2.81005859375,
+    2.98388671875,
+    2.71875
+   ],
+   "loadavg_after": [
+    2.89599609375,
+    2.9873046875,
+    2.7314453125
+   ],
+   "mem_available_gb_before": 11.436996459960938
+  }
+ }
+}
