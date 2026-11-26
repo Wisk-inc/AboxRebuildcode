@@ -60,3 +60,26 @@ def test_plot_weather_without_coarse_mode(tmp_path):
     plots.plot_weather({"main_muon_zoom_s0": r}, ["main_muon_zoom_s0"], "w.png", "t",
                        out=str(tmp_path))
     assert (tmp_path / "w.png").exists()
+
+
+def test_run_queue_dry_run_and_weather_resume(tmp_path, monkeypatch, capsys):
+    """A killed `bantam weather --ckpt_every N` run (no JSON yet: weather writes it at the
+    end) restarted from scratch although weather resumes bit-exactly since 0.3; --dry_run
+    did not exist."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from test_pretrain_queue import _write, rq
+    root = tmp_path / "root"
+    monkeypatch.setattr(rq, "ROOT", str(root))
+    monkeypatch.setattr(rq.subprocess, "run", lambda *a, **k: pytest.fail("ran a command"))
+    wx = root / "results" / "weather"
+    _write(str(wx / "done.json"), {"args": {}, "final": {"val_loss": 0.1}})
+    _write(str(wx / "killed.ckpt"), "x")
+    q = tmp_path / "q.txt"
+    q.write_text("D=/data\n" + "".join(f"bantam weather --data $D --budget 1 --name {n} "
+                                       "--ckpt_every 50\n" for n in ("done", "killed", "fresh")))
+    assert rq.main([str(q), "--dry_run", "--threads", "3"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "done: finished -> skip"
+    assert out[1] == ("killed: missing -> resume: bantam weather --data /data --budget 1 --name "
+                      f"killed --ckpt_every 50 --threads 3 --resume {wx / 'killed.ckpt'}")
+    assert out[2].startswith("fresh: missing -> run: ") and "--resume" not in out[2]

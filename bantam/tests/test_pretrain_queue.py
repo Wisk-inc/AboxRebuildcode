@@ -65,15 +65,14 @@ def test_in_progress_pretrain_run_resumes_from_its_checkpoint(queue_root):
     name, status, _ = rq.run("bantam pretrain --data D --budget 1 --name a --ckpt_every 50", 2)
     assert status == "ok (resumed)"
     assert calls[-1][-4:] == ["--threads", "2", "--resume", str(out / "a.ckpt")]
-    # an explicit --ckpt path is used; weather runs have no --resume
+    # an explicit --ckpt path is used; weather runs resume too (bantam weather --resume, 0.3)
     _write(str(root / "ck" / "b.ckpt"), "x")
     _write(str(out / "b.json"), {"in_progress": True})
     rq.run("python -m bantamtrain pretrain --name b --ckpt ck/b.ckpt", 1)
     assert calls[-1][-2:] == ["--resume", str(root / "ck" / "b.ckpt")]
-    _write(str(root / "results" / "weather" / "w.json"), {"in_progress": True})
     _write(str(root / "results" / "weather" / "w.ckpt"), "x")
     rq.run("python3 weather/train.py --name w", 1)
-    assert "--resume" not in calls[-1]
+    assert calls[-1][-2:] == ["--resume", str(root / "results" / "weather" / "w.ckpt")]
 
 
 def test_result_path_cli_spellings(queue_root):
