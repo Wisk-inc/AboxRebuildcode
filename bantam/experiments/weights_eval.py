@@ -3,8 +3,9 @@
     python experiments/weights_eval.py --run results/llm_lowmem/save_muon_base.json \
         --weights results/llm_lowmem/save_muon_base.pt
 
-For each format reports bytes and the validation loss (same 2048 held-out
-sequences as the main runs):
+For each format reports bytes and the validation loss on the first --eval_seqs
+validation sequences, the same window the main runs report (tok4k/val.bin shares
+about 7 % of its stories verbatim with train.bin, so these are not strictly held out):
   RAM:  fp32, bf16, int8 weight-only (block 128), int4 weight-only (block 64)
   disk: torch.save fp32, WeightPack 32 / 16 / 8 / 4 bits (save -> load -> eval)
 Writes <run>_weights.json next to the run log.
@@ -29,6 +30,16 @@ def build(a, vocab):
     return build_model(a, vocab)
 
 
+def load_weights(path):
+    """A state_dict from a .pt (tensors only), a .safetensors file or a save_pretrained dir."""
+    if os.path.isdir(path):
+        path = os.path.join(path, "model.safetensors")
+    if path.endswith(".safetensors"):
+        from safetensors.torch import load_file
+        return load_file(path)
+    return torch.load(path, map_location="cpu", weights_only=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True)
@@ -41,7 +52,7 @@ def main():
     rt = setup_runtime("cpu", "fp32", False, args.threads, 0)
     vocab = json.load(open(os.path.join(a.data, "meta.json")))["vocab_size"]
     base = build(a, vocab)
-    base.load_state_dict(torch.load(args.weights, map_location="cpu"))
+    base.load_state_dict(load_weights(args.weights))
     base.eval()
     val = open_tokens(a.data, "val")
 
