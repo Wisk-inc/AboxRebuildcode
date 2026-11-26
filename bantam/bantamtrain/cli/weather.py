@@ -30,7 +30,7 @@ import time  # noqa: E402
 import numpy as np  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
-from ..data.gridpack import GridPack  # noqa: E402
+from ..data.gridpack import GridPack, StalePackError  # noqa: E402
 from ..device import (DutyCycleLimiter, describe, maybe_compile,  # noqa: E402
                               setup_runtime)
 from ..models import ZoomViT  # noqa: E402
@@ -38,9 +38,12 @@ from ..optim import build_optimizer  # noqa: E402
 from ..zoom import ZoomSchedule, lr_at  # noqa: E402
 
 REPORT = ["z500", "t850", "t2m"]
-# options a --resume checkpoint must share with the command line
+# options a --resume checkpoint must share with the command line: the model, and (as
+# pretrain's RESUME_FIELDS) the data order and the LR / zoom / FLOP schedule
 MODEL_FIELDS = ("zoom", "coarse_mode", "d", "layers", "heads", "gated", "merge_mode", "optim",
                 "state_bits", "val_year")
+RESUME_FIELDS = MODEL_FIELDS + ("budget", "flops_mode", "batch", "batch_scale_k", "lr", "warmup",
+                                "sched", "decay_frac", "ns", "lr_restart", "mix_fine", "wd", "seed")
 
 
 def time_features(times):
@@ -63,16 +66,42 @@ def forcings(static, hour, doy, lon):
     return torch.cat([st, lh, dy], 1)
 
 
+def pack_holds_npy(gp, npy, meta):
+    """True if fields.gridpack was made from this fields.npy: it records meta.json's prep_id
+    (pack-era5 >= 0.3), or else (older packs) its first, middle and last time steps agree
+    with fields.npy to within one quantization step. Modification times are not used: a
+    copy of the data directory (cp, rsync without -t) reorders them."""
+    pack = GridPack(gp, verify=False)
+    pid = (pack.h.get("source") or {}).get("prep_id")
+    if pid is not None and pid == meta.get("prep_id"):
+        return True
+    x = np.load(npy, mmap_mode="r")
+    if list(x.shape) != list(pack.h["shape"]):
+        return False
+    tol = pack.scales.reshape(-1).astype(np.float64) * 1.01
+    for t in sorted({0, len(x) // 2, len(x) - 1}):
+        err = np.abs(pack.read(t, 1)[0].astype(np.float64) - x[t]).max(axis=(1, 2))
+        if (err > tol).any():
+            return False
+    return True
+
+
 def field_source(path, meta):
     """("gridpack" | "npy", file) holding the fields, checked against meta.json.
 
-    A GridPack older than fields.npy is stale (prepare-era5 rerun after pack-era5)
-    and is skipped; data whose shape disagrees with meta.json is an error."""
+    A GridPack that does not hold the data of fields.npy (pack_holds_npy) is stale
+    (prepare-era5 rerun after pack-era5): it is skipped with a warning when fields.npy
+    is newer, and is an error otherwise. Data whose shape disagrees with meta.json is
+    an error."""
     gp, npy = os.path.join(path, "fields.gridpack"), os.path.join(path, "fields.npy")
     kind, f = ("gridpack", gp) if os.path.exists(gp) else ("npy", npy)
-    if kind == "gridpack" and os.path.exists(npy) and os.path.getmtime(npy) > os.path.getmtime(gp):
-        print(f"warning: {gp} is older than fields.npy (stale pack?); reading fields.npy",
-              flush=True)
+    if kind == "gridpack" and os.path.exists(npy) and not pack_holds_npy(gp, npy, meta):
+        if os.path.getmtime(npy) <= os.path.getmtime(gp):
+            raise StalePackError(f"{gp} does not hold the data of fields.npy (made from an "
+                                 "earlier prepare-era5 run than fields.npy and meta.json?); "
+                                 "rerun pack-era5 or delete it")
+        print(f"warning: {gp} is older than fields.npy and does not hold its data (stale "
+              "pack); reading fields.npy", flush=True)
         kind, f = "npy", npy
     shape = GridPack(f).h["shape"] if kind == "gridpack" else np.load(f, mmap_mode="r").shape
     want = (len(meta["times"]), len(meta["channels"]), len(meta["lat"]), len(meta["lon"]))
@@ -546,7 +575,7 @@ def main(argv=None):
                  f"the data covers {times[0]} .. {times[-1]}")
     resume = load_ckpt(args.resume) if args.resume else None
     if resume is not None:
-        bad = [k for k in MODEL_FIELDS if resume["args"].get(k) != getattr(args, k)]
+        bad = [k for k in RESUME_FIELDS if resume["args"].get(k) != getattr(args, k)]
         if bad:
             ap.error(f"--resume: options differ from the checkpoint: {bad}")
     ds = ERA5(args.data, rt.device, stats_end=train_end)
@@ -609,8 +638,9 @@ def main(argv=None):
         flops, model_flops, opt_total = pr["flops"], pr["model_flops"], pr["opt_flops"]
         step, samples, train_time, compile_time, next_eval = (
             pr["step"], pr["samples"], pr["train_time"], pr["compile_time"], pr["next_eval"])
-        log = resume["log"]
-        log["resumed_from"] = args.resume
+        log = resume["log"]       # this invocation's args, as pretrain records them
+        log.setdefault("resume_history", []).append({"step": step, "args": log["args"]})
+        log.update(args=vars(args), resumed_from=args.resume)
         torch.set_rng_state(resume["rng"])
         mix_rng.bit_generator.state = resume["mix_rng"]
         if rt.scaler is not None and "scaler" in resume:
