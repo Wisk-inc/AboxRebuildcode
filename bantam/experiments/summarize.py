@@ -8,7 +8,8 @@ Only completed runs are tabulated: logs still marked in_progress are listed as
 running, and JSON files that are not run logs (derived tables) are skipped.
 
 Seed aggregates: runs with the same recipe (args minus seed, name, paths, threads,
-eval cadence) and budget are pooled into n, mean and sample sd.
+eval cadence) and budget are pooled into n, mean and sample sd over distinct seeds
+(replicate runs of one seed are averaged into one sample first).
 
 Compute-to-target: the baseline curve is (budget, final_val_loss) of COMPLETED
 baseline runs, each with its own full LR schedule, averaged over seeds at each
@@ -33,16 +34,20 @@ RES = os.path.join(ROOT, "results")
 # args that never change what is trained or measured
 NON_RECIPE = {"seed", "name", "out", "threads", "device", "precision", "compile", "duty", "save",
               "save_every_eval", "ckpt_every", "ckpt", "resume", "stop_step", "evals", "eval_seqs",
-              "grad_ckpt"}
+              "grad_ckpt", "auto_batch", "allow_arg_change",
+              # bantam weather --forecast options (not used when training)
+              "forecast", "load", "init", "steps", "forecast_out"}
 # flags added after the first runs, at the value older logs implicitly used
 DEFAULTS = {"llm": {"state_bits": 32, "param_dtype": "fp32", "accum": 1, "batch_scale": 0.0,
                     "batch_scale_k": 0, "sched": "cosine", "decay_frac": 0.45, "lr_restart": 0,
                     "mix_fine": 0.0, "merge_mode": "", "qk_norm": 0, "mlp": "gelu", "softcap": 0.0,
                     "zero_init_proj": 0, "ns": "quintic", "warmup": 0.05, "gated": 1,
-                    "out_mode": "slot", "rope_pos": "token"},
+                    "out_mode": "slot", "rope_pos": "token", "data_format": "auto",
+                    "flops_mode": "model"},
             "weather": {"state_bits": 32, "coarse_mode": "merge", "batch_scale_k": 0,
                         "sched": "cosine", "decay_frac": 0.45, "ns": "quintic", "lr_restart": 0,
-                        "mix_fine": 0.0, "merge_mode": "", "gated": 1, "warmup": 0.05}}
+                        "mix_fine": 0.0, "merge_mode": "", "gated": 1, "warmup": 0.05,
+                        "flops_mode": "model", "ic_stride": 12, "max_ics": 96}}
 # Zoom and upgrade options: the baseline recipe has all of them at their default
 VARIANT = {"zoom": "1", "batch_scale_k": 0, "batch_scale": 0.0, "mix_fine": 0.0, "lr_restart": 0,
            "merge_mode": "", "gated": 1, "out_mode": "slot", "rope_pos": "token", "mlp": "gelu",
@@ -114,16 +119,25 @@ def group_label(names):
     return stems.pop() if len(stems) == 1 else " / ".join(sorted(names))
 
 
+def per_seed(rs, metric):
+    """metric of each distinct seed (replicates of a seed averaged), sorted by seed."""
+    by = {}
+    for r in rs:
+        by.setdefault(json.dumps(r["args"].get("seed")), []).append(metric(r))
+    return [float(np.mean(by[k])) for k in sorted(by)]
+
+
 def seed_groups(runs, metric):
-    """[{label, n, mean, sd, runs}] for recipes run with more than one seed."""
+    """[{label, n, mean, sd, runs}] for recipes run with more than one seed; n counts
+    distinct seeds (two runs of the same seed are one sample, not two)."""
     groups = {}
     for n, r in runs.items():
         groups.setdefault(recipe(r), []).append(n)
     out = []
     for names in groups.values():
-        if len(names) < 2:
+        v = np.array(per_seed([runs[n] for n in names], metric))
+        if len(v) < 2:
             continue
-        v = np.array([metric(runs[n]) for n in names])
         out.append({"label": group_label(names), "n": len(v), "mean": float(v.mean()),
                     "sd": float(v.std(ddof=1)), "runs": sorted(names)})
     return sorted(out, key=lambda g: g["label"])
@@ -149,8 +163,9 @@ def baseline_curve(runs, key):
     pts = {}
     for r in runs.values():
         if recipe(r, budget=False) == key:
-            pts.setdefault(r["args"]["budget"], []).append(r["final_val_loss"])
-    return [(b, float(np.mean(v))) for b, v in sorted(pts.items())]
+            pts.setdefault(r["args"]["budget"], []).append(r)
+    return [(b, float(np.mean(per_seed(v, lambda r: r["final_val_loss"]))))
+            for b, v in sorted(pts.items())]
 
 
 def compute_to_target(runs):
@@ -161,7 +176,7 @@ def compute_to_target(runs):
                 for g in seed_groups(runs, lambda r: r["final_val_loss"])]
     for label, names in targets:
         r = runs[names[0]]
-        target = float(np.mean([runs[n]["final_val_loss"] for n in names]))
+        target = float(np.mean(per_seed([runs[n] for n in names], lambda r: r["final_val_loss"])))
         budget = r["args"]["budget"]
         base_key = recipe(r, budget=False, reset=True)
         row = {"run": label, "val_loss": target, "run_flops": budget, "baseline_flops": None,
