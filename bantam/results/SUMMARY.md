@@ -19,19 +19,19 @@
 
 ## Weather learning-rate sweep (1.8e13 FLOPs)
 
-| run | optim | lr | steps | val_mse | z500@6h | z500@24h | z500@72h |
-|---|---|---|---|---|---|---|---|
-| wsweep_adamw_lr1e-3 | adamw | 0.001 | 186 | 0.4143 | 147.0 | 471.7 | 843.6 |
-| wsweep_adamw_lr2e-3 | adamw | 0.002 | 186 | 0.3928 | 144.7 | 465.1 | 826.5 |
-| wsweep_adamw_lr4e-3 | adamw | 0.004 | 186 | 0.3911 | 145.0 | 467.7 | 839.5 |
-| wsweep_adamw_lr5e-4 | adamw | 0.0005 | 186 | 0.4543 | 151.3 | 479.0 | 878.8 |
-| wsweep_muon_lr1.6e-2 | muon | 0.016 | 186 | 0.2331 | 111.4 | 359.8 | 743.8 |
-| wsweep_muon_lr1e-3 | muon | 0.001 | 186 | 0.3686 | 141.6 | 460.6 | 839.6 |
-| wsweep_muon_lr2e-3 | muon | 0.002 | 186 | 0.3201 | 134.9 | 450.8 | 831.2 |
-| wsweep_muon_lr3.2e-2 | muon | 0.032 | 186 | 0.2567 | 117.9 | 372.6 | 760.6 |
-| wsweep_muon_lr4e-3 | muon | 0.004 | 186 | 0.2929 | 130.7 | 443.6 | 813.6 |
-| wsweep_muon_lr5e-4 | muon | 0.0005 | 186 | 0.4496 | 152.1 | 476.0 | 862.8 |
-| wsweep_muon_lr8e-3 | muon | 0.008 | 186 | 0.2672 | 122.4 | 412.4 | 798.0 |
+| run | optim | lr | steps | val_mse | valsplit_mse | z500@6h | z500@24h | z500@72h |
+|---|---|---|---|---|---|---|---|---|
+| wsweep_adamw_lr1e-3 | adamw | 0.001 | 186 | 0.4143 |  | 147.0 | 471.7 | 843.6 |
+| wsweep_adamw_lr2e-3 | adamw | 0.002 | 186 | 0.3928 |  | 144.7 | 465.1 | 826.5 |
+| wsweep_adamw_lr4e-3 | adamw | 0.004 | 186 | 0.3911 |  | 145.0 | 467.7 | 839.5 |
+| wsweep_adamw_lr5e-4 | adamw | 0.0005 | 186 | 0.4543 |  | 151.3 | 479.0 | 878.8 |
+| wsweep_muon_lr1.6e-2 | muon | 0.016 | 186 | 0.2331 |  | 111.4 | 359.8 | 743.8 |
+| wsweep_muon_lr1e-3 | muon | 0.001 | 186 | 0.3686 |  | 141.6 | 460.6 | 839.6 |
+| wsweep_muon_lr2e-3 | muon | 0.002 | 186 | 0.3201 |  | 134.9 | 450.8 | 831.2 |
+| wsweep_muon_lr3.2e-2 | muon | 0.032 | 186 | 0.2567 |  | 117.9 | 372.6 | 760.6 |
+| wsweep_muon_lr4e-3 | muon | 0.004 | 186 | 0.2929 |  | 130.7 | 443.6 | 813.6 |
+| wsweep_muon_lr5e-4 | muon | 0.0005 | 186 | 0.4496 |  | 152.1 | 476.0 | 862.8 |
+| wsweep_muon_lr8e-3 | muon | 0.008 | 186 | 0.2672 |  | 122.4 | 412.4 | 798.0 |
 
 
 ## LLM main runs and ablations
@@ -63,15 +63,20 @@
 | main_muon_zoom_s1 | muon | 4:0.35,2:0.25,1:0.4 | slot | 1 | token | 0.016 | 1 | 6.80e+13 | 808 | 3.31 | 0.028 | 944 | 2.8721 |
 | main_muon_zoom_s2 | muon | 4:0.35,2:0.25,1:0.4 | slot | 1 | token | 0.016 | 2 | 6.80e+13 | 808 | 3.31 | 0.028 | 957 | 2.8736 |
 | up_base_s0 | muon | 1:1 | slot | 1 | token | 0.016 | 0 | 6.80e+13 | 450 | 1.84 | 0.016 | 1067 | 2.7365 |
+| up_base_s1 | muon | 1:1 | slot | 1 | token | 0.016 | 1 | 6.80e+13 | 450 | 1.84 | 0.016 | 1039 | 2.7250 |
 | up_bundle_base_s0 | muon | 1:1 | slot | 1 | token | 0.016 | 0 | 6.80e+13 | 450 | 1.84 | 0.016 | 1075 | 2.7277 |
 | up_bundle_zoom_s0 | muon | 2:0.5,1:0.5 | slot | 1 | token | 0.016 | 0 | 6.80e+13 | 422 | 2.54 | 0.022 | 1103 | 2.6908 |
 | up_polar_s0 | muon | 1:1 | slot | 1 | token | 0.016 | 0 | 6.80e+13 | 450 | 1.84 | 0.016 | 1046 | 2.7547 |
 | up_qknorm_s0 | muon | 1:1 | slot | 1 | token | 0.016 | 0 | 6.80e+13 | 450 | 1.84 | 0.016 | 1041 | 2.6364 |
+| up_qknorm_s1 | muon | 1:1 | slot | 1 | token | 0.016 | 1 | 6.80e+13 | 450 | 1.84 | 0.016 | 1069 | 2.6406 |
+| up_qknorm_zoom_s0 | muon | 2:0.33,1:0.67 | slot | 1 | token | 0.016 | 0 | 6.80e+13 | 432 | 2.31 | 0.020 | 1082 | 2.5853 |
+| up_qknorm_zoom_s1 | muon | 2:0.33,1:0.67 | slot | 1 | token | 0.016 | 1 | 6.80e+13 | 432 | 2.31 | 0.020 | 1111 | 2.5934 |
 | up_relu2_s0 | muon | 1:1 | slot | 1 | token | 0.016 | 0 | 6.80e+13 | 450 | 1.84 | 0.016 | 1955 | 2.8288 |
 | up_softcap_s0 | muon | 1:1 | slot | 1 | token | 0.016 | 0 | 6.80e+13 | 450 | 1.84 | 0.016 | 1862 | 2.7264 |
 | up_wsd_s0 | muon | 1:1 | slot | 1 | token | 0.016 | 0 | 6.80e+13 | 450 | 1.84 | 0.016 | 1853 | 2.7725 |
 | up_zeroinit_s0 | muon | 1:1 | slot | 1 | token | 0.016 | 0 | 6.80e+13 | 450 | 1.84 | 0.016 | 1703 | 2.7317 |
 | up_zoom_2-33_bs2_s0 | muon | 2:0.33,1:0.67 | slot | 1 | token | 0.016 | 0 | 6.80e+13 | 432 | 2.31 | 0.020 | 967 | 2.6832 |
+| up_zoom_2-33_bs2_s1 | muon | 2:0.33,1:0.67 | slot | 1 | token | 0.016 | 1 | 6.80e+13 | 432 | 2.31 | 0.020 | 1068 | 2.6758 |
 | up_zoom_2-65_bs2_s0 | muon | 2:0.65,1:0.35 | slot | 1 | token | 0.016 | 0 | 6.80e+13 | 414 | 2.75 | 0.024 | 952 | 2.7135 |
 | up_zoom_bs4_s0 | muon | 2:0.5,1:0.5 | slot | 1 | token | 0.016 | 0 | 6.80e+13 | 323 | 2.54 | 0.022 | 935 | 2.7272 |
 
@@ -81,8 +86,11 @@
 | recipe | n | mean +- sd | runs |
 |---|---|---|---|
 | fu_2-50_bk | 3 | 2.6851 +- 0.0041 | fu_2-50_bk_s0, fu_2-50_bk_s1, fu_2-50_bk_s2 |
-| main_muon_base_s0 / main_muon_base_s1 / main_muon_base_s2 / up_base_s0 | 4 | 2.7368 +- 0.0093 | main_muon_base_s0, main_muon_base_s1, main_muon_base_s2, up_base_s0 |
+| main_muon_base_s0 / main_muon_base_s1 / main_muon_base_s2 / up_base_s0 / up_base_s1 | 3 | 2.7370 +- 0.0118 | main_muon_base_s0, main_muon_base_s1, main_muon_base_s2, up_base_s0, up_base_s1 |
 | main_muon_zoom | 3 | 2.8736 +- 0.0015 | main_muon_zoom_s0, main_muon_zoom_s1, main_muon_zoom_s2 |
+| up_qknorm | 2 | 2.6385 +- 0.0029 | up_qknorm_s0, up_qknorm_s1 |
+| up_qknorm_zoom | 2 | 2.5894 +- 0.0057 | up_qknorm_zoom_s0, up_qknorm_zoom_s1 |
+| up_zoom_2-33_bs2 | 2 | 2.6795 +- 0.0053 | up_zoom_2-33_bs2_s0, up_zoom_2-33_bs2_s1 |
 
 
 ### Compute-to-target (baseline FLOPs needed to reach each run's final loss)
@@ -99,7 +107,7 @@ Method: baseline = completed runs with the run's optimizer, LR, model, data and 
 | abl_sched_4-20_s0 | 2.7999 | 6.80e+13 | 6.80e+13 | <= 1.00x |
 | abl_sched_4-50_s0 | 2.9468 | 6.80e+13 | 6.80e+13 | <= 1.00x |
 | abl_sched_4-60_s0 | 3.0220 | 6.80e+13 | 6.80e+13 | <= 1.00x |
-| fu_2-50_bk_s0 | 2.6896 | 6.80e+13 | 7.55e+13 | 1.11x |
+| fu_2-50_bk_s0 | 2.6896 | 6.80e+13 | 7.56e+13 | 1.11x |
 | fu_2-50_bk_s1 | 2.6841 | 6.80e+13 | 7.65e+13 | 1.12x |
 | fu_2-50_bk_s2 | 2.6816 | 6.80e+13 | 7.69e+13 | 1.13x |
 | fu_2-50_restart_bk_s0 | 2.7865 | 6.80e+13 | 6.80e+13 | <= 1.00x |
@@ -116,20 +124,28 @@ Method: baseline = completed runs with the run's optimizer, LR, model, data and 
 | main_muon_zoom_s1 | 2.8721 | 6.80e+13 | 6.80e+13 | <= 1.00x |
 | main_muon_zoom_s2 | 2.8736 | 6.80e+13 | 6.80e+13 | <= 1.00x |
 | up_base_s0 | 2.7365 | 6.80e+13 | 6.80e+13 | 1.00x |
+| up_base_s1 | 2.7250 | 6.80e+13 | 6.80e+13 | 1.00x |
 | up_bundle_base_s0 | 2.7277 | 6.80e+13 | 6.94e+13 | 1.02x |
-| up_bundle_zoom_s0 | 2.6908 | 6.80e+13 | 7.53e+13 | 1.11x |
+| up_bundle_zoom_s0 | 2.6908 | 6.80e+13 | 7.54e+13 | 1.11x |
 | up_polar_s0 | 2.7547 | 6.80e+13 | 6.80e+13 | <= 1.00x |
 | up_qknorm_s0 | 2.6364 | 6.80e+13 | 8.50e+13 | 1.25x |
+| up_qknorm_s1 | 2.6406 | 6.80e+13 | 8.43e+13 | 1.24x |
+| up_qknorm_zoom_s0 | 2.5853 | 6.80e+13 | 9.66e+13 | 1.42x |
+| up_qknorm_zoom_s1 | 2.5934 | 6.80e+13 | 9.47e+13 | 1.39x |
 | up_relu2_s0 | 2.8288 | 6.80e+13 | 6.80e+13 | <= 1.00x |
 | up_softcap_s0 | 2.7264 | 6.80e+13 | 6.96e+13 | 1.02x |
 | up_wsd_s0 | 2.7725 | 6.80e+13 | 6.80e+13 | <= 1.00x |
 | up_zeroinit_s0 | 2.7317 | 6.80e+13 | 6.88e+13 | 1.01x |
 | up_zoom_2-33_bs2_s0 | 2.6832 | 6.80e+13 | 7.66e+13 | 1.13x |
+| up_zoom_2-33_bs2_s1 | 2.6758 | 6.80e+13 | 7.79e+13 | 1.15x |
 | up_zoom_2-65_bs2_s0 | 2.7135 | 6.80e+13 | 7.16e+13 | 1.05x |
 | up_zoom_bs4_s0 | 2.7272 | 6.80e+13 | 6.95e+13 | 1.02x |
 | fu_2-50_bk (mean of 3) | 2.6851 | 6.80e+13 | 7.63e+13 | 1.12x |
-| main_muon_base_s0 / main_muon_base_s1 / main_muon_base_s2 / up_base_s0 (mean of 4) | 2.7368 | 6.80e+13 | 6.80e+13 | 1.00x |
+| main_muon_base_s0 / main_muon_base_s1 / main_muon_base_s2 / up_base_s0 / up_base_s1 (mean of 3) | 2.7370 | 6.80e+13 | 6.80e+13 | 1.00x |
 | main_muon_zoom (mean of 3) | 2.8736 | 6.80e+13 | 6.80e+13 | <= 1.00x |
+| up_qknorm (mean of 2) | 2.6385 | 6.80e+13 | 8.46e+13 | 1.24x |
+| up_qknorm_zoom (mean of 2) | 2.5894 | 6.80e+13 | 9.56e+13 | 1.41x |
+| up_zoom_2-33_bs2 (mean of 2) | 2.6795 | 6.80e+13 | 7.73e+13 | 1.14x |
 
 
 ## LLM low-memory runs
@@ -151,20 +167,20 @@ Method: baseline = completed runs with the run's optimizer, LR, model, data and 
 
 ## Weather (ERA5 5.625 deg, 6 h step, test year 2018)
 
-| run | optim | zoom | mode | lr | seed | budget | steps | epochs | train_s | val_mse | z500@6h | z500@24h | z500@72h | t850@24h | t2m@24h |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| abl_mean_s0 | muon | 4:0.6,1:0.4 | merge | 0.016 | 0 | 5.50e+13 | 2128 | 2.91 | 933 | 0.1276 | 69.3 | 206.1 | 526.6 | 1.17 | 1.07 |
-| abl_sched_16-4-1_s0 | muon | 16:0.3,4:0.3,1:0.4 | merge | 0.016 | 0 | 5.50e+13 | 5081 | 6.96 | 1423 | 0.1799 | 89.1 | 275.4 | 633.7 | 1.42 | 1.25 |
-| abl_sched_4-40_s0 | muon | 4:0.4,1:0.6 | merge | 0.016 | 0 | 5.50e+13 | 1607 | 2.20 | 1136 | 0.1289 | 72.6 | 219.1 | 548.1 | 1.17 | 1.07 |
-| long_muon_base_2x_s0 | muon | 1:1 | merge | 0.016 | 0 | 1.10e+14 | 1133 | 1.55 | 1726 | 0.0938 | 58.9 | 171.8 | 461.3 | 0.99 | 0.92 |
-| main_adamw_base_s0 | adamw | 1:1 | merge | 0.002 | 0 | 5.50e+13 | 567 | 0.78 | 1513 | 0.2292 | 106.8 | 346.2 | 737.2 | 1.60 | 1.32 |
-| main_adamw_lowres_s0 | adamw | 4:0.6,1:0.4 | lowres | 0.002 | 0 | 5.50e+13 | 2128 | 2.91 | 705 | 0.1582 | 81.3 | 256.6 | 601.1 | 1.33 | 1.17 |
-| main_adamw_zoom_s0 | adamw | 4:0.6,1:0.4 | merge | 0.002 | 0 | 5.50e+13 | 2128 | 2.91 | 1632 | 0.1800 | 89.9 | 281.8 | 646.8 | 1.42 | 1.23 |
-| main_muon_base_s0 | muon | 1:1 | merge | 0.016 | 0 | 5.50e+13 | 567 | 0.78 | 700 | 0.1244 | 72.0 | 217.4 | 538.7 | 1.16 | 1.03 |
-| main_muon_base_s1 | muon | 1:1 | merge | 0.016 | 1 | 5.50e+13 | 567 | 0.78 | 817 | 0.1236 | 71.9 | 217.6 | 551.2 | 1.15 | 1.03 |
-| main_muon_lowres_s0 | muon | 4:0.6,1:0.4 | lowres | 0.016 | 0 | 5.50e+13 | 2128 | 2.91 | 1014 | 0.1119 | 63.7 | 194.3 | 511.2 | 1.10 | 1.01 |
-| main_muon_zoom_s0 | muon | 4:0.6,1:0.4 | merge | 0.016 | 0 | 5.50e+13 | 2128 | 2.91 | 1061 | 0.1584 | 82.5 | 252.7 | 600.5 | 1.31 | 1.18 |
-| main_muon_zoom_s1 | muon | 4:0.6,1:0.4 | merge | 0.016 | 1 | 5.50e+13 | 2128 | 2.91 | 1087 | 0.1591 | 83.3 | 257.7 | 623.2 | 1.31 | 1.18 |
+| run | optim | zoom | mode | lr | seed | budget | steps | epochs | train_s | val_mse | valsplit_mse | z500@6h | z500@24h | z500@72h | t850@24h | t2m@24h | acc z500@72h |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| abl_mean_s0 | muon | 4:0.6,1:0.4 | merge | 0.016 | 0 | 5.50e+13 | 2128 | 2.91 | 933 | 0.1276 |  | 69.3 | 206.1 | 526.6 | 1.17 | 1.07 |  |
+| abl_sched_16-4-1_s0 | muon | 16:0.3,4:0.3,1:0.4 | merge | 0.016 | 0 | 5.50e+13 | 5081 | 6.96 | 1423 | 0.1799 |  | 89.1 | 275.4 | 633.7 | 1.42 | 1.25 |  |
+| abl_sched_4-40_s0 | muon | 4:0.4,1:0.6 | merge | 0.016 | 0 | 5.50e+13 | 1607 | 2.20 | 1136 | 0.1289 |  | 72.6 | 219.1 | 548.1 | 1.17 | 1.07 |  |
+| long_muon_base_2x_s0 | muon | 1:1 | merge | 0.016 | 0 | 1.10e+14 | 1133 | 1.55 | 1726 | 0.0938 |  | 58.9 | 171.8 | 461.3 | 0.99 | 0.92 |  |
+| main_adamw_base_s0 | adamw | 1:1 | merge | 0.002 | 0 | 5.50e+13 | 567 | 0.78 | 1513 | 0.2292 |  | 106.8 | 346.2 | 737.2 | 1.60 | 1.32 |  |
+| main_adamw_lowres_s0 | adamw | 4:0.6,1:0.4 | lowres | 0.002 | 0 | 5.50e+13 | 2128 | 2.91 | 705 | 0.1582 |  | 81.3 | 256.6 | 601.1 | 1.33 | 1.17 |  |
+| main_adamw_zoom_s0 | adamw | 4:0.6,1:0.4 | merge | 0.002 | 0 | 5.50e+13 | 2128 | 2.91 | 1632 | 0.1800 |  | 89.9 | 281.8 | 646.8 | 1.42 | 1.23 |  |
+| main_muon_base_s0 | muon | 1:1 | merge | 0.016 | 0 | 5.50e+13 | 567 | 0.78 | 700 | 0.1244 |  | 72.0 | 217.4 | 538.7 | 1.16 | 1.03 |  |
+| main_muon_base_s1 | muon | 1:1 | merge | 0.016 | 1 | 5.50e+13 | 567 | 0.78 | 817 | 0.1236 |  | 71.9 | 217.6 | 551.2 | 1.15 | 1.03 |  |
+| main_muon_lowres_s0 | muon | 4:0.6,1:0.4 | lowres | 0.016 | 0 | 5.50e+13 | 2128 | 2.91 | 1014 | 0.1119 |  | 63.7 | 194.3 | 511.2 | 1.10 | 1.01 |  |
+| main_muon_zoom_s0 | muon | 4:0.6,1:0.4 | merge | 0.016 | 0 | 5.50e+13 | 2128 | 2.91 | 1061 | 0.1584 |  | 82.5 | 252.7 | 600.5 | 1.31 | 1.18 |  |
+| main_muon_zoom_s1 | muon | 4:0.6,1:0.4 | merge | 0.016 | 1 | 5.50e+13 | 2128 | 2.91 | 1087 | 0.1591 |  | 83.3 | 257.7 | 623.2 | 1.31 | 1.18 |  |
 
 
 ### Seed aggregates (val MSE, sample sd)
