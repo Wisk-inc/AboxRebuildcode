@@ -6,18 +6,20 @@ CPU
     after `import torch`. Measured here: denormal softmax gradients made a
     (8192x4096)@(4096x256) matmul 15x slower (897 ms -> 57 ms with FTZ).
 GPU
-  * bf16 autocast (fp16 + GradScaler on pre-Ampere), TF32 matmuls,
-    fused AdamW, torch.compile, SDPA/FlashAttention (used by the models).
+  * bf16 autocast on compute capability >= 8.0, fp16 + GradScaler before
+    (precision="auto"), TF32 matmuls, fused AdamW, torch.compile,
+    SDPA/FlashAttention (used by the models).
   * "Maximize compute without stressing": a memory-headroom batch finder so
-    runs never sit at the OOM edge, and a duty-cycle limiter that caps the
-    average load when a hard power cap (nvidia-smi -pl) is not available.
+    runs never sit at the OOM edge (`bantam pretrain --auto_batch`), and a
+    duty-cycle limiter that caps the average load when a hard power cap
+    (nvidia-smi -pl) is not available.
 """
 import contextlib
 import os
 import threading
 import time
 from dataclasses import dataclass
-from queue import Queue
+from queue import Empty, Full, Queue
 
 import torch
 
@@ -48,21 +50,44 @@ class Runtime:
             self.step(optimizer, params, clip)
 
     def step(self, optimizer, params, clip=1.0):
-        if self.scaler is not None:
-            for o in getattr(optimizer, "optimizers", [optimizer]):
-                self.scaler.unscale_(o)
-            torch.nn.utils.clip_grad_norm_(params, clip)
-            for o in getattr(optimizer, "optimizers", [optimizer]):
-                self.scaler.step(o)
-            self.scaler.update()
-        else:
-            torch.nn.utils.clip_grad_norm_(params, clip)
+        """Clip the global grad norm and step; returns that norm.
+
+        With a GradScaler (fp16) every sub-optimizer of a CombinedOptimizer is
+        unscaled first and one finite check covers all of them: an overflow
+        anywhere skips the whole step (no sub-optimizer steps) and lowers the
+        scale. Sub-optimizers without grads are left out (GradScaler asserts on
+        an optimizer that recorded no inf check).
+        """
+        params = list(params)
+        if self.scaler is None:
+            norm = torch.nn.utils.clip_grad_norm_(params, clip)
             optimizer.step()
+            return norm
+        opts = [o for o in getattr(optimizer, "optimizers", [optimizer])
+                if any(p.grad is not None for g in o.param_groups for p in g["params"])]
+        for o in opts:
+            self.scaler.unscale_(o)
+        norm = torch.nn.utils.clip_grad_norm_(params, clip)   # inf/nan iff any grad overflowed
+        if opts:
+            if torch.isfinite(norm):
+                for o in opts:
+                    self.scaler.step(o)
+            self.scaler.update()
+        return norm
 
     def to(self, x):
         if self.device.type == "cuda":
             return x.pin_memory().to(self.device, non_blocking=True)
         return x
+
+
+def auto_precision(device):
+    """precision="auto": bf16 on CUDA compute capability >= 8.0 (Ampere+), fp16 (+ GradScaler)
+    on older GPUs, fp32 elsewhere. torch.cuda.is_bf16_supported() also accepts sm70/sm75,
+    where bf16 is only emulated (no bf16 tensor cores, no flash attention)."""
+    if device.type != "cuda":
+        return "fp32"
+    return "bf16" if tuple(torch.cuda.get_device_capability(device)) >= (8, 0) else "fp16"
 
 
 def setup_runtime(device="auto", precision="auto", compile=False, threads=None, seed=0):
@@ -80,8 +105,8 @@ def setup_runtime(device="auto", precision="auto", compile=False, threads=None, 
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         torch.set_float32_matmul_precision("high")
-        if precision == "auto":
-            precision = "bf16" if torch.cuda.is_bf16_supported() else "fp16"
+    if precision == "auto":
+        precision = auto_precision(dev)
     if precision == "bf16":
         amp_dtype = torch.bfloat16
     elif precision == "fp16":
@@ -97,9 +122,12 @@ def maybe_compile(model, rt):
 
 
 def find_batch_size(try_step, start=8, limit=4096, headroom=0.85, device=None):
-    """Largest power-of-two batch whose peak memory stays under `headroom` x total.
+    """Largest power-of-two batch in [start, limit] whose peak memory stays under
+    `headroom` x total, or None when even `start` does not fit.
 
-    try_step(batch) must run one full fwd/bwd/step. CPU: returns `start`.
+    try_step(batch) must run one full fwd/bwd/step on a throwaway model and
+    optimizer (it is called several times; probing the real ones would train
+    them on FLOPs nobody counts). CPU: returns `start` without probing.
     Staying below the OOM edge avoids allocator thrash and fragmentation
     retries, which cost more throughput than the last few % of batch size.
     """
@@ -119,7 +147,7 @@ def find_batch_size(try_step, start=8, limit=4096, headroom=0.85, device=None):
         except torch.OutOfMemoryError:
             break
     torch.cuda.empty_cache()
-    return best or start
+    return best
 
 
 class DutyCycleLimiter:
@@ -133,6 +161,8 @@ class DutyCycleLimiter:
     """
 
     def __init__(self, target=1.0, device=None):
+        if not target > 0:                       # also rejects NaN
+            raise ValueError(f"duty cycle target must be in (0, 1], got {target}")
         self.target = target
         self.device = device
 
@@ -150,24 +180,67 @@ class DutyCycleLimiter:
 
 
 class Prefetcher:
-    """Background thread that builds the next batches while the model trains."""
+    """Background thread that builds the next batches while the model trains.
+
+    An exception in make_batch is re-raised by next() (after the batches made
+    before it); close() stops the worker even while it waits on a full queue.
+    """
+
+    _END = object()
 
     def __init__(self, make_batch, depth=2):
         self.q = Queue(maxsize=depth)
         self.make_batch = make_batch
-        self._stop = False
+        self._stop = threading.Event()
+        self._err = None
         self.t = threading.Thread(target=self._run, daemon=True)
         self.t.start()
 
+    def _put(self, item):
+        while not self._stop.is_set():
+            try:
+                self.q.put(item, timeout=0.05)
+                return True
+            except Full:
+                pass
+        return False
+
     def _run(self):
-        while not self._stop:
-            self.q.put(self.make_batch())
+        try:
+            while not self._stop.is_set():
+                if not self._put(self.make_batch()):
+                    return
+        except BaseException as e:               # handed to the consumer by next()
+            self._err = e
+            self._put(self._END)
 
     def next(self):
-        return self.q.get()
+        while True:
+            if (self._err is not None or self._stop.is_set()) and self.q.empty():
+                break
+            try:
+                item = self.q.get(timeout=0.05)
+            except Empty:
+                continue
+            if item is not self._END:
+                return item
+            break
+        if self._err is not None:
+            raise self._err
+        raise RuntimeError("Prefetcher is closed")
+
+    def _drain(self):
+        try:
+            while True:
+                self.q.get_nowait()
+        except Empty:
+            pass
 
     def close(self):
-        self._stop = True
+        self._stop.set()
+        self._drain()                  # frees a worker blocked on the full queue
+        self.t.join(timeout=1.0)
+        self._drain()
 
 
 def describe(rt):
