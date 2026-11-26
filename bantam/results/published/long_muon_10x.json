@@ -1,4 +1,8 @@
 {
+ "status": "killed",
+ "stopped_at_frac": 0.3,
+ "stopped_at_step": 1348,
+ "status_note": "Killed at 30% of its 6.8e14-FLOP budget (step 1348 of about 4,490) and never finished: no final eval (no final_val_loss), no final weights, and the f0.10-f0.30 checkpoints are no longer on disk, so they were not re-scored in 0.3. The evals are reconstructed from the training log (provisional_from_log) and rounded to 4 decimals. They are mid-schedule points (learning rate not yet decayed) of an unfinished run: not a result, and not usable for compute-to-target or the published comparison.",
  "args": {
   "data": "/home/user/data/tinystories/tok4k",
   "zoom": "1",

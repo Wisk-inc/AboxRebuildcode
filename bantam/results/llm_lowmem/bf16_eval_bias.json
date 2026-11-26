@@ -1,0 +1,45 @@
+{
+ "what": "Evaluation error of the 0.2 (60759d3) scoring of --param_dtype bf16 runs: the whole model, including the cross-entropy, ran in bf16 and each 64-window batch loss was rounded to bf16. 0.3 scores a bf16-weight model as an fp32 copy of its bf16 weights.",
+ "method": "Checkpoints of results/published/save_muon_base_repro.json (fp32-trained, same model and data as the bf16 runs) cast to bf16, then scored on the same first-N val windows by bantamtrain.cli.pretrain.evaluate() of 60759d3 (bf16 math) and of 0.3 (fp32 math). bf16_math_error = 0.2 score - 0.3 score on identical bf16 weights.",
+ "measurements": [
+  {
+   "checkpoint": "save_muon_base_repro",
+   "eval_seqs": 2048,
+   "fp32_weights": 2.735179401934147,
+   "bf16_weights_fp32_math": 2.7351396679878235,
+   "bf16_weights_bf16_math_0.2": 2.73583984375,
+   "bf16_math_error": 0.0007001757621765137,
+   "bf16_rounding_of_weights": -3.9733946323394775e-05
+  },
+  {
+   "checkpoint": "save_muon_base_repro",
+   "eval_seqs": 256,
+   "fp32_weights": 2.450384020805359,
+   "bf16_weights_fp32_math": 2.4503538012504578,
+   "bf16_weights_bf16_math_0.2": 2.45703125,
+   "bf16_math_error": 0.006677448749542236,
+   "bf16_rounding_of_weights": -3.0219554901123047e-05
+  },
+  {
+   "checkpoint": "save_muon_base_repro_f0.20",
+   "eval_seqs": 1024,
+   "fp32_weights": 3.703513741493225,
+   "bf16_weights_fp32_math": 3.7035795748233795,
+   "bf16_weights_bf16_math_0.2": 3.703125,
+   "bf16_math_error": -0.0004545748233795166,
+   "bf16_rounding_of_weights": 6.583333015441895e-05
+  },
+  {
+   "checkpoint": "save_muon_base_repro_f0.30",
+   "eval_seqs": 1024,
+   "fp32_weights": 3.463441550731659,
+   "bf16_weights_fp32_math": 3.4634463638067245,
+   "bf16_weights_bf16_math_0.2": 3.4599609375,
+   "bf16_math_error": -0.0034854263067245483,
+   "bf16_rounding_of_weights": 4.813075065612793e-06
+  }
+ ],
+ "conclusion": "The bf16-math error is not a fixed offset: it is rounding noise of a few 1e-3 whose sign varies (+0.0007 at 2048 windows, -0.0035..-0.0005 at 1024, +0.0067 at 256). Rounding the weights to bf16 changes the loss by < 1e-4. So full_muon8_bf16 (2048 windows, 2.7280) is uncertain by about +-0.001 and lm_muon8_bf16 (1024 windows, 3.5752) by about +-0.004; neither bf16-trained model was saved, so neither can be re-scored, and both need a rerun.",
+ "caveat": "Measured on an fp32-trained model rounded to bf16, not on the bf16-trained models themselves.",
+ "script": "for each checkpoint: build_model(run args), load the state dict, then evaluate(model) and evaluate(copy.deepcopy(model).to(torch.bfloat16)) with a CPU runtime (no autocast), once with the 60759d3 package on sys.path and once with 0.3"
+}
