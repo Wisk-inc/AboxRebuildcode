@@ -98,9 +98,6 @@ def main(argv=None):
     times = ds.time.values.astype("datetime64[h]").astype(str)
     n_train, n_val, n_test = split_times(times, args.test_year, args.val_year)  # before download
     os.makedirs(args.out, exist_ok=True)
-    for name in STALE:   # files of an earlier preparation no longer match
-        if os.path.exists(os.path.join(args.out, name)):
-            os.remove(os.path.join(args.out, name))
     fields = []
     for name, var, level in CHANNELS:
         da = ds[var]
@@ -117,6 +114,9 @@ def main(argv=None):
     oro = ds["geopotential_at_surface"].transpose("latitude", "longitude").values
     mean, std, diff_std = train_stats(x, n_train)
 
+    for name in STALE:   # files of an earlier preparation no longer match (removed only once
+        if os.path.exists(os.path.join(args.out, name)):   # the download has succeeded)
+            os.remove(os.path.join(args.out, name))
     np.save(os.path.join(args.out, "fields.npy"), x)
     np.save(os.path.join(args.out, "static.npy"),
             np.stack([lsm, (oro - oro.mean()) / oro.std()]).astype(np.float32))

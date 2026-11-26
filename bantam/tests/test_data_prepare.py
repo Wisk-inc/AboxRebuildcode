@@ -199,6 +199,23 @@ def test_reprepare_invalidates_stale_tokpack(tmp_path):
         _run(pack_text, ["--data", str(out), "--level", "1"])
 
 
+def test_failed_reprepare_keeps_existing_data(tmp_path):
+    """A re-prepare that fails on its inputs (bad --column / --tokenizer) leaves DIR intact."""
+    from tokenizers import Tokenizer, models
+    t = _parquet(tmp_path / "t.parquet", _docs(300))
+    v = _parquet(tmp_path / "v.parquet", _docs(20, seed=5))
+    out = tmp_path / "out"
+    _run(prepare_text, ["--train", t, "--val", v, "--out", str(out), "--vocab", "300"])
+    _run(pack_text, ["--data", str(out), "--level", "1"])
+    before = {p.name: p.read_bytes() for p in out.iterdir()}
+    Tokenizer(models.WordLevel({"a": 0, "<unk>": 1}, unk_token="<unk>")).save(str(tmp_path / "noeos.json"))
+    for bad in (["--column", "txt"], ["--tokenizer", str(tmp_path / "noeos.json")]):
+        with pytest.raises(SystemExit):
+            _run(prepare_text, ["--train", t, "--val", v, "--out", str(out), "--vocab", "260", *bad])
+        assert {p.name: p.read_bytes() for p in out.iterdir()} == before, bad
+    assert open_tokens(str(out), "train")[1] == "tokpack"
+
+
 def test_pack_text_document_index_and_val_overlap(tmp_path):
     val = _docs(30, seed=9)
     train = _docs(500) + _docs(500)[:60] + val[:4]          # 60 exact train dups, 4 leaked val docs

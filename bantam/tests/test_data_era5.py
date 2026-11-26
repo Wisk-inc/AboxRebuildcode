@@ -93,3 +93,17 @@ def test_reprepare_era5_invalidates_gridpack(fake_era5, tmp_path):
     assert all(c["max_abs_err"] <= c["bound"] for c in st["per_channel"].values())
     _prep(out, "--start", "2017-01-01", "--end", "2018-12-31T18")
     assert not (out / "fields.gridpack").exists() and not (out / "pack_stats.json").exists()
+
+
+def test_failed_reprepare_era5_keeps_existing_pack(fake_era5, tmp_path, monkeypatch):
+    """A download that fails halfway leaves the earlier preparation and its GridPack intact."""
+    out = tmp_path / "d"
+    _prep(out, "--start", "2016-01-01", "--end", "2018-12-31T18")
+    with contextlib.redirect_stdout(io.StringIO()):
+        pack_era5.main(["--data", str(out)])
+    before = {p.name: p.read_bytes() for p in out.iterdir()}
+    monkeypatch.setattr(xr, "open_zarr", lambda *a, **k: fake_era5.drop_vars("land_sea_mask"))
+    with pytest.raises(KeyError):
+        _prep(out, "--start", "2017-01-01", "--end", "2018-12-31T18")
+    assert {p.name: p.read_bytes() for p in out.iterdir()} == before
+    assert gridpack.GridPack(out / "fields.gridpack").T == json.load(open(out / "meta.json"))["n_total"]
