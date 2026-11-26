@@ -6,3 +6,23 @@ Found the latest cached dataset configuration 'default' at /root/.cache/huggingf
 [race] base: judge loss 2.6447
 [race] hf_peft: training
   $ /usr/local/bin/python3 /home/user/AboxRebuildcode/bantam/experiments/race_finetune.py _hf --out /home/user/AboxRebuildcode/bantam/results/race --arm hf_peft
+[race] hf_peft: judging
+  $ /usr/local/bin/python3 /home/user/AboxRebuildcode/bantam/experiments/race_finetune.py _judge --out /home/user/AboxRebuildcode/bantam/results/race --arm hf_peft
+[race] hf_peft: judge loss 2.2596, 792 s training, 151 tok/s, peak RSS 4273 MB
+[race] bantam_adamw: training
+  $ /usr/local/bin/python3 -m bantamtrain finetune --model HuggingFaceTB/SmolLM2-135M --jsonl /home/user/AboxRebuildcode/bantam/results/race/data/train.jsonl --eval_jsonl /home/user/AboxRebuildcode/bantam/results/race/data/bantam_eval.jsonl --seq 512 --batch 2 --accum 2 --epochs 1.0 --lr 0.0002 --sched cosine --warmup 0.03 --wd 0 --lora 16 --lora_alpha 32 --lora_dropout 0.05 --lora_targets q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj --seed 1234 --threads 4 --eval_every 0 --save_peft 1 --optim adamw --state_bits 32 --pack bfd --out /home/user/AboxRebuildcode/bantam/results/race/runs/bantam_adamw
+[race] bantam_adamw: judging
+  $ /usr/local/bin/python3 /home/user/AboxRebuildcode/bantam/experiments/race_finetune.py _judge --out /home/user/AboxRebuildcode/bantam/results/race --arm bantam_adamw
+[race] bantam_adamw: judge loss 2.3156, 596 s training, 199 tok/s, peak RSS 5285 MB
+[race] bantam: training
+  $ /usr/local/bin/python3 -m bantamtrain finetune --model HuggingFaceTB/SmolLM2-135M --jsonl /home/user/AboxRebuildcode/bantam/results/race/data/train.jsonl --eval_jsonl /home/user/AboxRebuildcode/bantam/results/race/data/bantam_eval.jsonl --seq 512 --batch 2 --accum 2 --epochs 1.0 --lr 0.0002 --sched cosine --warmup 0.03 --wd 0 --lora 16 --lora_alpha 32 --lora_dropout 0.05 --lora_targets q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj --seed 1234 --threads 4 --eval_every 0 --save_peft 1 --optim muon --pack bfd --out /home/user/AboxRebuildcode/bantam/results/race/runs/bantam
+[race] bantam: judging
+  $ /usr/local/bin/python3 /home/user/AboxRebuildcode/bantam/experiments/race_finetune.py _judge --out /home/user/AboxRebuildcode/bantam/results/race --arm bantam
+[race] bantam: judge loss 2.5351, 557 s training, 213 tok/s, peak RSS 5406 MB
+[race] bantam_nf4: training
+  $ /usr/local/bin/python3 -m bantamtrain finetune --model HuggingFaceTB/SmolLM2-135M --jsonl /home/user/AboxRebuildcode/bantam/results/race/data/train.jsonl --eval_jsonl /home/user/AboxRebuildcode/bantam/results/race/data/bantam_eval.jsonl --seq 512 --batch 2 --accum 2 --epochs 1.0 --lr 0.0002 --sched cosine --warmup 0.03 --wd 0 --lora 16 --lora_alpha 32 --lora_dropout 0.05 --lora_targets q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj --seed 1234 --threads 4 --eval_every 0 --save_peft 1 --optim muon --pack bfd --quant nf4 --low_ram 1 --out /home/user/AboxRebuildcode/bantam/results/race/runs/bantam_nf4
+[race] bantam_nf4: judging
+  $ /usr/local/bin/python3 /home/user/AboxRebuildcode/bantam/experiments/race_finetune.py _judge --out /home/user/AboxRebuildcode/bantam/results/race --arm bantam_nf4
+[race] bantam_nf4: judge loss 2.6940, 549 s training, 216 tok/s, peak RSS 4720 MB
+[race] wrote /home/user/AboxRebuildcode/bantam/results/race/summary.md
+main race exit 0

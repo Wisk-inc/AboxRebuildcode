@@ -187,7 +187,7 @@ def test_race_end_to_end_and_resume(model_dir, tmp_path):
             "--quiet", "--max_examples", "20"]
     assert race.main(argv) == 0
     s = json.load(open(out / "summary.json"))
-    assert set(s["arms"]) == set(race.ARMS) and s["smoke"]
+    assert set(s["arms"]) == set(race.DEFAULT_ARMS.split(",")) and s["smoke"]
     f = s["fairness"]
     assert f["token_parity"]["ok"] and f["same_lora_modules"]
     assert len(set(f["supervised_tokens"].values())) == 1
@@ -203,7 +203,7 @@ def test_race_end_to_end_and_resume(model_dir, tmp_path):
     assert s["arms"]["hf_peft"]["steps"] == 5 and s["arms"]["bantam"]["steps"] >= 1
     rec = json.load(open(out / "bantam.json"))
     assert rec["versions"]["bantamtrain"] and "--optim muon" in rec["commands"]["train"]
-    assert (out / "summary.md").read_text().count("\n| ") == 1 + len(race.ARMS)
+    assert (out / "summary.md").read_text().count("\n| ") == 1 + len(race.DEFAULT_ARMS.split(","))
     mtime = os.path.getmtime(out / "runs" / "hf_peft" / "train_result.json")
     assert race.main(argv) == 0                                             # everything skipped
     assert os.path.getmtime(out / "runs" / "hf_peft" / "train_result.json") == mtime

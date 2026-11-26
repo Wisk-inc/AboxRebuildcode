@@ -77,6 +77,22 @@ ARMS = {
     "bantam_nf4": {"kind": "bantam", "desc": "bantam defaults on an NF4 base (QLoRA via load_quantized)",
                    "flags": ["--optim", "muon", "--pack", "bfd", "--quant", "nf4", "--low_ram", "1"],
                    "quant": "nf4", "embed_bits": 8},
+    # follow-ups: packing puts ~3.4 examples in a 512-token window, so at the protocol's 2x2
+    # windows per step Bantam takes 58 optimizer steps where hf_peft takes 200. Micro-batch 1 x
+    # accum 1 gives 235 steps of ~3.4 examples (hf_peft: 200 steps of 4 examples).
+    "bantam_adamw_steps": {"kind": "bantam", "desc": "bantam_adamw with 1 window per optimizer step "
+                           "(235 steps, close to hf_peft's 200)",
+                           "flags": ["--optim", "adamw", "--state_bits", "32", "--pack", "bfd"],
+                           "override": {"batch": 1, "accum": 1}},
+    "bantam_muon_steps": {"kind": "bantam", "desc": "Muon LoRA (8-bit state) with 1 window per step",
+                          "flags": ["--optim", "muon", "--pack", "bfd"], "override": {"batch": 1, "accum": 1}},
+    "bantam_muon_steps_lr1e-3": {"kind": "bantam", "desc": "Muon LoRA with 1 window per step, LR 1e-3",
+                                 "flags": ["--optim", "muon", "--pack", "bfd"],
+                                 "override": {"batch": 1, "accum": 1, "lr": 1e-3}},
+    "bantam_nf4_adamw_steps": {"kind": "bantam", "desc": "QLoRA NF4 base, torch AdamW, 1 window per step",
+                               "flags": ["--optim", "adamw", "--state_bits", "32", "--pack", "bfd",
+                                         "--quant", "nf4", "--low_ram", "1"],
+                               "quant": "nf4", "embed_bits": 8, "override": {"batch": 1, "accum": 1}},
 }
 DEFAULT_ARMS = "base,hf_peft,bantam_adamw,bantam,bantam_nf4"
 
@@ -630,7 +646,7 @@ def hf_worker(out, arm):
 
 # ----------------------------------------------------------------------------- orchestration
 def bantam_cmd(cfg, spec, run):
-    p, f = cfg["protocol"], cfg["files"]
+    p, f = {**cfg["protocol"], **spec.get("override", {})}, cfg["files"]
     return [sys.executable, "-m", "bantamtrain", "finetune", "--model", p["model"], "--jsonl", f["train"],
             "--eval_jsonl", f["bantam_eval"], "--seq", str(p["seq"]), "--batch", str(p["batch"]),
             "--accum", str(p["accum"]), "--epochs", str(p["epochs"]), "--lr", str(p["lr"]), "--sched", "cosine",
@@ -721,9 +737,11 @@ def run_arm(name, cfg, args, state):
             if spec["kind"] == "bantam":
                 fl = spec.get("flags", [])
                 pack = fl[fl.index("--pack") + 1] if "--pack" in fl else "bfd"
-                if pack not in state.setdefault("plans", {}):
-                    state["plans"][pack] = bantam_plan(state["tok"], cfg["files"]["train"], p, pack)
-                train = bantam_train_result(run, state["plans"][pack])
+                pa = {**p, **spec.get("override", {})}
+                key = (pack, pa["batch"], pa["accum"], pa["epochs"])
+                if key not in state.setdefault("plans", {}):
+                    state["plans"][key] = bantam_plan(state["tok"], cfg["files"]["train"], pa, pack)
+                train = bantam_train_result(run, state["plans"][key])
             else:
                 train = read_json(os.path.join(run, "hf_train.json"))
             if not train or train.get("train_wall_s") is None:

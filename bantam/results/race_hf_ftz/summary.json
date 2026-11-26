@@ -1,0 +1,190 @@
+{
+ "protocol": {
+  "model": "HuggingFaceTB/SmolLM2-135M",
+  "data": "databricks/databricks-dolly-15k",
+  "split_seed": 1234,
+  "n_train": 800,
+  "n_judge": 200,
+  "max_examples": 0,
+  "bantam_eval_n": 32,
+  "seq": 512,
+  "batch": 2,
+  "accum": 2,
+  "epochs": 1.0,
+  "lr": 0.0002,
+  "warmup": 0.03,
+  "lora_r": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05,
+  "targets": [
+   "q_proj",
+   "k_proj",
+   "v_proj",
+   "o_proj",
+   "gate_proj",
+   "up_proj",
+   "down_proj"
+  ],
+  "seed": 1234,
+  "threads": 4,
+  "matched": {
+   "betas": [
+    0.9,
+    0.95
+   ],
+   "eps": 1e-08,
+   "weight_decay": 0.0,
+   "min_lr_rate": 0.1,
+   "max_grad_norm": 1.0
+  },
+  "hf_flush_denormal": true
+ },
+ "judge": {
+  "judge_n": 200,
+  "gen_tokens": 64,
+  "prompts": [
+   "What is the capital of France?",
+   "Give me three tips for staying healthy.",
+   "Summarize in one sentence: The Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Steppe."
+  ],
+  "float_base": true
+ },
+ "data": {
+  "rows": 15011,
+  "unusable_rows_skipped": 33,
+  "train_ids_head": [
+   14668,
+   4434,
+   3536,
+   12835,
+   9913,
+   13382,
+   6903,
+   8808,
+   13577,
+   8198
+  ],
+  "judge_ids_head": [
+   4740,
+   1135,
+   10954,
+   13472,
+   10251,
+   12358,
+   2720,
+   2837,
+   11190,
+   5489
+  ],
+  "full_train_examples": 800,
+  "full_train_tokens": 119981,
+  "full_train_targets": 61972,
+  "full_train_encode": {
+   "truncated": 24
+  }
+ },
+ "fairness": {
+  "token_parity": {
+   "examples": 800,
+   "bantam_examples": 800,
+   "mismatched": 0,
+   "ok": true
+  },
+  "same_lora_modules": true,
+  "supervised_tokens": {
+   "hf_peft": 61972
+  },
+  "bantam_plan_matches_log": {
+   "hf_peft": null
+  }
+ },
+ "versions": {
+  "torch": "2.15.0+cpu",
+  "transformers": "5.24.0",
+  "peft": "0.22.0",
+  "accelerate": "1.16.0",
+  "datasets": "5.2.0",
+  "tokenizers": "0.23.3",
+  "safetensors": "0.8.0",
+  "numpy": "2.5.3",
+  "psutil": "7.2.2",
+  "bantamtrain": "0.3.0.dev0",
+  "python": "3.13.18",
+  "bantam_git": "33cb0cda9faaf47bf4d8f2cccf29bba08f70a327-dirty"
+ },
+ "machine": {
+  "platform": "Linux-6.18.44-fc-v880-x86_64-with-glibc2.39",
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "logical_cpus": 4,
+  "usable_cpus": 4,
+  "mem_total_gb": 15.71017837524414,
+  "loadavg": [
+   3.85595703125,
+   3.93310546875,
+   3.908203125
+  ]
+ },
+ "smoke": false,
+ "arms": {
+  "hf_peft": {
+   "desc": "transformers Trainer + peft, dynamic padding, torch AdamW",
+   "judge_loss": 2.2596007833494567,
+   "judge_ci95": [
+    2.0955003006486255,
+    2.4154973904865673
+   ],
+   "judge_ppl": 9.579264201551064,
+   "judge_examples": 200,
+   "judge_tokens": 15278,
+   "judge_vs_base": null,
+   "generations": [
+    "The capital of France is Paris.LEGATO\n\nFrance is a country in Western Europe.LEGATO\n\nFrance is a country in Western Europe.LEGATO\n\nFrance is a country in Western Europe.LEGATO\n\nFrance is a country in Western Europe.LEGATO\n\nFrance is a country in Western Europe.LEGATO",
+    "1. Eat a balanced diet. 2. Get enough sleep. 3. Exercise. 4. Get enough sleep. 5. Eat a balanced diet. 6. Get enough sleep. 7. Exercise. 8. Eat a balanced diet. 9. Get enough sleep. 10",
+    "The Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Steppe.\n\nThe Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Ste"
+   ],
+   "judge_s": 63.83214289500029,
+   "judge_peak_rss_mb": 1278.01171875,
+   "steps": 200,
+   "examples": 800,
+   "real_tokens": 119981,
+   "supervised_tokens": 61972,
+   "tokens_per_s": 146.63124292769277,
+   "supervised_tokens_per_s": 75.73725328772869,
+   "train_wall_s": 818.2499009379972,
+   "train_cpu_s": 3014.494632644,
+   "padding_fraction": 0.2899103961743783,
+   "final_train_loss": 2.603557586669922,
+   "train_loss_tail": 2.1653185856342314,
+   "trainable_params": 4884480,
+   "lora_modules": 210,
+   "settings": {
+    "optimizer": "torch.optim.AdamW (optim=adamw_torch), fp32 state",
+    "schedule": "cosine_with_min_lr (min_lr_rate 0.1), warmup_steps=0.03",
+    "batching": "one example per row, dynamic padding (DataCollatorForSeq2Seq)",
+    "loss": "model forward with labels (full logits), tokens of the whole step averaged",
+    "base": "fp32",
+    "betas": [
+     0.9,
+     0.95
+    ],
+    "attn_implementation": "sdpa",
+    "loss_over_step_tokens": true,
+    "flush_denormal": true
+   },
+   "windows": null,
+   "windows_used": null,
+   "plan_matches_log": null,
+   "peak_rss_mb": 4276.76953125,
+   "maxrss_mb": 4307.4375,
+   "process_wall_s": 826.7667519530005,
+   "process_cpu_s": 3023.615987,
+   "loadavg_before": [
+    3.6259765625,
+    3.78173828125,
+    3.75439453125
+   ],
+   "command": "/usr/local/bin/python3 /home/user/AboxRebuildcode/bantam/experiments/race_finetune.py _hf --out /home/user/AboxRebuildcode/bantam/results/race_hf_ftz --arm hf_peft"
+  }
+ },
+ "harness_command": "/usr/local/bin/python3 experiments/race_finetune.py --threads 4 --arms hf_peft --hf_flush_denormal 1 --out results/race_hf_ftz --quiet"
+}

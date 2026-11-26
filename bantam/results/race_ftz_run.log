@@ -1,0 +1,10 @@
+Using the latest cached version of the dataset since databricks/databricks-dolly-15k couldn't be found on the Hugging Face Hub (offline mode is enabled).
+Found the latest cached dataset configuration 'default' at /root/.cache/huggingface/datasets/databricks___databricks-dolly-15k/default/0.0.0/bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a (last modified on Thu Nov 26 01:05:35 2026).
+[race] /home/user/AboxRebuildcode/bantam/results/race_hf_ftz: arms ['hf_peft'], 800 full training examples (119981 tokens), token parity {'examples': 800, 'bantam_examples': 800, 'mismatched': 0, 'ok': True}
+[race] hf_peft: training
+  $ /usr/local/bin/python3 /home/user/AboxRebuildcode/bantam/experiments/race_finetune.py _hf --out /home/user/AboxRebuildcode/bantam/results/race_hf_ftz --arm hf_peft
+[race] hf_peft: judging
+  $ /usr/local/bin/python3 /home/user/AboxRebuildcode/bantam/experiments/race_finetune.py _judge --out /home/user/AboxRebuildcode/bantam/results/race_hf_ftz --arm hf_peft
+[race] hf_peft: judge loss 2.2596, 818 s training, 147 tok/s, peak RSS 4277 MB
+[race] wrote /home/user/AboxRebuildcode/bantam/results/race_hf_ftz/summary.md
+ftz race exit 0
