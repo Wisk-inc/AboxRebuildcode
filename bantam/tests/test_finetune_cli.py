@@ -1,6 +1,6 @@
-import functools
 """finetune.main end to end on tiny offline models: evaluation, outputs, option checks,
 default targets, the Muon default, resume, wave-2 flags and 2-process DDP."""
+import functools
 import inspect
 import json
 import os
