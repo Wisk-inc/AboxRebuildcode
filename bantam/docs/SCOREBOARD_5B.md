@@ -151,7 +151,7 @@ of 34 bytes corresponds to `--act_factor 0.7`.
 | activations 1.6x the measured constants | `--act_factor 1.6` | max micro-batch 4 in rows 2-5; row 1 still does not fit |
 | decimal reading of "96 GB" | `--gpu_gb 89.4` | max micro-batch 5 (row 2) and 6 (rows 3-5); row 1 does not fit |
 | Muon gain like a tuned-AdamW benchmark at 1.2B (Wen et al. 2025: about 1.1x) | `--muon_flops 0.9` | row 3: 163 days, 1.08x over row 2 |
-| no chunked cross-entropy (what `bantam pretrain` does today) | hand arithmetic | one sequence less per micro-batch (row 2: 5, row 3: 6); days unchanged |
+| no chunked cross-entropy (`bantam pretrain` without `--ce_chunk`, its default) | hand arithmetic | one sequence less per micro-batch (row 2: 5, row 3: 6); days unchanged |
 
 The Muon row carries most of the claimed speed-up, and it rests entirely on
 the literature. Wen et al. 2025 find that against a carefully tuned AdamW,
@@ -218,13 +218,13 @@ with a 32k vocabulary this shape has about 4.96B parameters, not the untied
 
 ```bash
 bantam pretrain --data DIR --budget 3.1e21 --zoom 1 --optim muon --lr 1.6e-2 \
-    --param_dtype bf16 --state_bits 8 --device cuda --precision bf16 --compile \
+    --param_dtype bf16 --state_bits 8 --ce_chunk 2048 --device cuda --precision bf16 --compile \
     --d 4096 --layers 24 --heads 32 --seq 2048 --batch 4 --accum 64 \
     --name gpu_5b --out results/gpu
 ```
 
-- `--param_dtype bf16` (stochastic rounding), `--state_bits 8`, `--optim muon`,
-  `--precision bf16`, `--compile`: rows 2-3.
+- `--param_dtype bf16` (stochastic rounding), `--state_bits 8`, `--ce_chunk 2048`
+  (chunked cross-entropy), `--optim muon`, `--precision bf16`, `--compile`: rows 2-3.
 - `--grad_ckpt 1` (activation recompute) and `--accum N` when memory is tight.
 - `--auto_batch` (GPU only) splits `--batch x --accum` into the largest
   power-of-two micro-batch whose peak memory stays under 85 % of the card,
@@ -232,10 +232,10 @@ bantam pretrain --data DIR --budget 3.1e21 --zoom 1 --optim muon --lr 1.6e-2 \
 - `--duty 0.75`: the software power fallback for row 5.
 
 Gaps:
-- **No chunked cross-entropy flag in `bantam pretrain`.** The model supports
-  it (`ZoomGPT(ce_chunk=...)`) and `bantam finetune --ce_chunk` uses it, but
-  pretraining always builds the full logits. Rows 2-5 assume chunking; without
-  it the micro-batch is one sequence smaller (section 3).
+- **Chunked cross-entropy is off by default.** Rows 2-5 assume it; pass
+  `--ce_chunk 2048` as above. Without it pretraining builds the full logits and
+  the micro-batch is one sequence smaller (section 3). Its memory saving has not
+  been measured on a GPU.
 - **No FP8 path** (row 4).
 - **No peak-GPU-memory logging.** The run log has no
   `torch.cuda.max_memory_allocated` field yet, which a measurement needs.
@@ -253,7 +253,7 @@ Gaps:
 3. **Whether row 1 fits at all**, with 16- and 18-byte standard recipes.
 4. **Throughput and MFU per row** (tokens/s), including the 8-bit
    dequantize/update transient, bf16 stochastic rounding and Newton-Schulz on
-   the GPU. On this CPU, bf16 + stochastic rounding was 1.6-2.7x slower than
+   the GPU. On this CPU, bf16 + stochastic rounding was 1.6-2.6x slower than
    fp32, so the GPU cost must not be assumed.
 5. **Loss parity at scale**: bf16 + stochastic rounding + 8-bit state against
    fp32-master AdamW, and Muon's compute multiplier against a tuned AdamW at
@@ -263,9 +263,10 @@ Gaps:
 8. WeightPack and TokPack ratios on bf16-trained 5B weights and on a
    32k-vocabulary corpus.
 
-`experiments/gpu_smoke.sh` is only a first check that the CUDA, bf16 and
-compile paths run; it records no memory numbers and still uses the 0.1 Zoom
-schedule.
+`experiments/gpu_smoke.sh` is only a first check that the CUDA, bf16, compile
+and duty-cycle paths run: a Muon baseline at LR 1.6e-2 and `--recipe best` at
+batch 64 (not a tuned batch). It is not a benchmark and records no memory
+numbers.
 
 ## 8. What is not in the table
 
@@ -289,7 +290,7 @@ schedule.
 | 8-bit optimizer state | 8-bit Adam matches 32-bit up to 1.5B (Dettmers et al.) | 100 steps: AdamW 4.4792 vs 4.4824; Muon 3.5812 vs 3.5719; state 3.9x smaller. 0.3 changed the 8-bit map (OPT-4); rerun pending |
 | activation recompute | +30-40 % wall-clock in Megatron (theory +33 %) | the same loss (3.5719, to 1e-8) with recompute + accumulation x2; +44 % time on the CPU |
 | Muon | 0.52x AdamW's FLOPs in compute-optimal scaling-law runs (Moonshot); 1.4x at 0.1B and 1.1x at 1.2B against tuned AdamW (Wen et al.) | equal model FLOPs: 2.737 ± 0.012 (3 seeds) vs AdamW 3.332 (1 seed). The AdamW part of the Muon runs used a 16x higher LR, and Newton-Schulz adds an uncharged 20 % of model FLOPs here. The table credits only the published 0.52x |
-| chunked cross-entropy | torchtune: -15.8 % memory on Llama 3.2 3B | used by `bantam finetune`; not a `bantam pretrain` flag |
+| chunked cross-entropy | torchtune: -15.8 % memory on Llama 3.2 3B | on by default in `bantam finetune`; `bantam pretrain --ce_chunk` (off by default), the same loss up to fp32 summation order; no committed memory measurement |
 | FP8 | Transformer Engine supports SM 12.0; reports of 20-30 % speed-up | not implemented |
 | 450 W cap | ResNet-50 keeps 94.8 % throughput at 450 W on this card | not measurable on a CPU |
 | GPU throughput | 503.8 TFLOPS dense BF16 peak; nanochat ~297 TFLOPS (59 %) on one card | the table assumes 40 % |
@@ -321,8 +322,9 @@ equivalent.
   chunked-CE chunk is 2048 tokens, and Muon's Newton-Schulz FLOPs are charged.
   Max micro-batches are now 6-7 (default), 4 (`--act_factor 1.6`), not 9 and 6.
 - The FP8 row is marked as having no code path, and the page no longer claims
-  that the trainer "exposes every row": pretraining has no chunked
-  cross-entropy flag.
+  that the trainer "exposes every row". Pretraining had no chunked
+  cross-entropy flag; 0.3.0 adds `--ce_chunk` (off by default), and the section 6
+  command passes it.
 - WeightPack 16 is described as bf16 (exact only for bf16 weights), not as
   lossless for any model.
 - The Zoom confirmation seeds are done (3 seeds, 1.12x); int8 / int4 quality is

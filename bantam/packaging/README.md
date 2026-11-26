@@ -57,6 +57,10 @@ seeds).
 | QK-norm (a known trick) | 2.639 ± 0.003 | 2 | 1.24x |
 | QK-norm + Zoom (k=2 for 33 %, batch x2) | 2.589 ± 0.006 | 2 | **1.41x** (about 29 % less compute for that loss) |
 
+`bantam pretrain --recipe best` sets the last row's flags (Muon at LR 1.6e-2, QK-norm,
+Zoom k=2 for 33 % with batch x2); that evidence is the 2 seeds above, at this one size,
+on a CPU.
+
 Muon is the biggest single win at this size (one caveat: the AdamW-side parameters
 in Muon runs get 16x the tuned AdamW learning rate, and the AdamW baseline is one
 seed). Zoom, which merges pairs of neighbouring tokens for the first part of
@@ -117,7 +121,10 @@ computes no padding. Packing also means fewer, larger optimizer steps at a given
 batch setting: at 2 x 2 packed windows per step Bantam took 58 steps instead of 200
 and lost 0.056. Muon on the LoRA matrices did not beat AdamW. One run per arm (wall
 time varies by about 9 %), fp32 on a 4-core CPU; GPU tools with fused kernels are not
-in this comparison.
+in this comparison. The race ran on the code before 0.3.0's full epochs (its "1 epoch"
+left out the 3 windows that did not fill a last 2 x 2 step; `--drop_last 1` reproduces
+that). `--examples_per_step N`, added since, picks the gradient accumulation for about
+N examples per optimizer step; it has not been raced.
 
 ## Quickstart
 
@@ -127,11 +134,14 @@ in this comparison.
 pip install 'bantamtrain[data]'
 bantam prepare-text --hf roneneldan/TinyStories --out data/tinystories --vocab 4096
 bantam pack-text --data data/tinystories          # dedup + compressed token store
-bantam pretrain --data data/tinystories --budget 6.8e13 \
-    --optim muon --lr 1.6e-2 --qk_norm 1 --zoom 2:0.33,1:0.67 --batch_scale 2 \
+bantam pretrain --data data/tinystories --budget 6.8e13 --recipe best \
     --name qk_zoom --out runs/tinystories --save runs/tinystories/qk_zoom.pt
 bantam generate --model runs/tinystories/qk_zoom_pretrained --prompt "Once upon a time"
 ```
+
+`--recipe best` is `--optim muon --lr 1.6e-2 --qk_norm 1 --zoom 2:0.33,1:0.67
+--batch_scale 2` (the QK-norm + Zoom row above); any of these you pass yourself wins.
+Without it, pretrain uses AdamW at LR 1e-3.
 
 Other Hub text datasets work too (`--column` names the text field; repos without
 parquet files are read through the Hub's parquet conversion), as do local parquet
@@ -142,10 +152,10 @@ files (`--train ... --val ...`) and an existing tokenizer (`--tokenizer gpt2`).
 ```bash
 pip install 'bantamtrain[finetune]'
 
-# LoRA r=16 on every linear layer (the default), Muon on the LoRA matrices
+# LoRA r=16 on every linear layer, 8-bit AdamW (the defaults)
 bantam finetune --model HuggingFaceTB/SmolLM2-135M \
     --dataset databricks/databricks-dolly-15k --max_examples 2000 \
-    --optim muon --out runs/dolly
+    --out runs/dolly
 
 # QLoRA (NF4 base) or DoRA: add --quant nf4 --low_ram 1 --grad_ckpt 1, or --dora 1
 bantam chat --model HuggingFaceTB/SmolLM2-135M --adapter runs/dolly \
@@ -153,7 +163,12 @@ bantam chat --model HuggingFaceTB/SmolLM2-135M --adapter runs/dolly \
 ```
 
 Defaults: 8-bit optimizer state, examples packed into 512-token windows with
-block-diagonal masks, loss on response tokens only, chunked cross-entropy. Data can
+block-diagonal masks (sliding-window layers keep their window), every window once per
+epoch, loss on response tokens only, chunked cross-entropy. A packed window holds
+several examples, so an optimizer step sees more examples than `--batch x --accum`;
+`log.json` reports `examples_per_step`, and `--examples_per_step N` (with a small
+enough `--batch`) sets the accumulation for about N. `--optim muon` puts the LoRA
+matrices on Muon; in the race it did not beat AdamW. Data can
 be a Hub dataset or a JSONL file with `prompt`/`response`,
 `instruction`/`context`/`response`, `messages` or `conversations` rows. The output
 directory holds a standard PEFT adapter (`adapter_config.json` +
@@ -173,6 +188,7 @@ model = PeftModel.from_pretrained(
 pip install 'bantamtrain[weather]'
 bantam prepare-era5 --out data/era5          # WeatherBench2 ERA5, 5.625 deg, 2010-2018
 bantam pack-era5 --data data/era5            # optional error-bounded compressed copy
+# Muon + low-resolution warm-up, the best measured weather run (1 seed; = --recipe best)
 bantam weather --data data/era5 --val_year 2017 --budget 5.5e13 \
     --optim muon --lr 1.6e-2 --zoom 4:0.6,1:0.4 --coarse_mode lowres \
     --name lowres --out runs/era5 --save runs/era5/lowres.pt
@@ -237,14 +253,15 @@ so expect it to be slower than padding-free packing with FlashAttention.
 - One small model per task (5.8M pretraining, 135M fine-tuning, 1.26M weather), and
   2-3 seeds at most. Gains at larger scale are not measured.
 - Comparisons are matched in model FLOPs, not wall-clock. Muon's own optimizer FLOPs
-  (a few % at this size) are not charged to the budget.
+  (about 20 % of the model FLOPs at this size) are not charged to the budget.
 - The committed weather runs had no separate validation year (their learning rates
   were chosen on the test year), and the scores are not WeatherBench scorecards.
 - The low-resolution weather run is one seed, and the quantized-base costs above
   were measured with 0.2 code.
-- In fine-tuning, "1 epoch" leaves out the last packed windows that do not fill a
-  whole optimizer step, and importing `bantamtrain.finetune` turns on flush-to-zero
-  for the whole process.
+- The fine-tuning race is one run per arm on one 135M model. Packing changes the
+  number of optimizer steps, so check `steps_per_epoch` in `log.json`.
+- Importing the pretrain and weather command modules turns on flush-to-zero for the
+  whole process (`bantam finetune` and `bantam chat` set it with `--ftz`, default on).
 
 ## Credit
 

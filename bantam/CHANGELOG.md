@@ -28,6 +28,18 @@ PyTorch 2.15 for CPU) with small models. Nothing has been run on a GPU.
   accumulation weighted micro-batches wrongly. All are fixed. New: DoRA, LoRA+,
   all-linear targets (including GPT-2 Conv1D), PEFT export and import, a low-RAM
   quantized loader, and exact resume.
+- **Packed fine-tuning: windows and epochs.** Sliding-window layers (Mistral, Mixtral, Phi-3,
+  Starcoder2, Gemma-2/3, Cohere2, Qwen2/3 with `use_sliding_window`) keep their window
+  inside the block-diagonal mask. An epoch now trains on every packed window once (it
+  used to drop the windows that did not fill a last optimizer step; `--drop_last 1`
+  restores that). Because a window holds several examples, the new
+  `--examples_per_step N` picks `--accum` for about N examples per optimizer step, and
+  `log.json` reports `examples_per_step` and `steps_per_epoch`.
+- **`--recipe best`** for `bantam pretrain` and `bantam weather` sets the best settings
+  measured so far for every option the command line does not give. They were measured
+  at one small size on a CPU only (pretrain: QK-norm + Zoom below, 2 seeds; weather:
+  the low-resolution warm-up, 1 seed). `bantam pretrain --ce_chunk N` adds chunked
+  cross-entropy to pretraining (off by default).
 - **Weather.** A validation year, ACC and climatology metrics, saved models, resumable
   checkpoints and forecasts.
 - **Streaming data pipeline.** Text preparation, deduplication and packing now stream, so memory
@@ -53,7 +65,14 @@ PyTorch 2.15 for CPU) with small models. Nothing has been run on a GPU.
   64x32, a 1.26M-parameter ViT, 5.5e13 FLOPs, scored on the 2018 test year), Zoom made
   results worse under Muon (one-step MSE 0.159 against 0.124, 2 seeds), while the
   established low-resolution warm-up helped (0.112, 1 seed).
-- **Quality checks.** 594 tests pass and 7 are skipped (CUDA-only or slow) on CPU. A
+- **Fine-tuning race** against Hugging Face Trainer + PEFT (SmolLM2-135M, 800 Dolly
+  examples, fp32 on the 4-core CPU, one run per arm; RESULTS.md section 15): with the
+  same AdamW and one packed window per optimizer step, the same held-out loss (2.259
+  against 2.260), 1.36x faster and 38 % less peak RAM, mostly from packing. With 2 x 2
+  packed windows per step Bantam took 58 steps instead of 200 and lost 0.056. Muon on
+  the LoRA matrices did not beat AdamW. The race ran on the code before full epochs
+  and before flush-to-zero moved to `--ftz` (`--drop_last 1` reproduces its epochs).
+- **Quality checks.** 654 tests pass and 7 are skipped (CUDA-only or slow) on CPU. A
   GitHub Actions workflow runs the suite and a packaging check.
 
 ### Breaking and behaviour changes
@@ -542,9 +561,9 @@ bit-identical to the code before the audit.
   `--bits_per_token`, `--lora_dropout`, `--global_batch_tokens`, `--ns_steps`.
 - `experiments/race_finetune.py`: a fine-tuning race of Hugging Face Trainer + PEFT
   against `bantam finetune` on SmolLM2-135M and Dolly (protocol in
-  [docs/GUIDE.md](docs/GUIDE.md)). Its results are not in this file. Its replay of
-  bantam's data plan follows an arm's `--drop_last` flag (`--drop_last 1` reproduces the
-  published runs).
+  [docs/GUIDE.md](docs/GUIDE.md)); results in [RESULTS.md](RESULTS.md) section 15 and
+  the Highlights above. Its replay of bantam's data plan follows an arm's `--drop_last`
+  flag (`--drop_last 1` reproduces the published runs).
 - `compare_published.py` reports the end-of-story cost apart (`nll_end_nats`,
   `bpb_no_end`) and scores a verified local copy of a Hub model (`--hf repo=dir`).
   `run_queue.py --dry_run`.
@@ -827,8 +846,9 @@ bit-identical to the code before the audit.
   a 0.85 headroom, the standard AMP row no longer fits, and the Muon row is about 1.9x
   the first row that fits (1.87x at the `bantam memory` defaults) (MEM-1 to MEM-6,
   MEM-14). It is still arithmetic, not a measurement. The FP8 row is a literature
-  estimate with no code behind it, and the chunked cross-entropy the rows assume cannot
-  be turned on in `bantam pretrain` (GPU-16, MEM-8, GAP-5/gpu). The memory saving is not
+  estimate with no code behind it (GPU-16, MEM-8, GAP-5/gpu); the chunked cross-entropy
+  the rows assume could not be turned on in `bantam pretrain` until `--ce_chunk` (added
+  in 0.3.0, off by default). The memory saving is not
   new: ZeRO-Offload trained over 13B on one 32 GB V100 in 2021, and torchao ships 8-bit
   AdamW with bf16 stochastic rounding.
 - **bf16 runs.** bf16-weight runs had been scored with bf16 arithmetic. The two committed
@@ -914,7 +934,9 @@ bit-identical to the code before the audit.
   8-bit and rounding changes; the weather sweeps have not been rerun on a validation
   year; there is no linear-merge run; the long published-comparison run was stopped at
   30%; llama2.c stories110M was not re-scored. The fine-tuning race against Hugging Face
-  Trainer + PEFT is one run per arm on a CPU (see RESULTS.md section 15.2).
+  Trainer + PEFT is one run per arm on a CPU, made with the code before full epochs
+  (`--drop_last 1` reproduces it), and `--examples_per_step` has not been raced (see
+  RESULTS.md section 15.2).
 
 ## [0.2.0] - 2026-10-25
 

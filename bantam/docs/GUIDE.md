@@ -41,7 +41,7 @@ cd bantam
 python -m pytest tests -q -m "not slow and not network and not gpu"   # what CI runs
 ```
 
-The full suite on the sandbox: 594 passed, 7 skipped (CUDA-only or slow tests).
+The full suite on the sandbox: 654 passed, 7 skipped (CUDA-only or slow tests).
 
 ---
 
@@ -280,8 +280,8 @@ The defaults: LoRA rank 16, alpha 32, dropout 0.05, on every linear layer except
 output head; AdamW with 8-bit state (`--state_bits 8`); LR 2e-4 with 3% warmup and a
 warmup-stable-decay schedule; windows of 512 tokens with best-fit-decreasing packing;
 5% of the examples held out. `--optim muon` puts the LoRA matrices on Muon instead.
-Whether Muon on LoRA beats AdamW has not been measured here yet (see the race in
-section 7).
+In the fine-tuning race (section 7, one run per arm) Muon on LoRA did not beat AdamW:
+2.303 vs 2.259 at LR 2e-4, and 2.241 vs 2.228 at LR 1e-3.
 
 Packing puts several examples in one window. Each window gets a block-diagonal causal
 mask with positions restarting per example, so packed examples never see each other.
@@ -298,7 +298,9 @@ several examples, an optimizer step sees more examples than `batch x accum`: `lo
 records `examples_per_step` and `steps_per_epoch`, and a note is printed when a step
 sees more than twice `batch x accum` examples. `--examples_per_step N` sets `--accum`
 after packing so that a step sees about N examples, for example to match a trainer that
-puts one example in each row.
+puts one example in each row. It can only raise `--accum` (the minimum is 1), so to see
+fewer examples per step lower `--batch` too: with about 3.4 Dolly examples per window,
+`--batch 1 --examples_per_step 4` gives `--accum 1`.
 
 ### QLoRA: LoRA on a quantized base
 
@@ -543,7 +545,8 @@ How to read it:
   efficiency in compute-optimal scaling-law runs. The Newton-Schulz cost is then added
   back.
 - Row 4 is a literature estimate: Bantam has no FP8 code. Rows 2 to 5 assume chunked
-  cross-entropy, which `bantam pretrain` does not expose.
+  cross-entropy, which `bantam pretrain` turns on with `--ce_chunk 2048` (off by
+  default).
 - None of this is new. ZeRO-Offload trained models over 13B on one 32 GB V100 in 2021,
   and torchao ships 8-bit and 4-bit AdamW with bf16 stochastic rounding.
 - `--gpu_gb` is read as GiB (a "24 GB" card is 24), and `--headroom 1` drops the 15%
@@ -594,9 +597,11 @@ Measured on the 5.8M-parameter TinyStories model with the 0.2 code (final loss o
 windows; one model): int8 weights in RAM are 3.9x smaller than fp32 for +0.0002 loss,
 and int4 weights are 7.5x smaller for +0.026. A WeightPack file at `bits=16` is 2.9x
 smaller than an fp32 `torch.save` file and costs +0.00002 loss: it rounds fp32 weights
-to bf16, so it is lossless only for weights that are already bf16. Use `bits=32` for a
-state_dict that is already quantized. `experiments/weights_eval.py` measures all formats
-for a saved run.
+to bf16, so it is lossless only for weights that are already bf16. A state_dict already
+quantized by `qweights` keeps its integer codes and their scales exactly at every
+`bits` (0.3.0 stopped re-quantizing the scales at `bits=8` and `4`). `bits=32` stores
+everything bit-exactly. `experiments/weights_eval.py` measures all formats for a saved
+run.
 
 ---
 
@@ -757,6 +762,7 @@ quality.
 
 ```bash
 python experiments/race_finetune.py --threads 4                                     # full race
+python experiments/race_finetune.py --threads 4 --arms bantam_adamw_steps,bantam_muon_steps,bantam_muon_steps_lr1e-3,bantam_adamw_steps_lr1e-3,bantam_nf4_adamw_steps   # follow-up arms
 python experiments/race_finetune.py --max_examples 32 --judge_n 16 --out results/race/smoke   # smoke test
 ```
 
@@ -791,14 +797,20 @@ through their PEFT export (the NF4 arm through Bantam's quantized loader). It al
 records greedy answers to three fixed prompts. Every arm uses the protocol's cosine
 schedule, although `bantam finetune` defaults to WSD.
 
-Two differences are part of the design. Packing makes the Bantam arms take about 3.4x
-fewer, larger optimizer steps at the same LR (58 against 200 in a full-protocol dry run).
-And Bantam's "1 epoch" leaves out the last packed windows that do not fill a step (3 of
-235 windows, about 1.2% of the supervised tokens); tokens per second counts only the
-tokens trained. (Since then an epoch trains on every window; `--drop_last 1` keeps the
-schedule the race used.) A 32-example smoke run checked the harness (token parity, identical
-LoRA modules, judge agreement with Bantam's own eval to about 2e-7). Its numbers are not
-a comparison.
+Packing is part of the design: it makes the Bantam arms take about 3.4x fewer, larger
+optimizer steps at the same LR (58 against 200 at 2 x 2 windows per step). The follow-up
+arms (`bantam_adamw_steps` and the others with `_steps`) use one packed window per step
+instead: 235 steps, close to Hugging Face's 200.
+
+The race ran on the code before two 0.3.0 changes. Its "1 epoch" took only full
+optimizer steps, so the 2 x 2 arms left out the last 3 of 235 windows (about 1.2% of the
+supervised tokens; tokens per second counts only the tokens trained). 0.3.0 trains every
+window once per epoch, and `--drop_last 1` reproduces the old epoch: the 2 x 2 arms
+would now take 59 steps, while the one-window-per-step arms train the same windows
+either way. And importing `bantamtrain.finetune` then turned on flush-to-zero; in 0.3.0
+`bantam finetune --ftz 1`, the default, does, so the Bantam arms still run with it. A
+32-example smoke run checked the harness (token parity, identical LoRA modules, judge
+agreement with Bantam's own eval to about 2e-7). Its numbers are not a comparison.
 
 Results of the full run (details in `RESULTS.md` section 15.2 and
 `results/race/summary.md`): with the same optimizer and one packed window per
@@ -808,8 +820,11 @@ less peak RSS (2.57 vs 4.17 GB). At 2 x 2 packed windows per step it took only 5
 steps and lost 0.056. Muon on LoRA did not beat AdamW (2.241 vs 2.228 at LR 1e-3).
 
 Practical advice from it: when you pack, keep an eye on the number of optimizer steps
-(an epoch of packed windows has about 3.4x fewer micro-batches here); lower
-`--accum` or raise `--lr` to compensate, and use AdamW for LoRA.
+(an epoch of packed windows has about 3.4x fewer micro-batches here, see
+`steps_per_epoch` and `examples_per_step` in `log.json`). Lower `--batch` and `--accum`,
+set `--examples_per_step` (with a small enough `--batch`), or raise `--lr` to
+compensate, and use AdamW for LoRA. `--examples_per_step` was added after the race and
+has not been raced itself.
 
 ### Tests
 

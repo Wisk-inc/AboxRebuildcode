@@ -63,6 +63,10 @@ model FLOPs per run (section 2.3).
 - **QK-norm beats Zoom alone.** Zoom's gain (about -0.05 nats) is the same with
   and without QK-norm, so the two stack.
 - Most other upgrades did not help (section 6).
+- `bantam pretrain --recipe best` sets the flags of the last row (`--optim muon
+  --lr 1.6e-2 --qk_norm 1 --zoom 2:0.33,1:0.67 --batch_scale 2`) for every one the
+  command line does not give. Its evidence is that row: 2 seeds, this model and data,
+  CPU only.
 
 Weather: ERA5 at 5.625°, a 1.26M-parameter ViT, 5.5e13 model FLOPs per run.
 
@@ -482,9 +486,10 @@ is noise-like, not a fixed offset: about ±0.001 at 2,048 windows and ±0.004 at
 - **Weights + optimizer state: 50.4 MB → 18.5 MB (2.7x smaller).** Not 3x, as
   0.2 said.
 - 8-bit state is 3.9x smaller than 32-bit state for both optimizers.
-- **bf16 with stochastic rounding is 1.6-2.7x slower on this CPU** (718 vs 271 s;
-  5,039 vs 3,072 s), because CPU bf16 matmuls and the rounding writes are
-  emulated. GPU speed is unmeasured.
+- **bf16 with stochastic rounding is 1.6-2.6x slower on this CPU** (718 vs 271 s
+  against the same 8-bit run with fp32 weights; 5,039 vs 3,072 s at the full budget,
+  against fp32 weights and 32-bit state), because CPU bf16 matmuls and the rounding
+  writes are emulated. GPU speed is unmeasured.
 - Recompute + accumulation gives the same loss (3.571913 both times; the two
   differ by 1.5e-8, so not bit for bit) at +44 % time. It also halves the
   micro-batch.
@@ -739,8 +744,11 @@ AdamW**. 0.2's "Muon with 8-bit state" label was wrong. In 0.3,
   QLoRA model (3.178) is still worse than the untouched float base (2.871)**.
 - That run predates `--embed_quant`: it quantized the embeddings to int4 too,
   the worst format in section 14.2. Today `--quant 4` and `--quant nf4` keep
-  int8 embeddings by default. The recommended NF4 + int8-embedding QLoRA has
-  not been trained yet; the race (section 15) trains it.
+  int8 embeddings by default. The recommended NF4 + int8-embedding QLoRA was
+  trained in the race (section 15.2, one run per arm): 2.368 with AdamW and one
+  packed window per step, against 2.259 for the same arm on a float base and 2.645
+  for the untrained base (judge loss on 200 held-out examples, not comparable with
+  the losses in this table).
 
 ### 14.2 What quantizing the frozen base costs (before any training)
 
@@ -769,8 +777,8 @@ adapters that every row carried; the last column includes them.
   rows with quantized embeddings. An end-to-end check of 0.3 measured 105 MB
   (NF4) and 157 MB (int8) under the same convention as the 557.6 MB float
   figure. That check is not a committed result file.
-- `results/finetune/quantization_quality.json` still describes its eval set as
-  "100 held-out examples"; the logs show 88.
+- `results/finetune/quantization_quality.json` describes its eval set as 88
+  held-out examples, as the logs show (it said 100 before 0.3).
 - Pure-PyTorch NF4 QLoRA is not unique: torchtune does the same through
   torchao, and bitsandbytes is the reference implementation (Dettmers et al.
   2023).
@@ -826,29 +834,45 @@ Fairness checks built into the harness (the values in brackets are from the
   (smoke: 32 of 32, 0 mismatches).
 - The same LoRA modules and parameter count in every arm.
 - Bantam's own final eval must match the judge on the same examples (smoke:
-  to about 1e-7), and Bantam's step-0 eval must match the `base` judge
+  to about 2e-7), and Bantam's step-0 eval must match the `base` judge
   (smoke: to 3e-8).
+
+The race ran on the code before two 0.3.0 changes to `bantam finetune` (the
+summaries record `bantamtrain 0.3.0.dev0`):
+- **Epochs.** Its "1 epoch" took only full optimizer steps, `windows //
+  (batch x accum)`. 0.3.0 trains every window once per epoch, the last step
+  possibly shorter. `--drop_last 1` reproduces the old epoch. The
+  one-window-per-step arms (235 steps) train the same windows either way. The
+  2 x 2 arms would take 59 steps instead of 58; the harness's arms do not pass
+  `--drop_last`, so add `"--drop_last", "1"` to an arm's flags in `ARMS` to rerun
+  them as published (the harness's replay of Bantam's data plan follows that
+  flag).
+- **Flush-to-zero.** Importing `bantamtrain.finetune` then turned it on for the
+  whole process. In 0.3.0 `bantam finetune` sets it in `main()` with `--ftz 1`,
+  the default, so the Bantam arms still run with it.
 
 Known asymmetries (by design, reported rather than hidden):
 - Packing puts about 1,024 real tokens in each Bantam micro-batch, so Bantam
   takes about 3.4x fewer, larger optimizer steps than HF at the same LR
   (58 vs 200).
-- Bantam's "1 epoch" drops the last packed windows that do not fill a whole
-  optimizer step (3 of 235 windows: 61,257 of 61,972 supervised targets,
-  about 1.2 %). HF trains every example. Speed counts only tokens actually
-  trained.
-- Importing `bantamtrain.finetune` turns on flush-to-zero process-wide. The HF
-  arm never imports it and runs with flush-to-zero off (opt in with
-  `--hf_flush_denormal 1`).
+- In the 2 x 2 arms, Bantam's "1 epoch" (the old epoch above) left out the last
+  packed windows that did not fill a whole optimizer step (3 of 235 windows:
+  61,257 of 61,972 supervised targets, about 1.2 %). HF trains every example.
+  Speed counts only tokens actually trained.
+- The Bantam arms run with flush-to-zero on. The HF arm never imports Bantam and
+  runs with flush-to-zero off (opt in with `--hf_flush_denormal 1`; the control
+  run is in 15.2).
 - The `bantam` arm uses `--optim muon` and a cosine schedule; the CLI
   defaults are `--optim adamw` and `--sched wsd`.
 - At this shape chunked cross-entropy saves nothing (a 2,048-token chunk is
   larger than a micro-batch).
 
-Command (resumable; `--force <arm>|all` to redo):
+Commands (resumable; `--force <arm>|all` to redo). The first runs the five arms
+above, the second the follow-up arms of 15.2:
 
 ```bash
 python3 experiments/race_finetune.py --threads 4
+python3 experiments/race_finetune.py --threads 4 --arms bantam_adamw_steps,bantam_muon_steps,bantam_muon_steps_lr1e-3,bantam_adamw_steps_lr1e-3,bantam_nf4_adamw_steps
 ```
 
 A 32-example smoke run (`results/race/smoke/`) only validates the harness; its
@@ -888,7 +912,10 @@ What it shows:
   packed window holds about 3.4 examples, so Bantam made 58 optimizer steps instead
   of 200 and lost 0.056; its two full 512-token rows per micro-batch also peaked at
   5.16 GB, more than `hf_peft`. Match the number of optimizer steps (here one window
-  per step) or raise the learning rate.
+  per step) or raise the learning rate. `--examples_per_step N`, added after the race
+  and not tested in it, sets `--accum` for about N examples per step; it cannot go
+  below one micro-batch, so lower `--batch` too (`--batch 1 --examples_per_step 4`
+  gives `--accum 1` here, the one-window-per-step setting).
 - **Muon on LoRA did not beat AdamW.** At LR 2e-4: Muon 2.303 vs AdamW 2.259. At
   LR 1e-3: Muon 2.241 vs AdamW 2.228. The best loss (2.228) came from the higher
   learning rate, not from Muon, and `hf_peft` was not run at 1e-3, so that gap is
@@ -946,7 +973,7 @@ corrected in this report. Audit finding ids are in brackets.
 - Weights + state shrink 2.7x, not 3x [CLM-17, OPT-12, MEM-14].
 - The bf16 rows were scored with bf16 arithmetic; they carry a ±0.001 / ±0.004
   uncertainty and are marked for rerun.
-- bf16 with stochastic rounding is 1.6-2.7x slower on this CPU [CLM-12].
+- bf16 with stochastic rounding is 1.6-2.6x slower on this CPU [CLM-12].
 - WeightPack 16 is bf16 rounding (+0.00002 from fp32), not "lossless" or
   "bit-exact"; it is exact only for bf16 weights [DOC-1].
 - Unsourced runtime numbers were removed: the flush-to-zero timing, the
@@ -988,9 +1015,10 @@ corrected in this report. Audit finding ids are in brackets.
 - GPU memory is in GiB, file sizes in GB. With a 0.85 safety margin the
   standard recipe does not fit, and the Muon row's speedup over the first row
   that fits is 1.87x, not 2.56x [MEM-14].
-- FP8 has no code path in Bantam, and `bantam pretrain` has no chunked
-  cross-entropy flag; the scoreboard no longer claims the trainer "exposes
-  every row" [GPU-16, MEM-8].
+- FP8 has no code path in Bantam, and the scoreboard no longer claims the
+  trainer "exposes every row" [GPU-16, MEM-8]. The chunked cross-entropy that
+  rows 2-5 assume was missing from `bantam pretrain`; 0.3.0 adds `--ce_chunk`
+  (off by default).
 
 Findings that concern only other files (README, METHOD, the packaging README)
 belong to those files: CLM-19 (0.3 wires the batch finder into
@@ -1023,8 +1051,10 @@ belong to those files: CLM-19 (0.3 wires the batch finder into
   Zoom gain in FLOPs.
 - Weather in WeatherBench terms (test years, ACC, climatology), and an
   AdamW sweep that goes above 4e-3.
-- The NF4 + int8-embedding QLoRA quality after training (the race measures it
-  on CPU).
+- The NF4 + int8-embedding QLoRA quality after training beyond the race's single
+  run per optimizer (section 15.2), and on larger bases.
+- Whether `--examples_per_step` (added after the race) recovers the
+  one-window-per-step result at other batch sizes and data.
 
 ## 18. Reproducing
 

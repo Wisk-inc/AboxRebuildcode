@@ -24,7 +24,9 @@ All measured in a CPU-only sandbox (4 cores, 16 GB RAM), on small models.
    early in training, a variant of patch-level training) reached validation loss
    2.589 (2 seeds) against 2.737 for the plain Muon baseline (3 seeds). The baseline
    needs **1.41x the compute** to reach 2.589 (read off single-seed baseline runs at
-   larger budgets). Zoom alone gives 1.12x (3 seeds).
+   larger budgets). Zoom alone gives 1.12x (3 seeds). `bantam pretrain --recipe best`
+   sets the QK-norm + Zoom flags; that evidence is 2 seeds at this one small size, on
+   a CPU.
 2. **Weather.** A 1.26M-parameter ERA5 forecaster at 5.625°, normalized 6-hour MSE
    on 2018. Muon beat AdamW (0.124, 2 seeds, vs 0.229, 1 seed), but Zoom **hurt**
    under Muon (0.159, 2 seeds). A known low-resolution warm-up helped (0.112, 1 seed).
@@ -37,8 +39,9 @@ All measured in a CPU-only sandbox (4 cores, 16 GB RAM), on small models.
    Hugging Face Trainer + PEFT with the same optimizer and a comparable number of
    optimizer steps: the same held-out loss (2.259 vs 2.260), **1.36x faster** and
    **38 % less peak RAM** (2.57 vs 4.17 GB), one run per arm. Most of it comes from
-   packing (no padding tokens computed). Muon on the LoRA matrices did not beat
-   AdamW.
+   packing (no padding tokens computed). Packing also means fewer, larger optimizer
+   steps: with 2 x 2 packed windows per step (58 steps instead of 200) Bantam lost
+   0.056. Muon on the LoRA matrices did not beat AdamW.
 
 The code, experiments, tests, result logs and documentation are all in
 [`bantam/`](bantam/).

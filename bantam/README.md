@@ -57,7 +57,7 @@ over seeds, and n = 1 means a single run. Every run's JSON log is in
 
 | area | headline (conditions below each table) | n |
 |---|---|---|
-| LLM pretraining | The plain Muon baseline needs **1.41x the compute** to match QK-norm + Zoom's loss (2.589 vs 2.737 at equal FLOPs, so about 29 % less compute for that loss). Zoom alone: 1.12x. QK-norm alone: 1.24x | 2-3 |
+| LLM pretraining | The plain Muon baseline needs **1.41x the compute** to match QK-norm + Zoom's loss (2.589 vs 2.737 at equal FLOPs, so about 29 % less compute for that loss); `bantam pretrain --recipe best` sets that combination. Zoom alone: 1.12x. QK-norm alone: 1.24x | 2-3 |
 | LLM optimizer | Muon 2.737 vs AdamW 3.332 validation loss at equal FLOPs: the biggest single win at this size (confounded: the AdamW-side learning rate also differs 16x, see below) | 3 vs 1 |
 | Weather | Muon beats AdamW again (0.124 vs 0.229 normalized MSE). Zoom **hurt** under Muon (0.159). A low-resolution warm-up helped (0.112, about 10 % lower MSE, one seed) | 1-2 |
 | Published models | **Behind every TinyStories model** (1.029 vs 0.822 bits/byte for TinyStories-1M). Beats llama2.c stories260K, a 22x smaller model, with at least 157x less compute | 1 run |
@@ -87,6 +87,12 @@ as noise.
 | Zoom: k=2 for the first 33 %, batch x2 | 2.680 ± 0.005 | 2 | 1.14x |
 | QK-norm (`--qk_norm 1`; a known trick) | 2.639 ± 0.003 | 2 | 1.24x |
 | **QK-norm + Zoom (k=2 for 33 %, batch x2)** | **2.589 ± 0.006** | 2 | **1.41x** (per seed 1.39-1.42x) |
+
+`bantam pretrain --recipe best` sets the last row's flags (`--optim muon --lr 1.6e-2
+--qk_norm 1 --zoom 2:0.33,1:0.67 --batch_scale 2`) for every one of them you do not pass
+yourself. The evidence behind it is that row and nothing more: 2 seeds, TinyStories, the
+d = 256 model above, on a CPU. It has not been tested on larger models, other data or a
+GPU.
 
 What this says, plainly:
 
@@ -277,7 +283,7 @@ From a source checkout (for development):
 ```bash
 cd bantam
 pip install -e '.[data,finetune,weather,test]'
-python -m pytest tests -q    # 594 passed, 7 skipped (CUDA / slow) on the CPU sandbox
+python -m pytest tests -q    # 654 passed, 7 skipped (CUDA / slow) on the CPU sandbox
 ```
 
 ## Quickstart: pretrain a small language model
@@ -293,22 +299,27 @@ bantam prepare-text --hf roneneldan/TinyStories --out data/tinystories --vocab 4
 # 2. Remove duplicate documents and compress the tokens (TokPack, about 2.7x smaller).
 bantam pack-text --data data/tinystories
 
-# 3. Train: Muon + QK-norm + Zoom (k=2 for the first third of compute, batch x2 meanwhile).
-bantam pretrain --data data/tinystories --budget 6.8e13 \
-    --optim muon --lr 1.6e-2 --qk_norm 1 --zoom 2:0.33,1:0.67 --batch_scale 2 \
+# 3. Train with the best measured settings: Muon + QK-norm + Zoom (k=2 for the first
+#    third of compute, batch x2 meanwhile).
+bantam pretrain --data data/tinystories --budget 6.8e13 --recipe best \
     --name qk_zoom --out runs/tinystories --save runs/tinystories/qk_zoom.pt
 
 # 4. Sample from the trained model.
 bantam generate --model runs/tinystories/qk_zoom_pretrained --prompt "Once upon a time"
 ```
 
+- `--recipe best` is the same as `--optim muon --lr 1.6e-2 --qk_norm 1
+  --zoom 2:0.33,1:0.67 --batch_scale 2`, the QK-norm + Zoom row above (2 seeds,
+  TinyStories, d = 256, CPU only). Any of those flags you pass yourself wins, and the
+  run JSON records which ones the recipe set (`args.recipe_applied`).
 - Step 3 took about 18 minutes of training per seed (1,082-1,111 s) in the 4-core
   sandbox, at 1 thread with other runs sharing the machine. For a quick smoke test,
   use a smaller budget such as `--budget 5e12`.
 - `--budget` is the compute budget in model FLOPs. The schedule (`--zoom`, warmup,
   LR decay) is laid out over that budget, so changing the budget changes the run
   length, not the recipe.
-- Without `--optim muon`, pretrain uses AdamW at `--lr 1e-3` (the defaults).
+- Without `--recipe best` (or `--optim muon`), pretrain uses AdamW at `--lr 1e-3` (the
+  defaults).
 - `runs/tinystories/qk_zoom.json` holds the arguments, the validation curve (loss
   against FLOPs, tokens, steps and wall-clock) and the final loss.
 - `--save` writes the weights (`qk_zoom.pt`) and a self-contained directory
@@ -339,13 +350,14 @@ within the training set and near-copies of validation documents.
 
 Needs `pip install 'bantamtrain[finetune]'`. Takes a Hugging Face causal LM by Hub id
 or local path. Checked on CPU with SmolLM2-135M, and in the test suite with tiny
-Llama, GPT-2, Gemma-2, Granite, Cohere and Phi models.
+Llama, GPT-2, Gemma-2, Granite, Cohere and Phi models (and the sliding-window masks
+with tiny Mistral, Gemma-2/3 and Qwen2 models).
 
 ```bash
-# LoRA rank 16 on every linear layer (the default), with Muon on the LoRA matrices
+# LoRA rank 16 on every linear layer, 8-bit AdamW (the defaults)
 bantam finetune --model HuggingFaceTB/SmolLM2-135M \
     --dataset databricks/databricks-dolly-15k --max_examples 2000 \
-    --optim muon --out runs/dolly
+    --out runs/dolly
 
 # Talk to it
 bantam chat --model HuggingFaceTB/SmolLM2-135M --adapter runs/dolly \
@@ -360,8 +372,8 @@ The same command with a few flags changed:
 # QLoRA: NF4 base (embeddings int8), loaded tensor by tensor, activation checkpointing
 bantam finetune --model HuggingFaceTB/SmolLM2-135M \
     --dataset databricks/databricks-dolly-15k --max_examples 2000 \
-    --optim muon --quant nf4 --low_ram 1 --grad_ckpt 1 --out runs/dolly_nf4
-bantam chat --model HuggingFaceTB/SmolLM2-135M --adapter runs/dolly_nf4 --quant nf4   # interactive
+    --quant nf4 --low_ram 1 --grad_ckpt 1 --out runs/dolly_nf4
+bantam chat --model HuggingFaceTB/SmolLM2-135M --adapter runs/dolly_nf4   # interactive; NF4 base as in training
 
 # DoRA instead of LoRA, or LoRA+ (B matrices get 16x the learning rate)
 bantam finetune --model HuggingFaceTB/SmolLM2-135M --dataset databricks/databricks-dolly-15k \
@@ -380,10 +392,23 @@ bantam finetune --model HuggingFaceTB/SmolLM2-135M --jsonl my_data.jsonl \
 
 What you get by default: LoRA r=16 (alpha 32, dropout 0.05) on every linear layer
 except the output head; 8-bit optimizer state; best-fit packing of examples into
-512-token windows with block-diagonal masks (packed examples never see each other);
-loss on the response tokens only; chunked cross-entropy (for the usual decoder +
-linear-head models the full logits are never built). The default optimizer is AdamW
-(8-bit) with a WSD schedule; `--optim muon` is Bantam's recipe.
+512-token windows with block-diagonal masks (packed examples never see each other, and
+sliding-window layers keep their window); loss on the response tokens only; chunked
+cross-entropy (for the usual decoder + linear-head models the full logits are never
+built). The default optimizer is AdamW (8-bit) with a WSD schedule. `--optim muon` puts
+the LoRA matrices on Muon instead; in the [race](#the-fine-tuning-race) it did not beat
+AdamW.
+
+**Optimizer steps with packing.** An epoch trains on every packed window once (its
+last step may be shorter). A 512-token window holds several short examples (about 3.4
+Dolly examples for SmolLM2), so an optimizer step sees more examples than
+`--batch x --accum`, and an epoch has fewer steps than a trainer with one example per
+row. `log.json` records `examples_per_step` and `steps_per_epoch`, and a note is printed
+when a step sees more than twice `batch x accum` examples. `--examples_per_step N` sets
+`--accum` after packing so that a step sees about N examples. It can only raise
+`--accum` (the minimum is 1), so for fewer examples per step lower `--batch` too. In the
+race, one window per step (`--batch 1 --accum 1`, about 3.4 examples) matched Hugging
+Face's held-out loss, and 2 x 2 windows per step lost 0.056.
 
 **Data.** `--dataset` takes a Hub dataset, `--jsonl` a local file. Rows can be
 `prompt`/`response`, Dolly-style `instruction`/`context`/`response`, chat `messages`,
@@ -420,7 +445,7 @@ with 2 CPU processes:
 ```bash
 torchrun --standalone --nproc_per_node 2 -m bantamtrain.finetune \
     --model HuggingFaceTB/SmolLM2-135M --dataset databricks/databricks-dolly-15k \
-    --max_examples 2000 --optim muon --out runs/dolly_ddp
+    --max_examples 2000 --out runs/dolly_ddp
 ```
 
 ## Quickstart: a small weather model
@@ -435,9 +460,10 @@ bantam prepare-era5 --out data/era5
 # 2. Optional: an error-bounded compressed copy (GridPack, about 5x smaller).
 bantam pack-era5 --data data/era5
 
-# 3. Train with Muon and the low-resolution warm-up (the best measured recipe),
-#    holding out 2017 for validation (train 2010-2016, test 2018). The measured
-#    run had no validation year (it trained on 2010-2017), so expect a different score.
+# 3. Train with Muon and the low-resolution warm-up (the best measured recipe, 1 seed;
+#    --recipe best sets the same four flags), holding out 2017 for validation (train
+#    2010-2016, test 2018). The measured run had no validation year (it trained on
+#    2010-2017), so expect a different score.
 bantam weather --data data/era5 --val_year 2017 --budget 5.5e13 \
     --optim muon --lr 1.6e-2 --zoom 4:0.6,1:0.4 --coarse_mode lowres \
     --name lowres --out runs/era5 --save runs/era5/lowres.pt
@@ -532,9 +558,9 @@ only with CPU stand-ins. What should work:
   software fallback that idles between steps.
 
 Not there: FP8 (row 4 of the 5B scoreboard is an estimate only), fused kernels
-(Liger, Cut Cross-Entropy, FlashAttention varlen), a bitsandbytes backend, and
-`--ce_chunk` for pretraining (fine-tuning has chunked cross-entropy on by default).
-Packed fine-tuning uses a dense block-diagonal mask, which rules out FlashAttention's
+(Liger, Cut Cross-Entropy, FlashAttention varlen) and a bitsandbytes backend. Chunked
+cross-entropy is plain PyTorch: on by default in fine-tuning, and `--ce_chunk 2048` in
+pretraining (off by default; it saves memory, not time). Packed fine-tuning uses a dense block-diagonal mask, which rules out FlashAttention's
 fastest path, so expect it to be slower than padding-free packing in TRL or Axolotl.
 A good first run on a real card: `bantam doctor`, a short `bantam pretrain` with a
 small `--budget`, then compare the peak memory with `bantam memory`.
@@ -542,16 +568,26 @@ small `--budget`, then compare the peak memory with `bantam memory`.
 ## The fine-tuning race
 
 A head-to-head run of Hugging Face Trainer + PEFT against `bantam finetune`, on the
-same model, data (one epoch) and schedule, measuring speed, memory and quality. It is running on
-the 4-core CPU sandbox now. The harness is
+same model, data (one epoch) and schedule, measuring speed, memory and quality, on the
+4-core CPU sandbox with nothing else running. The harness is
 [`experiments/race_finetune.py`](experiments/race_finetune.py):
 
 ```bash
 python experiments/race_finetune.py --threads 4    # add --online if SmolLM2 and Dolly are not in the HF cache
+python experiments/race_finetune.py --threads 4 --arms bantam_adamw_steps,bantam_muon_steps,bantam_muon_steps_lr1e-3,bantam_adamw_steps_lr1e-3,bantam_nf4_adamw_steps
 ```
 
-It runs offline by default and needs about 6 GB of free RAM. Rerunning the same
-command resumes; `--force <arm>` redoes one arm.
+The first command runs the five protocol arms, the second the follow-up arms. It runs
+offline by default and needs about 6 GB of free RAM. Rerunning the same command
+resumes; `--force <arm>` redoes one arm.
+
+The race ran on the code before two 0.3.0 changes: `bantam finetune`'s "1 epoch"
+then left out the last packed windows that did not fill a whole optimizer step, and
+importing `bantamtrain.finetune` turned on flush-to-zero. `--drop_last 1` reproduces
+the old epoch (the harness's arms do not pass it, so add it to an arm's flags to rerun
+the 2 x 2 arms as published). The one-window-per-step arms train the same windows
+either way; the 2 x 2 arms would now take 59 steps instead of 58. Flush-to-zero is
+still on in every Bantam arm, through `--ftz 1`, the default.
 
 **Protocol (every arm).**
 - Model and data: SmolLM2-135M in fp32 on CPU. Dolly-15k rows shuffled with seed
@@ -592,13 +628,14 @@ LoRA modules and parameter counts; Bantam's own evaluation and the judge agree t
 about 1e-7. Known differences, stated up front:
 - Packed micro-batches hold about 1,024 real tokens, so Bantam takes about 3.4x
   fewer, larger optimizer steps at the same learning rate.
-- Bantam's "1 epoch" leaves out the last packed windows that do not fill a whole
-  optimizer step (about 1.2 % of supervised tokens here). The race counts only the
-  tokens each arm actually trained on.
+- In the 2 x 2 arms, Bantam's "1 epoch" (the code before 0.3.0's full epochs, see
+  above) left out the last 3 packed windows, which did not fill a whole optimizer step
+  (about 1.2 % of supervised tokens). The race counts only the tokens each arm actually
+  trained on.
 - At this shape, chunked cross-entropy saves nothing (one chunk holds the whole
   micro-batch).
-- Bantam turns on flush-to-zero on CPU; the Hugging Face arm runs without it (the
-  harness can switch it on with `--hf_flush_denormal 1`).
+- The Bantam arms run with flush-to-zero on CPU; the Hugging Face arm runs without it
+  (the harness can switch it on with `--hf_flush_denormal 1`).
 
 Follow-up arms (same protocol, overrides in brackets): `bantam_adamw_steps`,
 `bantam_muon_steps` and `bantam_nf4_adamw_steps` [micro-batch 1 x accumulation 1,
@@ -632,7 +669,10 @@ What it shows:
   packed window holds about 3.4 examples, so Bantam made 58 optimizer steps instead
   of 200 and lost 0.056; its two full 512-token rows per micro-batch also peaked at
   5.16 GB, more than `hf_peft`. Match the number of optimizer steps (here one window
-  per step) or raise the learning rate.
+  per step) or raise the learning rate. `--examples_per_step N` (added after the
+  race, so not tested in it) picks `--accum` for about N examples per step; it cannot
+  go below one micro-batch, so lower `--batch` as well (`--batch 1` with
+  `--examples_per_step 4` gives the one-window-per-step arms' `--accum 1` here).
 - **Muon on LoRA did not beat AdamW.** At LR 2e-4: Muon 2.303 vs AdamW 2.259. At
   LR 1e-3: Muon 2.241 vs AdamW 2.228. The best loss (2.228) came from the higher
   learning rate, not from Muon, and `hf_peft` was not run at 1e-3, so that gap is
@@ -761,7 +801,8 @@ sourced comparison is in [`docs/COMPARISON.md`](docs/COMPARISON.md).
   rate. The AdamW baselines are single runs. Weak baselines can inflate claimed
   speed-ups by up to 2x ([Wen et al. 2025](https://arxiv.org/abs/2509.02046)).
 - **FLOP-matched, not time-matched.** The budget counts model FLOPs with the standard
-  formula. Muon's own optimizer FLOPs (a few % at this size) are not charged. 0.3 logs
+  formula. Muon's own optimizer FLOPs (about 20 % of the model FLOPs at this size) are
+  not charged. 0.3 logs
   them (`opt_flops`) and an exact count (`model_flops_exact`) for new runs; the
   committed runs predate these fields. On this CPU, merged steps without a larger
   batch cost more wall-clock per FLOP, because the optimizer step is a fixed cost per
@@ -778,17 +819,19 @@ sourced comparison is in [`docs/COMPARISON.md`](docs/COMPARISON.md).
   were chosen on the test year. The scores are normalized MSE at 5.625°, not
   WeatherBench scorecards.
 - **Fine-tuning.**
-  - "1 epoch" leaves out the last packed windows that do not fill a whole optimizer
-    step (up to batch x accum - 1 windows).
-  - With packing, sliding-window attention layers (Gemma-2/3, Mistral, Phi-3,
-    Starcoder2) lose their window for examples longer than it. At the default
-    `--seq 512` none of these is affected.
+  - Packing changes the number of optimizer steps (see the quickstart); the race
+    measured that cost at one learning rate per arm.
+  - A decoder that mixes sliding-window and full-attention layers but takes only one
+    mask cannot give its sliding layers their window in packed windows; a note is
+    printed. None of the families checked in the 0.3 review (Mistral, Mixtral, Phi-3,
+    Starcoder2, Gemma-2/3, Qwen2/3, Cohere2; the test suite covers Mistral, Gemma-2/3
+    and Qwen2) is such a model.
   - `--quant` without `--low_ram 1` loads the float model first, so peak RAM is higher
-    than a float LoRA run. `--low_ram 1` needs safetensors weights.
-  - `bantam chat --quant` always uses int8 embeddings, whatever `--embed_quant` the
-    adapter was trained with.
-  - Importing `bantamtrain.finetune` turns on flush-to-zero for the whole Python
-    process (so does importing the pretrain and weather command modules).
+    than a float LoRA run. `--low_ram 1` needs safetensors weights; with only
+    `pytorch_model.bin` it warns and loads the float model first.
+  - The race is one run per arm on one 135M model.
+- Importing the pretrain and weather command modules turns on flush-to-zero for the
+  whole Python process (`bantam finetune` and `bantam chat` set it with `--ftz`).
 - **Not implemented:** FSDP / ZeRO, RL and preference training (DPO, GRPO), fused GPU
   kernels, FP8.
 
@@ -850,7 +893,7 @@ python experiments/plot_published.py runs/compare.json --png runs/compare.png
 bantam/
   bantamtrain/              the package (what pip installs)
     cli/                    one module per command: pretrain, weather, prepare_text, pack_text,
-                            prepare_era5, pack_era5, generate, chat, doctor
+                            prepare_era5, pack_era5, generate, chat, doctor; recipes (--recipe)
     finetune.py             bantam finetune: LoRA / QLoRA / DoRA / full SFT of HF causal LMs
     memory.py               bantam memory: the memory and time estimator
     models/gpt.py           ZoomGPT: RoPE, tied head, QK-norm, ReLU², softcap, KV-cache generate
