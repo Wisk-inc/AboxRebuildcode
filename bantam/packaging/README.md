@@ -8,8 +8,9 @@ Made by Nathan from Jamaica. MIT license. Version 0.3.0.
 Bantam is a small, readable toolkit. The core needs only PyTorch, NumPy and
 zstandard. One command, `bantam`, covers the whole path:
 
-- **pretrain** a small GPT on any Hugging Face text dataset at a fixed compute budget;
-- **fine-tune** any Hugging Face causal language model with LoRA, QLoRA (a 4-bit NF4
+- **pretrain** a small GPT on a Hugging Face text dataset (or local parquet files) at
+  a fixed compute budget;
+- **fine-tune** a Hugging Face causal language model with LoRA, QLoRA (a 4-bit NF4
   base in pure PyTorch, no bitsandbytes) or DoRA, and export a standard PEFT adapter;
 - **forecast weather**: train a small 6-hour ERA5 forecaster;
 - **plan**: estimate GPU memory (`bantam memory`) and print an environment report
@@ -42,9 +43,11 @@ a command's options. `python -m bantamtrain <command>` works the same way.
 
 **LLM pretraining.** A 5.8M-parameter GPT (d=256, 6 layers, context 256) on
 TinyStories (4,096-token BPE, about 117M training tokens), every run at the same
-budget of 6.8e13 model FLOPs. Validation loss in nats per token (lower is better).
-"Compute-to-target" is how much more compute the plain Muon baseline needs to reach
-the same loss (read off baseline runs at 1x-2x the budget, which are single seeds).
+budget of 6.8e13 model FLOPs (Muon's optimizer FLOPs not charged). Validation loss
+in nats per token on 2,048 held-out windows (lower is better). "Compute-to-target"
+is how much more compute the plain Muon baseline needs to reach the same loss (read
+off baseline runs at 1x, 1.25x, 1.5x and 2x the budget; the runs above 1x are single
+seeds).
 
 | recipe | val loss | n | compute-to-target |
 |---|---|---|---|
@@ -52,19 +55,21 @@ the same loss (read off baseline runs at 1x-2x the budget, which are single seed
 | Muon baseline | 2.737 ± 0.012 | 3 | 1.00x |
 | Zoom: k=2 for the first 50 % of compute, batch x2 | 2.685 ± 0.004 | 3 | 1.12x |
 | QK-norm (a known trick) | 2.639 ± 0.003 | 2 | 1.24x |
-| QK-norm + Zoom (k=2 for 33 %, batch x2) | 2.589 ± 0.006 | 2 | **1.41x** (about 29 % less compute) |
+| QK-norm + Zoom (k=2 for 33 %, batch x2) | 2.589 ± 0.006 | 2 | **1.41x** (about 29 % less compute for that loss) |
 
 Muon is the biggest single win at this size (one caveat: the AdamW-side parameters
-in Muon runs get 16x the tuned AdamW learning rate). Zoom, which merges pairs of
-neighbouring tokens for the first part of training, gives a small gain that repeats
-across seeds. It is a learned-gate variant of patch-level training (Shao et al.,
-ICLR 2025, which reports bigger savings at 370M-2.7B parameters). QK-norm alone beat
-Zoom alone, and the two stack. Several upgrades did not help (WSD schedule, ReLU²,
-Polar Express, the original k=4 Zoom schedules).
+in Muon runs get 16x the tuned AdamW learning rate, and the AdamW baseline is one
+seed). Zoom, which merges pairs of neighbouring tokens for the first part of
+training, gives a small gain that repeats across seeds. It is a learned-gate variant
+of patch-level training (Shao et al., ICLR 2025, which reports about half the
+training cost at 370M-2.7B parameters). QK-norm alone beat Zoom alone, and the two
+stack. Several upgrades did not help (one seed each: WSD schedule, ReLU², Polar
+Express, k=4 Zoom schedules), and the original 4→2→1 Zoom schedule lost on all 3
+seeds (2.874).
 
-**Weather.** ERA5 at 5.625°, a 1.26M-parameter ViT, 5.5e13 FLOPs per run, 6-hour
-forecast MSE on 2018 (the learning rates were also chosen on 2018; new runs can hold
-out a validation year).
+**Weather.** ERA5 at 5.625°, a 1.26M-parameter ViT, 5.5e13 FLOPs per run, trained on
+2010-2017, normalized 6-hour forecast MSE on 2018 (the learning rates were also
+chosen on 2018; new runs can hold out a validation year).
 
 | recipe | val MSE | n |
 |---|---|---|
@@ -75,17 +80,20 @@ out a validation year).
 
 **Against published models.** 1,000 TinyStories validation stories that no compared
 model trained on, in bits per byte, each model family in its own text format. Bantam
-(one CPU run, 6.4e13 FLOPs) scores 1.029. That is **behind every TinyStories model**:
-TinyStories-1M scores 0.822 with about 3,350x more compute, and TinyStories-33M 0.542.
-It beats llama2.c stories260K (1.097) with at least 157x less compute, but that model
-is 22x smaller.
+(one CPU run of the plain Muon baseline recipe, 5.8M parameters, 6.4e13 FLOPs)
+scores 1.029. That is **behind every TinyStories model**: TinyStories-1M scores 0.822
+with about 3,350x more compute, and TinyStories-33M 0.542. It beats llama2.c
+stories260K (1.097) with at least 157x less compute, but that is one run against a
+22x smaller model.
 
 **Low memory.** 8-bit Muon state + bf16 weights with stochastic rounding: loss 2.728
-vs 2.737 (n = 1), weights + optimizer state 50.4 MB → 18.5 MB (2.7x smaller). On this
-CPU it ran 1.6x slower in wall-clock.
+(n = 1, scored with 0.2's bf16 arithmetic, about ±0.001) vs 2.737 (n = 3), weights +
+optimizer state 50.4 MB → 18.5 MB (2.7x smaller). On this CPU it ran 1.6x slower in
+wall-clock.
 
 **Quantized bases.** On SmolLM2-135M before any training (88 held-out Dolly
-examples, 0.2 code): int8 costs +0.003 loss, NF4 with int8 embeddings +0.18. On a
+examples, one run each, 0.2 code, which packed eval examples without a
+block-diagonal mask): int8 costs +0.003 loss, NF4 with int8 embeddings +0.18. On a
 model this small, 4-bit costs real quality.
 
 **5B on one 96 GB GPU.** About 6 bytes per parameter of model state with bf16
@@ -93,8 +101,9 @@ weights and 8-bit state, against 16-18 for standard mixed-precision AdamW. This 
 arithmetic from `bantam memory`, **not measured**.
 
 **Fine-tuning race** (Hugging Face Trainer + PEFT against `bantam finetune` on
-SmolLM2-135M and 800 Dolly examples, same LoRA modules, schedule and budget; speed,
-peak memory, and held-out loss judged the same way for every arm):
+SmolLM2-135M, fp32 on the same 4-core CPU: one epoch over 800 Dolly examples with
+the same LoRA modules, learning rate and schedule in every arm; speed, peak memory,
+and held-out loss on 200 examples judged the same way for every arm):
 
 <!-- RACE_RESULTS -->
 
@@ -112,8 +121,9 @@ bantam pretrain --data data/tinystories --budget 6.8e13 \
 bantam generate --model runs/tinystories/qk_zoom_pretrained --prompt "Once upon a time"
 ```
 
-Any parquet-backed Hub dataset works (`--column` names the text field), or local
-parquet files (`--train ... --val ...`), or an existing tokenizer (`--tokenizer gpt2`).
+Other Hub text datasets work too (`--column` names the text field; repos without
+parquet files are read through the Hub's parquet conversion), as do local parquet
+files (`--train ... --val ...`) and an existing tokenizer (`--tokenizer gpt2`).
 
 ### Fine-tune a Hugging Face model
 
@@ -135,7 +145,8 @@ block-diagonal masks, loss on response tokens only, chunked cross-entropy. Data 
 be a Hub dataset or a JSONL file with `prompt`/`response`,
 `instruction`/`context`/`response`, `messages` or `conversations` rows. The output
 directory holds a standard PEFT adapter (`adapter_config.json` +
-`adapter_model.safetensors`) and the tokenizer:
+`adapter_model.safetensors`) and the tokenizer. Loading it in PEFT needs
+`pip install peft`:
 
 ```python
 from transformers import AutoModelForCausalLM
@@ -203,7 +214,8 @@ checkpoints), `bantamtrain.losses` (chunked cross-entropy), `bantamtrain.data`
 
 The CUDA paths exist but have only been tested with CPU stand-ins: bf16 autocast on
 Ampere and newer (fp16 with a gradient scaler before), TF32, `--compile`,
-`bantam pretrain --auto_batch`, and multi-GPU DDP through `torchrun`. There is no
+`bantam pretrain --auto_batch`, and multi-GPU DDP through `torchrun` for pretrain and
+finetune (tested only with 2 CPU processes). There is no
 FSDP, no FP8 and no fused kernel; packed fine-tuning uses a dense block-diagonal mask,
 so expect it to be slower than padding-free packing with FlashAttention.
 
@@ -214,8 +226,10 @@ so expect it to be slower than padding-free packing with FlashAttention.
   2-3 seeds at most. Gains at larger scale are not measured.
 - Comparisons are matched in model FLOPs, not wall-clock. Muon's own optimizer FLOPs
   (a few % at this size) are not charged to the budget.
-- The weather runs had no separate validation year, and the scores are not
-  WeatherBench scorecards.
+- The committed weather runs had no separate validation year (their learning rates
+  were chosen on the test year), and the scores are not WeatherBench scorecards.
+- The low-resolution weather run is one seed, and the quantized-base costs above
+  were measured with 0.2 code.
 - In fine-tuning, "1 epoch" leaves out the last packed windows that do not fill a
   whole optimizer step, and importing `bantamtrain.finetune` turns on flush-to-zero
   for the whole process.
