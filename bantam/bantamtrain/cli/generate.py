@@ -11,6 +11,7 @@ decoding stops at that token.
 import argparse
 import json
 import os
+import sys
 
 import torch
 
@@ -36,6 +37,11 @@ def main(argv=None):
                     help="1: put the end-of-document token before the prompt")
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args(argv)
+    if args.num_samples < 1:
+        ap.error("--num_samples must be >= 1")
+    if not os.path.isfile(os.path.join(args.model, "config.json")):
+        ap.error(f"--model {args.model}: not a directory written by save_pretrained (no "
+                 "config.json); `bantam pretrain --save X.pt` writes it as X_pretrained/")
     try:
         from tokenizers import Tokenizer
     except ImportError:
@@ -73,4 +79,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
