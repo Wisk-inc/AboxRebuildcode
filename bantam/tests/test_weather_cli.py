@@ -94,9 +94,10 @@ def train(data, out, name, *extra, budget="3e9"):
 
 
 @pytest.mark.parametrize("mode", ["merge", "lowres"])
-def test_non_square_zoom_rejected(era5, tmp_path, mode):
+@pytest.mark.parametrize("zoom", ["2:0.5,1:0.5", "0:0.5,1:0.5"])
+def test_non_square_zoom_rejected(era5, tmp_path, mode, zoom):
     with pytest.raises(SystemExit) as e:
-        train(era5, tmp_path, "k2", "--zoom", "2:0.5,1:0.5", "--coarse_mode", mode)
+        train(era5, tmp_path, "k2", "--zoom", zoom, "--coarse_mode", mode)
     assert e.value.code == 2
 
 
@@ -235,12 +236,12 @@ def test_stale_gridpack(tmp_path):
     x, meta = make_era5(d, hours6("2017-12-25", 64))
     gridpack.write(os.path.join(d, "fields.gridpack"), x, np.asarray(meta["diff_std"]), chunk=16)
     assert W.ERA5(d, CPU).source == "gridpack"
-    time.sleep(0.01)
     x2, _ = make_era5(d, hours6("2017-12-29", 40), seed=1)    # prepare-era5 rerun in place
+    gp, now = os.path.join(d, "fields.gridpack"), time.time()
+    os.utime(gp, (now - 10, now - 10))                        # (coarse-mtime filesystems)
     ds = W.ERA5(d, CPU)                                       # newer fields.npy wins
     assert ds.source == "npy" and ds.x.shape[0] == 40
-    gp = os.path.join(d, "fields.gridpack")
-    os.utime(gp, (time.time() + 10, time.time() + 10))       # stale pack that looks newer
+    os.utime(gp, (now + 10, now + 10))                        # stale pack that looks newer
     with pytest.raises(ValueError, match="meta.json"):
         W.ERA5(d, CPU)
 
@@ -387,4 +388,14 @@ def test_save_and_forecast(era5, tmp_path):
         W.forecast(save, era5, "2019-01-01T00", steps=2)
     W.main(["--forecast", "--load", save, "--init", "2018-01-02T06", "--steps", "4",
             "--out", str(tmp_path)])                   # --data defaults to the training data
-    assert np.array_equal(np.load(tmp_path / "forecast_2018-01-02T06.npy"), fc)
+    # default output: a subdir, so <out>/*.json stays run logs only (summarize.py reads them)
+    assert np.array_equal(np.load(tmp_path / "forecasts" / "forecast_2018-01-02T06.npy"), fc)
+    assert sorted(p.name for p in tmp_path.glob("*.json")) == ["cli.json", "f.json", "s.json"]
+    with pytest.raises(SystemExit):
+        W.main(["--forecast", "--load", save, "--init", "2018-01-02T06", "--steps", "-1"])
+
+
+def test_ckpt_into_new_dir(tmp_path):
+    path = str(tmp_path / "new" / "run.ckpt")
+    W.save_ckpt(path, {"step": 3, "w": torch.ones(2)})
+    assert W.load_ckpt(path)["step"] == 3 and not os.path.exists(path + ".tmp")

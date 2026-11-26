@@ -349,6 +349,7 @@ def span(times, idx):
 
 
 def save_ckpt(path, state):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     tmp = path + ".tmp"
     torch.save(state, tmp)
     os.replace(tmp, path)
@@ -505,7 +506,7 @@ def build_parser():
     ap.add_argument("--init", default="", help="--forecast: initial time, e.g. 2018-03-01T00")
     ap.add_argument("--steps", type=int, default=12, help="--forecast: number of 6 h steps")
     ap.add_argument("--forecast_out", default="",
-                    help="--forecast: output .npy (default <out>/forecast_<init>.npy)")
+                    help="--forecast: output .npy (default <out>/forecasts/forecast_<init>.npy)")
     return ap
 
 
@@ -513,9 +514,10 @@ def main(argv=None):
     ap = build_parser()
     args = ap.parse_args(argv)
     if args.forecast:
-        if not (args.load and args.init):
-            ap.error("--forecast needs --load PATH and --init TIME")
-        out = args.forecast_out or os.path.join(args.out, f"forecast_{args.init}.npy")
+        if not (args.load and args.init) or args.steps < 0:
+            ap.error("--forecast needs --load PATH, --init TIME and --steps >= 0")
+        # own subdir: run logs are <out>/*.json, and summarize.py reads them all as runs
+        out = args.forecast_out or os.path.join(args.out, "forecasts", f"forecast_{args.init}.npy")
         dev = args.device if args.device != "auto" else \
             ("cuda" if torch.cuda.is_available() else "cpu")
         fc = forecast(args.load, args.data, args.init, args.steps, out, dev)
@@ -555,7 +557,7 @@ def main(argv=None):
         model = ZoomViT(c_in, len(ds.channels), (ds.H, ds.W), 2, args.d, args.layers, args.heads,
                         zoom_ks=sched.ks if args.coarse_mode == "merge" else (),
                         gated=bool(args.gated), merge_mode=args.merge_mode or None)
-        fs = {k: model.zoom_factor(k) for k in sched.ks}
+        fs = {k: model.zoom_factor(k) for k, _ in sched.stages}     # every stage, k=1 too
     except ValueError as e:
         ap.error(str(e))
     model = model.to(rt.device)

@@ -67,7 +67,7 @@ class ZoomViT(nn.Module):
     def zoom_factor(self, k):
         """f with k = f*f; f must divide both sides of the fine token grid (k = 1, 4, 16, ...)."""
         f = math.isqrt(k) if k >= 1 else 0
-        if f * f != k or self.gh % f or self.gw % f:
+        if f == 0 or f * f != k or self.gh % f or self.gw % f:
             raise ValueError(f"zoom level {k}: weather zoom levels must be perfect squares "
                              f"f*f with f dividing the {self.gh}x{self.gw} token grid (4, 16, ...)")
         return f

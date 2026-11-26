@@ -26,8 +26,9 @@ def test_vit_rejects_non_square_k():
     for k in (2, 3):
         with pytest.raises(ValueError):
             m.flops_per_step(1, k, lowres=True)
-    with pytest.raises(ValueError):                    # 3 does not divide the 16x32 token grid
-        m.zoom_factor(9)
+    for k in (9, 0, -4):                               # 3 does not divide the 16x32 grid; k < 1
+        with pytest.raises(ValueError):
+            m.zoom_factor(k)
     assert [m.zoom_factor(k) for k in (1, 4, 16)] == [1, 2, 4]
     with pytest.raises(ValueError):                    # input is not the 2x-coarsened grid
         m.forward_lowres(torch.randn(1, 12, 32, 64), 2)
