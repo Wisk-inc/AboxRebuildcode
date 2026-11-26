@@ -52,6 +52,10 @@ def _stop_and_resume(data, out, extra):
     assert a["steps"] == b["steps"] and a["tokens"] == b["tokens"]
     assert [t["loss"] for t in a["train"]] == [t["loss"] for t in b["train"]]
     assert a["final_val_loss"] == b["final_val_loss"]
+    # the eval curve and the FLOP counters continue too (no extra eval at the resume step)
+    curve = [(e["step"], e["frac"], e["val_loss"], e["opt_flops"]) for e in a["evals"]]
+    assert curve == [(e["step"], e["frac"], e["val_loss"], e["opt_flops"]) for e in b["evals"]]
+    assert (a["model_flops"], a["opt_flops"]) == (b["model_flops"], b["opt_flops"])
     return b, ckpt
 
 
