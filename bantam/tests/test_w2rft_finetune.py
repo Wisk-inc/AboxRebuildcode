@@ -153,3 +153,19 @@ def test_lora_plus_ratio_survives_the_lr_schedule(tmp_path, monkeypatch):
     assert {g["lr_scale"] for g in groups} == {1.0, 16.0}
     for g in groups:
         assert abs(g["lr"] - last * g["lr_scale"]) < 1e-12
+
+
+def test_resume_refuses_a_different_wd_ns_or_dropout(tmp_path):
+    """--resume refuses changed options, but --wd, --ns and --lora_dropout (which change every
+    later update) were not compared: the resumed run silently trained differently."""
+    import os
+    import sys
+    sys.path.insert(0, os.path.dirname(__file__))
+    from test_finetune_fixtures import rows, run_args, save_model_dir, write_jsonl
+    d, data = save_model_dir(tmp_path / "m", "chatml"), write_jsonl(tmp_path / "d.jsonl", rows(24))
+    common = ("--pack", "none", "--max_steps", 4, "--optim", "muon")
+    ft.main(run_args(d, data, tmp_path / "o", *common, "--save_every", 2, "--stop_step", 2))
+    for flag, v in (("--wd", 0.1), ("--ns", "polar"), ("--lora_dropout", 0.2)):
+        with pytest.raises(SystemExit, match=flag[2:]):
+            ft.main(run_args(d, data, tmp_path / "o", *common, flag, v, "--resume", tmp_path / "o"))
+    ft.main(run_args(d, data, tmp_path / "o", *common, "--resume", tmp_path / "o"))     # same options: fine

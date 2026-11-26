@@ -688,7 +688,7 @@ _RESUME_KEYS = ("model", "dataset", "config", "split", "jsonl", "eval_jsonl", "m
                 "response_col", "messages_col", "lora", "lora_alpha", "rslora", "dora", "lora_plus", "quant",
                 "embed_quant", "param_dtype", "seq", "pack", "batch", "accum", "seed", "lr", "epochs",
                 "max_steps", "prompt_loss_weight", "optim", "muon_lora", "state_bits", "sched", "warmup",
-                "eval_frac")
+                "eval_frac", "wd", "ns", "lora_dropout")
 
 
 def _state_path(path):
