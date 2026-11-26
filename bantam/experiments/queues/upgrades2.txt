@@ -1,0 +1,7 @@
+# Follow-ups to the upgrade ablations: is QK-norm's -0.10 real (seed 1), and does it stack with Zoom?
+D=/home/user/data/tinystories/tok4k
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr 1.6e-2 --qk_norm 1 --seed 1 --name up_qknorm_s1
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.33,1:0.67 --optim muon --lr 1.6e-2 --batch_scale 2 --qk_norm 1 --name up_qknorm_zoom_s0
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 1 --optim muon --lr 1.6e-2 --seed 1 --name up_base_s1
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.33,1:0.67 --optim muon --lr 1.6e-2 --batch_scale 2 --seed 1 --name up_zoom_2-33_bs2_s1
+python3 llm/train.py --data $D --budget 6.8e13 --zoom 2:0.33,1:0.67 --optim muon --lr 1.6e-2 --batch_scale 2 --qk_norm 1 --seed 1 --name up_qknorm_zoom_s1
