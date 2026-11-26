@@ -52,7 +52,7 @@ MUON_ELEMENTWISE_FLOPS = 10     # momentum, Nesterov blend, scale, decay, update
 
 
 def _ns_owned_(X, steps, eps, variant):
-    """Newton-Schulz on an owned, contiguous (batch, r, c) tensor with r <= c.
+    """Newton-Schulz on an owned (batch, r, c) tensor with r <= c (any strides).
 
     Normalizes X in place and alternates between X and one more buffer, so the
     working set is two copies of X plus the (r, r) products.
@@ -334,7 +334,7 @@ class Muon(_ChunkedOptimizer):
         tall = rows > cols
         X = (M.mT if tall else M).to(torch.bfloat16 if p.is_cuda else torch.float32,
                                      memory_format=torch.contiguous_format)
-        del G, M                                 # X is G itself or a copy (G freed)
+        del G, M                                 # X is a view of G or a copy (G freed)
         U = _ns_owned_(X, group["ns_steps"], 1e-7, group["ns"])
         del X
         U = U.mT if tall else U                  # (split, rows, cols)

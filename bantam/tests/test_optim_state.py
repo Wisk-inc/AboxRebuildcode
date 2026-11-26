@@ -82,20 +82,24 @@ def test_bf16_params_fp32_state_survive_load_unchanged():
 
 @pytest.mark.parametrize("cls,key", [(AdamWLowMem, "m"), (Muon, "buf")])
 @pytest.mark.parametrize("bits", [8, 32])
-def test_state_loads_onto_the_param_device(cls, key, bits):
+@pytest.mark.parametrize("device", ["meta", "cuda"])
+def test_state_loads_onto_the_param_device(cls, key, bits, device):
+    """A CPU checkpoint (pretrain loads with map_location='cpu') lands on the param device."""
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
     w = torch.nn.Parameter(torch.randn(40, 24))
     opt = cls([w], lr=1e-2, state_bits=bits)
     w.grad = torch.randn_like(w)
     opt.step()
     sd = _roundtrip(opt.state_dict())                           # weights_only=True works
     assert not any(isinstance(v, lowmem.QState) for st in sd["state"].values() for v in st.values())
-    wm = torch.nn.Parameter(torch.empty(40, 24, device="meta"))
+    wm = torch.nn.Parameter(torch.zeros(40, 24, device=device))
     om = cls([wm], lr=1e-2, state_bits=bits)
     om.load_state_dict(sd)
     st = om.state[wm][key]
     tensors = st.tensors().values() if isinstance(st, lowmem.QState) else [st]
-    assert all(t.device.type == "meta" for t in tensors)
-    wm.grad = torch.empty_like(wm)
+    assert all(t.device.type == device for t in tensors)
+    wm.grad = torch.ones_like(wm)
     om.step()                                                   # no device mismatch
 
 
