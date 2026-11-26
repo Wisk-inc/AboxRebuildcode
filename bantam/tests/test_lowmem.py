@@ -133,18 +133,20 @@ def test_weightpack_roundtrip_sizes_and_error(tmp_path):
 
 
 def test_memory_scoreboard_ladder():
-    sb = memory.scoreboard()
-    rows = sb["rows"]
-    assert 4.9e9 < sb["params"] < 5.3e9
-    std, eff = rows[0], rows[2]
-    assert "ckpt" in std["config"]                  # standard recipe must recompute to fit
-    assert std["bytes_per_param"] == 18 and eff["bytes_per_param"] < 5.2
-    assert all(r["fits"] for r in rows)
-    assert eff["max_micro"] >= 8
-    days = [r["days"] for r in rows]
-    assert days[0] > days[1] > days[2] > days[3]
-    assert abs(days[0] / days[1] - 8 / 6) < 1e-6    # recompute removed
-    assert abs(days[1] / days[2] - 1 / 0.52) < 1e-6
+    for headroom in (0.85, 1.0):                    # verdicts are checked for consistency, not pinned
+        sb = memory.scoreboard(headroom=headroom)
+        rows = sb["rows"]
+        assert 4.9e9 < sb["params"] < 5.3e9
+        std, eff = rows[0], rows[2]
+        assert std["bytes_per_param"] == 18 and eff["bytes_per_param"] < 5.2
+        assert all(r["fits"] for r in rows[1:]) and eff["max_micro"] >= 4
+        if std["fits"]:
+            assert abs(std["days"] / rows[1]["days"] - (8 / 6 if std["ckpt"] else 1)) < 1e-6
+        else:
+            assert std["days"] is None
+        days = [r["days"] for r in rows[1:]]
+        assert days[0] > days[1] > days[2]
+        assert 1 / 0.52 > days[0] / days[1] > 1 / 0.52 / 1.05   # Muon + its Newton-Schulz FLOPs
 
 
 

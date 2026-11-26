@@ -1,29 +1,83 @@
 """Aggregate results/*.json into Markdown tables (and optional PNG plots).
 
-    python experiments/summarize.py [--plots]
+    python experiments/summarize.py [--plots] [--results DIR] [--out SUMMARY.md]
 
-Writes results/SUMMARY.md. Groups: LLM sweep, LLM main, LLM ablations,
-LLM speedup-to-target, weather. Speedup-to-target: for a reference run
-(baseline at the same budget) and a Zoom run, interpolate the baseline's
-val-loss-vs-FLOPs curve over the longer baseline runs to find the FLOPs at
-which the baseline first reaches the Zoom run's final loss.
+Writes results/SUMMARY.md (raw tables; RESULTS.md is curated from it) and
+results/summary.json (seed aggregates and compute-to-target, machine-readable).
+Only completed runs are tabulated: logs still marked in_progress are listed as
+running, and JSON files that are not run logs (derived tables) are skipped.
+
+Seed aggregates: runs with the same recipe (args minus seed, name, paths, threads,
+eval cadence) and budget are pooled into n, mean and sample sd.
+
+Compute-to-target: the baseline curve is (budget, final_val_loss) of COMPLETED
+baseline runs, each with its own full LR schedule, averaged over seeds at each
+budget. The baseline recipe of a run is its own recipe with every Zoom and upgrade
+option reset to the default (same optimizer, LR, model, data and eval set). The
+FLOPs at which the curve reaches a run's final loss come from linear interpolation
+in log-FLOPs. Eval-curve points (eval_seqs windows) are never compared with final
+losses (final_eval_seqs windows): they are different metrics. Runs of the baseline
+recipe are 1.00x by definition.
 """
 import argparse
 import glob
 import json
+import math
 import os
+import re
 
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RES = os.path.join(ROOT, "results")
+# args that never change what is trained or measured
+NON_RECIPE = {"seed", "name", "out", "threads", "device", "precision", "compile", "duty", "save",
+              "save_every_eval", "ckpt_every", "ckpt", "resume", "stop_step", "evals", "eval_seqs",
+              "grad_ckpt"}
+# flags added after the first runs, at the value older logs implicitly used
+DEFAULTS = {"llm": {"state_bits": 32, "param_dtype": "fp32", "accum": 1, "batch_scale": 0.0,
+                    "batch_scale_k": 0, "sched": "cosine", "decay_frac": 0.45, "lr_restart": 0,
+                    "mix_fine": 0.0, "merge_mode": "", "qk_norm": 0, "mlp": "gelu", "softcap": 0.0,
+                    "zero_init_proj": 0, "ns": "quintic", "warmup": 0.05, "gated": 1,
+                    "out_mode": "slot", "rope_pos": "token"},
+            "weather": {"state_bits": 32, "coarse_mode": "merge", "batch_scale_k": 0,
+                        "sched": "cosine", "decay_frac": 0.45, "ns": "quintic", "lr_restart": 0,
+                        "mix_fine": 0.0, "merge_mode": "", "gated": 1, "warmup": 0.05}}
+# Zoom and upgrade options: the baseline recipe has all of them at their default
+VARIANT = {"zoom": "1", "batch_scale_k": 0, "batch_scale": 0.0, "mix_fine": 0.0, "lr_restart": 0,
+           "merge_mode": "", "gated": 1, "out_mode": "slot", "rope_pos": "token", "mlp": "gelu",
+           "softcap": 0.0, "zero_init_proj": 0, "sched": "cosine", "decay_frac": 0.45,
+           "ns": "quintic", "qk_norm": 0, "coarse_mode": "merge"}
+CTT_METHOD = ("baseline = completed runs with the run's optimizer, LR, model, data and eval set and "
+              "every Zoom/upgrade option at its default; final_val_loss averaged over seeds at each "
+              "budget; FLOPs to reach the target by linear interpolation in log-FLOPs; eval-curve "
+              "points are never mixed with final losses; baseline-recipe runs are 1.00x")
 
 
-def load(sub):
-    out = {}
-    for p in sorted(glob.glob(os.path.join(RES, sub, "*.json"))):
-        out[os.path.basename(p)[:-5]] = json.load(open(p))
-    return out
+def scan(sub, res=None):
+    """(complete runs, {running name: last eval frac}, [skipped non-run files]) in res/sub."""
+    runs, running, skipped = {}, {}, []
+    for p in sorted(glob.glob(os.path.join(res or RES, sub, "*.json"))):
+        name = os.path.basename(p)[:-5]
+        try:
+            with open(p) as f:
+                r = json.load(f)
+        except (OSError, ValueError):
+            skipped.append(name)
+            continue
+        if not isinstance(r, dict) or "args" not in r:
+            skipped.append(name)                    # derived table, not a run log
+        elif r.get("in_progress") or ("final_val_loss" not in r and "final" not in r):
+            ev = r.get("evals") or [{}]
+            running[name] = ev[-1].get("frac")
+        else:
+            runs[name] = r
+    return runs, running, skipped
+
+
+def load(sub, res=None):
+    """Completed runs only."""
+    return scan(sub, res)[0]
 
 
 def md_table(rows, cols):
@@ -33,36 +87,118 @@ def md_table(rows, cols):
     return "\n".join(lines)
 
 
-def flops_to_reach(curve_runs, target):
-    """Smallest FLOPs at which any baseline eval curve is <= target (linear interp)."""
-    best = None
-    for r in curve_runs:
-        ev = r["evals"]
-        f = np.array([e["flops"] for e in ev])
-        v = np.array([e["val_loss"] for e in ev])
-        for i in range(1, len(f)):
-            if v[i] <= target:
-                if v[i - 1] <= target:
-                    x = f[i - 1]
-                else:
-                    x = f[i - 1] + (f[i] - f[i - 1]) * (v[i - 1] - target) / (v[i - 1] - v[i])
-                best = x if best is None else min(best, x)
-                break
-    return best
+def _f(x, spec):
+    return "" if x is None else format(x, spec)
+
+
+def kind(r):
+    return "weather" if "final" in r and "final_val_loss" not in r else "llm"
+
+
+def recipe(r, budget=True, reset=False):
+    """Hashable recipe key: args minus NON_RECIPE, older logs filled with DEFAULTS, falsy
+    values dropped (a flag at its off value is the same recipe as a log without it)."""
+    a = {**DEFAULTS[kind(r)], **r["args"]}
+    if reset:
+        a.update({k: v for k, v in VARIANT.items() if k in a})
+    if not budget:
+        a.pop("budget", None)
+    if "data" in a:
+        a["data"] = os.path.basename(os.path.normpath(str(a["data"])))
+    return tuple(sorted((k, json.dumps(v)) for k, v in a.items()
+                        if k not in NON_RECIPE and v not in (None, 0, 0.0, "", False, "0")))
+
+
+def group_label(names):
+    stems = {re.sub(r"_s\d+$", "", n) for n in names}
+    return stems.pop() if len(stems) == 1 else " / ".join(sorted(names))
+
+
+def seed_groups(runs, metric):
+    """[{label, n, mean, sd, runs}] for recipes run with more than one seed."""
+    groups = {}
+    for n, r in runs.items():
+        groups.setdefault(recipe(r), []).append(n)
+    out = []
+    for names in groups.values():
+        if len(names) < 2:
+            continue
+        v = np.array([metric(runs[n]) for n in names])
+        out.append({"label": group_label(names), "n": len(v), "mean": float(v.mean()),
+                    "sd": float(v.std(ddof=1)), "runs": sorted(names)})
+    return sorted(out, key=lambda g: g["label"])
+
+
+def flops_to_reach(curve, target):
+    """Smallest compute at which a (compute, loss) curve sorted by compute reaches target,
+    by linear interpolation in log-compute. Returns (flops, status) with status 'ok',
+    'below' (the cheapest point already reaches it: an upper bound) or 'beyond' (None)."""
+    if not curve:
+        return None, "beyond"
+    if curve[0][1] <= target:
+        return curve[0][0], "below"
+    for (c0, l0), (c1, l1) in zip(curve, curve[1:]):
+        if l1 <= target < l0:
+            f = (l0 - target) / (l0 - l1)
+            return math.exp(math.log(c0) + f * (math.log(c1) - math.log(c0))), "ok"
+    return None, "beyond"
+
+
+def baseline_curve(runs, key):
+    """[(budget, mean final loss over seeds)] of the completed runs whose recipe is `key`."""
+    pts = {}
+    for r in runs.values():
+        if recipe(r, budget=False) == key:
+            pts.setdefault(r["args"]["budget"], []).append(r["final_val_loss"])
+    return [(b, float(np.mean(v))) for b, v in sorted(pts.items())]
+
+
+def compute_to_target(runs):
+    """One row per completed run, plus one per multi-seed group (target = seed mean)."""
+    rows = []
+    targets = [(n, [n]) for n in runs]
+    targets += [(f"{g['label']} (mean of {g['n']})", g["runs"])
+                for g in seed_groups(runs, lambda r: r["final_val_loss"])]
+    for label, names in targets:
+        r = runs[names[0]]
+        target = float(np.mean([runs[n]["final_val_loss"] for n in names]))
+        budget = r["args"]["budget"]
+        base_key = recipe(r, budget=False, reset=True)
+        row = {"run": label, "val_loss": target, "run_flops": budget, "baseline_flops": None,
+               "speedup": None, "status": "", "baseline_points": []}
+        if recipe(r, budget=False) == base_key:
+            row.update(baseline_flops=budget, speedup=1.0, status="baseline")
+        else:
+            curve = baseline_curve(runs, base_key)
+            need, status = flops_to_reach(curve, target)
+            row.update(baseline_flops=need, status=status, baseline_points=curve,
+                       speedup=need / budget if need else None)
+        rows.append(row)
+    return rows
+
+
+def _ctt_cells(row):
+    s, x = row["status"], row["speedup"]
+    if s == "beyond":
+        return ("not reached" if row["baseline_points"] else "no baseline runs",
+                "> curve" if row["baseline_points"] else "n/a")
+    sp = f"{x:.2f}x" if s != "below" else f"<= {x:.2f}x"
+    return f"{row['baseline_flops']:.2e}", sp
 
 
 def llm_rows(runs):
     rows = []
     for name, r in runs.items():
         a = r["args"]
-        rows.append({"run": name, "optim": a["optim"], "zoom": r["schedule"],
+        rows.append({"run": name, "optim": a["optim"], "zoom": r.get("schedule", a.get("zoom")),
                      "out": a.get("out_mode", ""), "gated": a.get("gated", ""),
-                     "rope": a.get("rope_pos", ""), "lr": a["lr"], "seed": a["seed"],
-                     "budget": f"{a['budget']:.2e}", "steps": r["steps"],
-                     "tokens(M)": f"{r['tokens']/1e6:.2f}",
-                     "epochs": f"{r.get('data_epochs', 0):.3f}",
-                     "train_s": f"{r['train_time']:.0f}",
-                     "val_loss": f"{r['final_val_loss']:.4f}"})
+                     "rope": a.get("rope_pos", ""), "lr": a["lr"], "seed": a.get("seed", ""),
+                     "budget": _f(a.get("budget"), ".2e"), "steps": r.get("steps", ""),
+                     "tokens(M)": _f(r.get("tokens", 0) / 1e6, ".2f"),
+                     "epochs": _f(r.get("data_epochs", 0), ".3f"),
+                     "train_s": _f(r.get("train_time"), ".0f"),
+                     "bits": a.get("state_bits", 32), "dtype": a.get("param_dtype", "fp32"),
+                     "val_loss": _f(r["final_val_loss"], ".4f")})
     return rows
 
 
@@ -70,73 +206,124 @@ def weather_rows(runs):
     rows = []
     for name, r in runs.items():
         a, fin = r["args"], r["final"]
-        rows.append({"run": name, "optim": a["optim"], "zoom": r["schedule"],
-                     "mode": a["coarse_mode"], "lr": a["lr"], "seed": a["seed"],
-                     "budget": f"{a['budget']:.2e}", "steps": r["steps"],
-                     "epochs": f"{r['epochs']:.2f}", "train_s": f"{r['train_time']:.0f}",
-                     "val_mse": f"{fin['val_loss']:.4f}",
-                     "z500@6h": f"{fin['rmse_z500_6h']:.1f}",
-                     "z500@24h": f"{fin['rmse_z500_24h']:.1f}",
-                     "z500@72h": f"{fin['rmse_z500_72h']:.1f}",
-                     "t850@24h": f"{fin['rmse_t850_24h']:.2f}",
-                     "t2m@24h": f"{fin['rmse_t2m_24h']:.2f}"})
+        rows.append({"run": name, "optim": a["optim"], "zoom": r.get("schedule", a.get("zoom")),
+                     "mode": a.get("coarse_mode", "merge"), "lr": a["lr"], "seed": a.get("seed", ""),
+                     "budget": _f(a.get("budget"), ".2e"), "steps": r.get("steps", ""),
+                     "epochs": _f(r.get("epochs"), ".2f"), "train_s": _f(r.get("train_time"), ".0f"),
+                     "val_mse": _f(fin.get("val_loss"), ".4f"),
+                     "z500@6h": _f(fin.get("rmse_z500_6h"), ".1f"),
+                     "z500@24h": _f(fin.get("rmse_z500_24h"), ".1f"),
+                     "z500@72h": _f(fin.get("rmse_z500_72h"), ".1f"),
+                     "t850@24h": _f(fin.get("rmse_t850_24h"), ".2f"),
+                     "t2m@24h": _f(fin.get("rmse_t2m_24h"), ".2f")})
     return rows
 
 
-def main():
+def _seed_table(groups, fmt=".4f"):
+    rows = [{"recipe": g["label"], "n": g["n"], "mean +- sd": f"{g['mean']:{fmt}} +- {g['sd']:{fmt}}",
+             "runs": ", ".join(g["runs"])} for g in groups]
+    return md_table(rows, ["recipe", "n", "mean +- sd", "runs"])
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--plots", action="store_true")
-    args = ap.parse_args()
-    parts = ["# Results summary (auto-generated)\n"]
+    ap.add_argument("--results", default=RES, help="results directory to read")
+    ap.add_argument("--out", default="", help="Markdown output (default <results>/SUMMARY.md)")
+    args = ap.parse_args(argv)
+    res = args.results
+    parts = ["# Results summary (auto-generated by experiments/summarize.py)\n"]
+    summary = {"compute_to_target_method": CTT_METHOD, "running": {}, "skipped": {}}
 
-    sweep = load("llm_sweep")
+    def scan_(sub):
+        runs, running, skipped = scan(sub, res)
+        if running:
+            summary["running"][sub] = running
+        if skipped:
+            summary["skipped"][sub] = skipped
+        return runs
+
+    sweep = scan_("llm_sweep")
     if sweep:
         parts.append("## LLM learning-rate sweep (2.3e13 FLOPs)\n")
         parts.append(md_table(llm_rows(sweep), ["run", "optim", "lr", "steps", "val_loss"]))
 
-    wsweep = load("weather_sweep")
+    wsweep = scan_("weather_sweep")
     if wsweep:
         parts.append("\n\n## Weather learning-rate sweep (1.8e13 FLOPs)\n")
         parts.append(md_table(weather_rows(wsweep), ["run", "optim", "lr", "steps", "val_mse",
                                                      "z500@6h", "z500@24h", "z500@72h"]))
 
-    main_runs = load("llm")
+    main_runs = scan_("llm")
     if main_runs:
         parts.append("\n\n## LLM main runs and ablations\n")
         cols = ["run", "optim", "zoom", "out", "gated", "rope", "lr", "seed", "budget", "steps",
                 "tokens(M)", "epochs", "train_s", "val_loss"]
         parts.append(md_table(llm_rows(main_runs), cols))
-        base_long = [r for n, r in main_runs.items() if r["schedule"] == "1:1"]
-        if base_long:
-            parts.append("\n\n### Compute-to-target (baseline FLOPs needed to reach each run's final loss)\n")
-            rows = []
-            for n, r in main_runs.items():
-                need = flops_to_reach(base_long, r["final_val_loss"])
-                rows.append({"run": n, "val_loss": f"{r['final_val_loss']:.4f}",
-                             "run_flops": f"{r['args']['budget']:.2e}",
-                             "baseline_flops_to_match": f"{need:.2e}" if need else "not reached",
-                             "speedup": f"{need / r['args']['budget']:.2f}x" if need else "> curve"})
-            parts.append(md_table(rows, ["run", "val_loss", "run_flops", "baseline_flops_to_match",
-                                         "speedup"]))
+        groups = seed_groups(main_runs, lambda r: r["final_val_loss"])
+        summary["llm_seed_groups"] = groups
+        if groups:
+            parts.append("\n\n### Seed aggregates (final val loss, sample sd)\n")
+            parts.append(_seed_table(groups))
+        ctt = compute_to_target(main_runs)
+        summary["compute_to_target"] = ctt
+        parts.append("\n\n### Compute-to-target (baseline FLOPs needed to reach each run's final loss)\n")
+        parts.append(f"Method: {CTT_METHOD}.\n")
+        rows = []
+        for row in ctt:
+            need, sp = _ctt_cells(row)
+            rows.append({"run": row["run"], "val_loss": f"{row['val_loss']:.4f}",
+                         "run_flops": f"{row['run_flops']:.2e}", "baseline_flops_to_match": need,
+                         "speedup": sp})
+        parts.append(md_table(rows, ["run", "val_loss", "run_flops", "baseline_flops_to_match",
+                                     "speedup"]))
 
-    wx = load("weather")
+    lowmem = scan_("llm_lowmem")
+    if lowmem:
+        parts.append("\n\n## LLM low-memory runs\n")
+        parts.append(md_table(llm_rows(lowmem), ["run", "optim", "bits", "dtype", "lr", "budget",
+                                                 "steps", "train_s", "val_loss"]))
+
+    wx = scan_("weather")
     if wx:
         parts.append("\n\n## Weather (ERA5 5.625 deg, 6 h step, test year 2018)\n")
         cols = ["run", "optim", "zoom", "mode", "lr", "seed", "budget", "steps", "epochs",
                 "train_s", "val_mse", "z500@6h", "z500@24h", "z500@72h", "t850@24h", "t2m@24h"]
         parts.append(md_table(weather_rows(wx), cols))
-        any_run = next(iter(wx.values()))["final"]
-        parts.append("\n\nPersistence RMSE on the same initial conditions: "
-                     + ", ".join(f"{c}@{h}h={any_run[f'persist_{c}_{h}h']:.2f}"
-                                 for h in (6, 24, 72) for c in ("z500", "t850", "t2m")))
+        groups = seed_groups(wx, lambda r: r["final"]["val_loss"])
+        summary["weather_seed_groups"] = groups
+        if groups:
+            parts.append("\n\n### Seed aggregates (val MSE, sample sd)\n")
+            parts.append(_seed_table(groups))
+        fin = next(iter(wx.values()))["final"]
+        persist = [f"{c}@{h}h={fin[f'persist_{c}_{h}h']:.2f}" for h in (6, 24, 72)
+                   for c in ("z500", "t850", "t2m") if f"persist_{c}_{h}h" in fin]
+        if persist:
+            parts.append("\n\nPersistence RMSE on the same initial conditions: " + ", ".join(persist))
 
-    with open(os.path.join(RES, "SUMMARY.md"), "w") as f:
+    if summary["running"]:
+        parts.append("\n\n## Running or interrupted (not tabulated)\n")
+        parts.append(md_table([{"run": f"{sub}/{n}", "last eval frac": _f(fr, ".3f")}
+                               for sub, d in summary["running"].items() for n, fr in d.items()],
+                              ["run", "last eval frac"]))
+    if summary["skipped"]:
+        parts.append("\n\nSkipped (not run logs): " + ", ".join(
+            f"{sub}/{n}.json" for sub, names in summary["skipped"].items() for n in names))
+
+    out = args.out or os.path.join(res, "SUMMARY.md")
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "w") as f:
         f.write("\n".join(parts) + "\n")
+    with open(os.path.join(os.path.dirname(os.path.abspath(out)), "summary.json"), "w") as f:
+        json.dump(summary, f, indent=1)
     print("\n".join(parts))
 
     if args.plots:
-        from plots import make_plots  # noqa: F401
-        make_plots(main_runs, wx)
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from plots import make_plots
+        make_plots(main_runs, wx, out=os.path.join(res, "plots"))
+    return 0
 
 
 if __name__ == "__main__":

@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "bantamtrain"
-version = "0.3.0.dev0"
+dynamic = ["version"]
 description = "Bantam: train and fine-tune small language models and weather models faster and cheaper on limited compute - Zoom Training, Muon, 8-bit/bf16 low-memory training, LoRA/QLoRA, int8/int4 weights, compressed token and weather-grid stores"
 readme = "packaging/README.md"
 license = "MIT"
@@ -20,13 +20,15 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Operating System :: OS Independent",
 ]
-dependencies = ["torch>=2.2", "numpy>=1.24", "zstandard>=0.21"]
+dependencies = ["torch>=2.4", "numpy>=1.24", "zstandard>=0.21"]
 
 [project.optional-dependencies]
 data = ["tokenizers", "pyarrow", "huggingface_hub"]
-finetune = ["transformers>=4.40", "datasets", "sentencepiece"]
+finetune = ["transformers>=4.56", "safetensors", "datasets", "sentencepiece"]
 weather = ["xarray", "zarr", "fsspec", "aiohttp"]
-test = ["pytest"]
+# everything the test suite imports (tests that need a missing extra are skipped)
+test = ["pytest>=7", "transformers>=4.56", "peft", "safetensors", "tokenizers", "pyarrow",
+        "sentencepiece", "matplotlib"]
 
 [project.scripts]
 bantam = "bantamtrain.cli:main"
@@ -34,6 +36,9 @@ bantamtrain = "bantamtrain.cli:main"
 
 [project.urls]
 Source = "https://github.com/Wisk-inc/AboxRebuildcode"
+
+[tool.setuptools.dynamic]
+version = { attr = "bantamtrain.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["bantamtrain*"]
