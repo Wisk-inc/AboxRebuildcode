@@ -385,6 +385,18 @@ def segment_mask(seg):
     return ((seg[:, :, None] == seg[:, None, :]) & causal)[:, None], pos
 
 
+def model_attention_mask(model, mask):
+    """segment_mask's bool mask in the form the model's attention takes a prepared 4-D mask:
+    bool for SDPA; additive float (0 / -max) for eager and flex attention, which add the mask
+    to the scores (a bool mask there adds 0/1 and masks nothing, not even the future)."""
+    impl = getattr(getattr(model, "config", None), "_attn_implementation", None)
+    if not isinstance(impl, str) or impl == "sdpa":
+        return mask
+    dt = _qw.autocast_dtype(mask.device.type) or getattr(model, "dtype", torch.float32)   # the scores' dtype
+    dt = dt if dt.is_floating_point else torch.float32
+    return torch.zeros(mask.shape, dtype=dt, device=mask.device).masked_fill_(~mask, torch.finfo(dt).min)
+
+
 # ----------------------------------------------------------------------------- model
 def head_transform(model):
     """(scale, softcap) the model's own forward applies to the output head's logits:
@@ -406,7 +418,9 @@ def _split_head(model):
     """(decoder, output head) when the logits are head(decoder(x).last_hidden_state)."""
     base = getattr(model, "model", None) or getattr(model, "base_model", None)
     head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
-    if base is None or base is model or head is None or not hasattr(head, "weight"):
+    # a quantized head's .weight is a property that dequantizes the table: look on the class first
+    has_w = head is not None and (hasattr(type(head), "weight") or hasattr(head, "weight"))
+    if base is None or base is model or not has_w:
         return None, None
     return base, head
 
@@ -483,7 +497,7 @@ def lm_loss_sum(model, x, y, ce_chunk, w=None, seg=None):
     if seg is not None:
         mask, pos = segment_mask(seg)
         if mask is not None:
-            kw = {"attention_mask": mask, "position_ids": pos}
+            kw = {"attention_mask": model_attention_mask(model, mask), "position_ids": pos}
     tw, denom = _token_weights(y, w)
     base, head = _split_head(model) if ce_chunk else (None, None)
     if head is not None and (tw is None or "token_weights" in _CE_ARGS) and _chunk_ok(model, base, head):
