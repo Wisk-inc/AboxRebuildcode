@@ -99,8 +99,8 @@ split. The code is `SlotMerge` and `SlotUnmerge` in `bantamtrain/zoom.py`.
 | `linear` | `z = Σ_j W_j x_j`, `W_j ∈ R^{d×d}`, init `I/k` | `y_j = U_j h`, init `U_j = I` | `2·k·d²` | A learned patch embedding and un-embedding. Its FLOPs are charged since 0.3. No committed run uses it. |
 
 `--out_mode bag` is a fourth variant: it skips the split and scores one
-distribution per group against all `k` next tokens (Shao's loss), with a gated
-merge.
+distribution per group against all `k` next tokens (Shao's loss). It works
+with any merge mode; the one committed bag run used the gated merge.
 
 Measured (Muon, 4:0.35,2:0.25,1:0.4 schedule, n=1 except where stated):
 gate 2.874 ± 0.002 (n=3), mean 2.943, bag 2.860. All three lost to the
@@ -146,8 +146,9 @@ RoPE positions: with `--rope_pos token` (default) group `p` sits at angle
 position `p·k + (k−1)/2`, the centre of its tokens, so the positional geometry
 matches what the model sees at `k = 1`. `--rope_pos patch` uses the group index
 `p` instead. One run (4:0.35,2:0.25,1:0.4) gave 2.857 with patch positions vs
-2.874 (n=3) with token positions; this difference is within noise and was not
-repeated.
+2.874 ± 0.002 (n=3) with token positions. That is a single-seed difference of
+0.017, about 1.4 baseline standard deviations, under the schedule that lost to
+the baseline. It was not repeated.
 
 ### 1.5 Schedules
 
@@ -159,8 +160,8 @@ evaluated at). Every `k` must divide `--seq`.
 
 The learning-rate schedule (`--sched cosine` or `wsd`) runs over the whole
 budget and does not restart at a stage switch. `--lr_restart 1` restarts
-warm-up and decay inside every stage; it was worse (2:0.5,1:0.5: 2.760 with
-restart vs 2.723 without; with batch ×2: 2.787 vs 2.685). `--mix_fine p` runs a
+warm-up and decay inside every stage; it was worse (2:0.5,1:0.5, seed 0: 2.760
+with restart vs 2.723 without; with batch ×2: 2.787 vs 2.690). `--mix_fine p` runs a
 `k = 1` step with probability `p` during coarse stages; no committed run uses
 it.
 
@@ -179,11 +180,13 @@ Measured schedules (Muon, n=1 unless stated; compute-to-match explained in
 | `2:0.5,1:0.5` | × 2 (`--batch_scale_k 1`) | **2.685 ± 0.004** | 3 | **1.12x** |
 | `2:0.5,1:0.5` | × 4 (`--batch_scale 4`) | 2.727 | 1 | 1.02x |
 | `2:0.33,1:0.67` | × 2 (`--batch_scale 2`) | **2.680 ± 0.005** | 2 | **1.14x** |
-| `2:0.65,1:0.35` | × 2 | 2.714 | 1 | 1.05x |
+| `2:0.65,1:0.35` | × 2 | 2.713 | 1 | 1.05x |
 
-What made Zoom work at this scale: `k = 2` only (every `k = 4` schedule lost),
-and a larger batch during the merged phase. The schedule the old docs presented
-as "the method" (`4 → 2 → 1`, fixed batch) loses on all three seeds.
+What made Zoom work at this scale: `k = 2` only, and a larger batch during the
+merged phase. Every `k = 4` schedule at a fixed batch lost; with batch × k the
+`4 → 2 → 1` staircase only tied the baseline (2.730, n=1). The schedule the old
+docs presented as "the method" (`4 → 2 → 1`, fixed batch) loses on all three
+seeds.
 
 ### 1.6 Batch scaling during the merged phase
 
@@ -197,8 +200,9 @@ separately:
 
 1. At a fixed batch, a `k = 2` step costs about 0.57x the FLOPs of a `k = 1`
    step (§1.7), so the same budget buys more, smaller steps. The 4→2→1 schedule
-   took 808 steps against the baseline's 450. Each step sees half the
-   positions, so the gradient is noisier.
+   took 808 steps against the baseline's 450. A `k = 2` step sees half the
+   positions of a `k = 1` step (a `k = 4` step a quarter), so its gradient is
+   noisier.
 2. Muon's per-step cost is fixed and is not charged to the budget (§1.7). More
    steps also mean more uncharged optimizer work and more wall-clock.
 
@@ -268,10 +272,13 @@ in the single-seed 1.25x baseline would move it between about 1.11x and
 
 The evaluation set is the first 2,048 validation windows of 256 tokens. Early
 windows are easier than later ones, so losses from different eval sizes are not
-comparable (the periodic `evals[]` curve uses 256 windows and reads about 0.28
-nats lower). Every final loss in this file uses the 2,048-window set. The runs
-trained on the deduplicated TokPack, which drops the 1,550 training copies of
-validation stories (§9.2).
+comparable (the periodic `evals[]` curve uses the first 256 windows and reads
+0.27-0.30 nats lower than the 2,048-window final of the same run). Every
+full-budget final loss in this file uses the 2,048-window set. Two tables are
+exceptions and say so: the learning-rate sweep (§2.3, 512 windows) and the
+short low-memory runs (§3, 1,024 windows). Every run's logged `data_epochs`
+matches the same 116.8M-token deduplicated TokPack stream, which excludes the
+1,550 training copies of validation stories (§9.2).
 
 ### 1.9 After training: the zoom modules
 
@@ -355,19 +362,23 @@ using `baddbmm`, with two buffers the size of `X`.
 
 - `--ns quintic` (default): five iterations with the fixed coefficients
   `(a, b, c) = (3.4445, −4.7750, 2.0315)` from the Muon reference code. The
-  output singular values land roughly between 0.5 and 1.5; exact
-  orthogonality is not the goal.
+  reference code describes the output singular values as roughly 0.5 to 1.5;
+  exact orthogonality is not the goal.
 - `--ns polar`: Polar Express (Amsel et al., 2025) uses a different
   coefficient triple at each iteration. Bantam uses the paper's 8 tuples
   (listed in [RESEARCH.md §2.1](../RESEARCH.md)), divides `a, b, c` of the first
   seven by 1.01, 1.01³, 1.01⁵ for safety, repeats the 8th tuple
   `(1.875, −1.25, 0.375)` for any further steps, and normalizes the input with
   a 1.01 margin. 0.2 kept only five tuples and repeated the fifth, which does
-  not converge to 1 (audit OPT-8; fixed). After 5 steps on a random matrix the
-  singular values are in [0.840, 1.124].
+  not converge to 1 (audit OPT-8; fixed). With the default 5 steps the change
+  is small: in a hand check on random Gaussian matrices the largest output
+  singular value was 1.124; how close the smallest get to 1 depends on the
+  input's conditioning (about 0.87 for a 256 × 1,024 matrix, below 0.2 for a
+  square one).
 
 Measured: `--ns polar` gave 2.755 vs 2.737 ± 0.012 for quintic (n=1). It did
-not help at this scale.
+not help at this scale. That run used the 0.2 coefficient list (before the
+OPT-8 fix), so it should be rerun before it is quoted as a 0.3 result.
 
 ### 2.2 Which parameters Muon gets
 
@@ -390,15 +401,20 @@ not help at this scale.
 
 `build_optimizer` gives the Muon part and the AdamW part the same learning rate
 and weight decay. The old docs said Moonlight scaling makes that safe. The
-sweep here says otherwise. At 2.3e13 FLOPs (one third of the budget, n=1 each):
+sweep here says otherwise. At 2.3e13 FLOPs (one third of the budget, n=1 each,
+scored on the first 512 validation windows, so not comparable with the
+2,048-window finals):
 
 | lr | AdamW only | Muon (+ AdamW part at the same lr) |
 |---|---|---|
-| 5e-4 | 4.225 | 4.227 |
+| 5e-4 | 4.225 | 4.226 |
 | 1e-3 | **3.961** | 3.937 |
 | 2e-3 | 4.090 | 3.692 |
+| 4e-3 | (not run) | 3.440 |
+| 8e-3 | (not run) | 3.230 |
 | 1.6e-2 | (not run) | **3.176** |
 | 3.2e-2 | (not run) | 3.208 |
+| 6.4e-2 | (not run) | 3.522 |
 
 The best LRs differ by 16x (AdamW 1e-3, Muon 1.6e-2). In every Muon run the
 AdamW part (the embedding and tied head plus norms: 1.05M of 5.77M parameters)
@@ -455,20 +471,24 @@ Bytes per parameter during training:
 | fp32 everything | 4 | 4 | 8 | 4 |
 | bf16 weights + 8-bit state | 2 | 2 | ~2 | ~1 |
 
-Measured (5.8M model; n=1 each; 0.2 numerics):
+Measured (5.8M model; n=1 each; 0.2 numerics; the 1.5e13 runs are scored on
+the first 1,024 validation windows, the 6.8e13 run on 2,048):
 
 | run | budget | 32-bit state | 8-bit state |
 |---|---|---|---|
 | Muon, fp32 weights | 1.5e13 | 3.572 | 3.581 |
 | AdamW, fp32 weights | 1.5e13 | 4.482 | 4.479 |
-| Muon, 8-bit + bf16 weights | 6.8e13 | 2.737 ± 0.012 (fp32, n=3) | 2.728 |
+| Muon, 8-bit state + bf16 weights | 1.5e13 | 3.572 (fp32 weights) | 3.575 |
+| Muon, 8-bit state + bf16 weights | 6.8e13 | 2.737 ± 0.012 (fp32 weights, n=3) | 2.728 |
 
-The full-budget bf16 row was scored with 0.2's bf16 cross-entropy and has no
-saved checkpoint; its error is about ±0.001 (`results/llm_lowmem/bf16_eval_bias.json`)
-and it is marked for a rerun. Weights plus optimizer state went from 50.4 MB
-to 18.5 MB (2.7x) for this model. The bf16 path ran 1.6-2.6x slower in
-wall-clock on this CPU (5039 s vs 3072 s at full budget; 718 s vs 271 s for
-the short runs), because the CPU has no native bf16 matmul.
+Both bf16 rows were scored with 0.2's bf16 cross-entropy and have no saved
+checkpoint, so they cannot be re-scored. Their evaluation error is about
+±0.001 (full budget) and ±0.004 (short run)
+(`results/llm_lowmem/bf16_eval_bias.json`); both are marked for a rerun.
+Weights plus optimizer state went from 50.4 MB to 18.5 MB (2.7x) for this
+model. The bf16 path ran 1.6-2.7x slower in wall-clock on this CPU (5039 s vs
+3072 s at full budget; 718 s vs 271 s for the short runs, 1 thread each). The
+cause was not profiled.
 
 The same techniques are available elsewhere: bitsandbytes ships fused CUDA
 8-bit optimizers, and torchao ships pure-PyTorch AdamW8bit/4bit/FP8 with a
@@ -483,7 +503,8 @@ The same techniques are available elsewhere: bitsandbytes ships fused CUDA
 optimizer computes each update in fp32 and writes the result back with
 stochastic rounding (`lowmem.to_bf16_stochastic`).
 
-Why: bf16 keeps 8 bits of mantissa. A weight near 1.0 has a step of about 0.008.
+Why: bf16 stores 7 mantissa bits (8 with the implicit leading bit). A weight
+near 1.0 has a step of about 0.008.
 A typical update `lr × u` is far smaller, so round-to-nearest would drop it and
 the weight would never move. Stochastic rounding rounds up with probability
 equal to the remainder, so the expected stored value equals the fp32 value and
@@ -521,9 +542,11 @@ seed per chunk rather than a Philox stream.
 
 Evaluation of a bf16 model now runs in fp32 on an fp32 copy of the rounded
 weights, and the training loss is computed in fp32. In 0.2 the whole evaluation
-ran in bf16 arithmetic. That biased the reported losses: about ±0.001 on the
-full-budget run, up to 0.01 on a briefly trained model (audits ZG-3 and
-CLM-18).
+ran in bf16 arithmetic. That added rounding noise to the reported losses, not a
+fixed offset: measured on bf16-rounded copies of an fp32 checkpoint it was
++0.0007 at 2,048 windows and up to ±0.007 on smaller window sets
+(`results/llm_lowmem/bf16_eval_bias.json`; audits ZG-3 and CLM-18). Rounding
+the weights themselves to bf16 changed the loss by less than 1e-4.
 
 ---
 
@@ -574,7 +597,7 @@ includes 19.5 MB of fp32 LoRA adapters.
 
 | linears | embeddings/head | loss change vs fp32 | model MB |
 |---|---|---|---|
-| fp32 | int8 | 0 (2.702) | 558 |
+| fp32 | fp32 (nothing quantized) | 0 (2.702) | 558 |
 | int8 | int8 | +0.003 | 200 |
 | NF4 | int8 (default with `--quant nf4`) | +0.18 | 140 |
 | NF4 | float | +0.17 | 189 |
@@ -695,8 +718,9 @@ memory; see [COMPARISON.md](COMPARISON.md).
 `bantam finetune` reads a Hugging Face dataset (`--dataset`) or a local JSONL
 (`--jsonl`). It accepts prompt/response columns, Dolly-style
 instruction/context/response, chat `messages`, or ShareGPT `conversations`. It
-uses the tokenizer's chat template when there is one (otherwise a plain format,
-or ChatML installed for base checkpoints). The loss covers response tokens
+uses the tokenizer's chat template when there is one. A base checkpoint without
+a template gets ChatML when its vocabulary has the `<|im_end|>` token (SmolLM2,
+Qwen2.5 bases), otherwise a plain format. The loss covers response tokens
 only by default; `--prompt_loss_weight w` gives prompt tokens weight `w`.
 
 ### 8.2 Packing
@@ -705,7 +729,8 @@ only by default; `--prompt_loss_weight w` gives prompt tokens weight `w`.
 
 - `bfd` (default): best-fit-decreasing bin packing. Examples are sorted by
   length and each goes into the fullest window it fits. Examples are never
-  split. It runs in O(n log n).
+  split (one longer than the window is truncated to it). It runs in
+  O(n log n).
 - `wrapped`: concatenate everything and cut every `--seq` tokens (examples can
   be split across windows).
 - `none`: one example per window, padded.
@@ -738,10 +763,12 @@ mask (row may attend to column):
    C1                         x  x
 ```
 
-So a packed example is computed exactly as if it were alone, which is what the
-fine-tuning race checks (Bantam's eval loss and a per-example judge agree to
-about 1e-7). When every row is a single unpadded example, no mask is built and
-the plain causal fast path is used.
+So a packed example is computed as if it were alone. A wave-2 check compared
+Bantam's packed eval loss on SmolLM2-135M with an independent computation
+(plain transformers + `peft.PeftModel`, one example at a time, no packing): they
+differed by 2.9e-7. The fine-tuning race repeats this cross-check on its own
+held-out set ([COMPARISON.md](COMPARISON.md) §4). When every row is a single unpadded example,
+no mask is built and the plain causal fast path is used.
 
 The mask is passed in the form the model's attention implementation expects:
 a boolean mask for SDPA, and an additive float mask (0 or the dtype's minimum)
@@ -830,8 +857,10 @@ works on the token stream with documents separated by EOS:
 
 On TinyStories this drops 21,800 documents: 20,250 exact duplicates inside the
 training split and 1,550 training copies of validation stories. No near
-duplicates were found. `dedup_stream` gives the same result out of core (about
-14 bytes of RAM per document).
+duplicates were found. These counts come from the pack's `pack_stats.json`,
+which lives with the prepared data, not under `results/`, plus the 0.3 audit's
+recount. `dedup_stream` gives the same result out of core (about 14 bytes of
+RAM per document).
 
 The raw 0.2 `train.bin` still contained the validation copies (audit DATA-1).
 The published runs read the deduplicated TokPack, so they are not affected,
@@ -903,7 +932,10 @@ trains on a 32 × 16 grid for 60% of the compute), the position embedding is
 average-pooled the same way, and the same weights are trained on that smaller
 problem. Then training continues at full resolution. The fine-scale detail is
 not seen during the coarse stage. FLOPs for coarse steps charge embedding and
-decoding for the coarse patches only (a 0.3 fix, WX-11).
+decoding for the coarse patches only (a 0.3 fix, WX-11). The committed lowres
+runs predate that fix: they were charged like merge runs (2,128 steps each, as
+the merge runs), so they were slightly over-charged (about 2% per coarse step
+at `k = 4`). The bias runs against low-res warm-up.
 
 ### 10.4 What was measured
 
@@ -914,7 +946,7 @@ the seeds; the two Muon baseline seeds give 539 and 551 at 72 h).
 
 | run | optimizer | val MSE | n | z500 RMSE 24 h | z500 RMSE 72 h |
 |---|---|---|---|---|---|
-| baseline | Muon | **0.1240 ± 0.0006** | 2 | 217 | 545 |
+| baseline | Muon | **0.1240 ± 0.0006** | 2 | 217.5 | 545 |
 | Zoom merge, k=4 for 60% | Muon | 0.1588 ± 0.0005 | 2 | 255 | 612 |
 | Zoom merge, k=4 for 40% | Muon | 0.129 | 1 | 219 | 548 |
 | Zoom, mean merge, k=4 for 60% | Muon | 0.128 | 1 | 206 | 527 |
@@ -932,12 +964,12 @@ Reading it:
   caveat as §2.3.
 - **Zoom merging does not pay off on weather under Muon.** Every merge schedule
   has a worse val MSE than the baseline. (The mean-merge run had a lower z500
-  RMSE, 206 vs 217 at 24 h, but a worse val MSE; one seed.) With AdamW Zoom beats the AdamW
+  RMSE, 206 vs 217.5 at 24 h, but a worse val MSE; one seed.) With AdamW Zoom beats the AdamW
   baseline, but all AdamW runs lose to the Muon baseline; the AdamW gain most
   likely reflects an under-tuned AdamW, not a compute saving.
 - **Low-resolution warm-up helped** with both optimizers: about 10% lower MSE
-  than the Muon baseline (1 seed), z500 24-hour RMSE 194 vs 217.
-- The model beats persistence clearly (217 vs 569 at 24 h). It is a small demo
+  than the Muon baseline (1 seed), z500 24-hour RMSE 194 vs 217.5.
+- The model beats persistence clearly (217.5 vs 569 at 24 h). It is a small demo
   at the coarsest WeatherBench resolution, not a competitive forecaster.
 
 Two caveats. First, the learning rates were chosen on 2018, the same year the
@@ -952,7 +984,8 @@ the AdamW and Muon baselines ran the same number of steps in 1513 s and
 
 ```bash
 bantam weather --data DATA/era5_64x32 --budget 5.5e13 --optim muon --lr 1.6e-2 \
-    --zoom 4:0.6,1:0.4 --coarse_mode lowres --val_year 2017 --name lowres_v
+    --zoom 4:0.6,1:0.4 --coarse_mode lowres --val_year 2017 --name lowres_v \
+    --out results/mine
 ```
 
 ---
@@ -973,18 +1006,27 @@ measured effect here (Muon, 6.8e13 FLOPs, vs baseline 2.737 ± 0.012):
 | `--softcap 15 --zero_init_proj 1` | both | 2.728 (1.02x) | 1 | |
 | `--mlp relu2` | ReLU² instead of GELU | 2.829 (worse) | 1* | So et al. 2021 (Primer) |
 | `--sched wsd` | warm-up, flat, linear decay over the last 45% | 2.773 (worse) | 1* | Hägele et al. 2024 |
-| `--ns polar` | Polar Express orthogonalizer (§2.1) | 2.755 (worse) | 1 | Amsel et al. 2025 |
+| `--ns polar` | Polar Express orthogonalizer (§2.1) | 2.755 (worse) | 1† | Amsel et al. 2025 |
+| `--softcap 15 --zero_init_proj 1 --zoom 2:0.5,1:0.5 --batch_scale 2` | both, plus Zoom | 2.691 (1.11x) | 1 | |
 
-\* run before the 0.3 data and torch rebuild, on the raw `.bin` (which
-contained validation duplicates, §9.2): indicative only.
+\* made earlier in the project with an older build of the code, before the
+environment was rebuilt (their logs lack fields later runs have). Their
+`data_epochs` matches the same 116.8M-token deduplicated stream as every other
+run. Indicative only.
+† run with the 0.2 Polar Express coefficients (before the OPT-8 fix); to be
+rerun.
+
+Softcap plus zero-init added nothing on top of Zoom: 2.691 vs 2.690 for the
+same Zoom recipe alone on seed 0.
 
 QK-norm is the one that clearly helped, and it beat Zoom alone. It is a known
 trick, not Bantam's. It is not the default yet (`--qk_norm 0`), so the
 published baselines do not use it.
 
 `generate()` decodes with a KV cache (greedy, temperature, top-k, top-p,
-repetition penalty, per-row EOS). On the main config with 1 thread it produced
-the same tokens as the no-cache reference at 351 vs 59 tokens/s.
+repetition penalty, per-row EOS). In a hand-timed development check on the
+main config with 1 thread (not committed as a result file) it produced the
+same tokens as the no-cache reference at 351 vs 59 tokens/s.
 
 ---
 
@@ -1003,9 +1045,9 @@ the same tokens as the no-cache reference at 351 vs 59 tokens/s.
   half-written checkpoint.
 - It contains only plain tensors and containers. 8-bit state is stored as codes
   plus fp32 scales. So it loads with `torch.load(weights_only=True)`. Pre-0.3
-  checkpoints that pickled `QState` objects (including those written before
-  the package was renamed) load with that one class allow-listed, with a
-  warning.
+  checkpoints that pickled `QState` objects load with that one class
+  allow-listed, with a warning. Those written before the package was renamed
+  need PyTorch 2.6 or newer for this.
 - Resume refuses changes that would change the run: model options, sequence
   length, seed, budget, zoom and batch scaling, optimizer, state bits, weight
   dtype, LR and schedule options, weight decay, orthogonalizer, eval count,
@@ -1058,8 +1100,12 @@ A run whose loss becomes non-finite stops at once, writes its log with status
   found a 15-23x slowdown from denormals in one large matmul; that measurement
   is not committed as a result file. Note: importing `bantamtrain.finetune`
   turns flush-to-zero on for the whole process.
-- **CPU precision.** CPU runs are fp32 (this CPU has no bf16 matmul units);
-  `--param_dtype bf16` emulates bf16 and is slower (§3).
+- **CPU precision.** Bantam never uses autocast on CPU, so a default CPU run
+  is fp32 throughout. With `--param_dtype bf16` the weights are bf16, so the
+  forward and backward run in bf16 arithmetic (the loss and the evaluation are
+  computed in fp32). On the sandbox that was 1.6-2.7x slower than fp32 (§3).
+  The run logs do not record the CPU model; the CPU of the 0.3 sandbox reports
+  `avx512_bf16` and `amx_bf16`, the 2026-10 development box did not.
 - **GPU path (untested here).** Precision `auto` picks bf16 autocast on compute
   capability 8.0 and above, fp16 with a GradScaler below. TF32, fused AdamW,
   `--compile` and SDPA are used when available. `bantam pretrain --auto_batch`
@@ -1085,6 +1131,8 @@ A run whose loss becomes non-finite stops at once, writes its log with status
   equal FLOPs, or in wall-clock.
 - Mean merge and bag loss under the `k = 2`, batch × 2 recipe.
 - Muon with a separate (AdamW-tuned) LR for the embedding/head.
+- The Polar Express, 8-bit and bf16 runs with 0.3 numerics (the committed
+  ones used the 0.2 coefficient list, log map and bf16 evaluation).
 - A tuned LR for Muon on LoRA matrices.
 - Weather Zoom with batch scaling, and weather results on a held-out
   validation year.
