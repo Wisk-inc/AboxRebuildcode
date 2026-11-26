@@ -34,6 +34,7 @@ the raw bit pattern. The optimizers pass a generator seeded from
 (seed, step, parameter), so every DDP rank rounds identically and a resumed
 run draws the same noise as an uninterrupted one.
 """
+import contextlib
 import math
 
 import torch
@@ -224,7 +225,9 @@ def write_param(p, new_fp32, stochastic=True, generator=None):
 def load_checkpoint(path, map_location="cpu"):
     """(checkpoint, legacy): torch.load(weights_only=True). Checkpoints written by
     bantamtrain <= 0.2 pickle QState objects (before the rename as zoomtrain.lowmem.QState);
-    those load with QState allow-listed (legacy=True), so no arbitrary code runs either way."""
+    those load with QState allow-listed (legacy=True), so no arbitrary code runs either way.
+    The allow-list needs torch >= 2.4 (safe_globals, or add_safe_globals on 2.4); without
+    it such a checkpoint raises a RuntimeError naming the torch version."""
     try:
         return torch.load(path, map_location=map_location, weights_only=True), False
     except Exception as e:  # noqa: BLE001 - UnpicklingError or RuntimeError, by torch version
@@ -233,12 +236,19 @@ def load_checkpoint(path, map_location="cpu"):
     allow = [QState]
     if torch.__version__ >= (2, 6):            # (class, "old.module.Name") entries
         allow.append((QState, "zoomtrain.lowmem.QState"))
+    if hasattr(ser, "safe_globals"):           # torch >= 2.5
+        allow_ctx = ser.safe_globals(allow)
+    elif hasattr(ser, "add_safe_globals"):     # torch 2.4: process-wide (QState is plain data)
+        ser.add_safe_globals(allow)
+        allow_ctx = contextlib.nullcontext()
+    else:
+        raise RuntimeError(f"{path}: torch.load(weights_only=True) refused it (the error above). "
+                           "A checkpoint of bantamtrain <= 0.2 (pickled 8-bit optimizer state) "
+                           "needs torch >= 2.4 (torch.serialization.add_safe_globals) to load; "
+                           f"this is torch {torch.__version__}") from err
     try:
-        if hasattr(ser, "safe_globals"):       # torch >= 2.5
-            with ser.safe_globals(allow):
-                return torch.load(path, map_location=map_location, weights_only=True), True
-        ser.add_safe_globals(allow)            # torch 2.4: process-wide (QState is plain data)
-        return torch.load(path, map_location=map_location, weights_only=True), True
+        with allow_ctx:
+            return torch.load(path, map_location=map_location, weights_only=True), True
     except Exception:  # noqa: BLE001
         raise err from None
 

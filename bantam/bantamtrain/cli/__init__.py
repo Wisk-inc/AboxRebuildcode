@@ -3,7 +3,7 @@
     bantam pretrain      train a ZoomGPT language model at a fixed FLOP budget
     bantam finetune      LoRA / QLoRA / full fine-tuning of a Hugging Face causal LM
     bantam weather       train a ZoomViT 6 h ERA5 forecaster
-    bantam prepare-text  Hugging Face text dataset -> tokenizer + uint16 token files
+    bantam prepare-text  Hugging Face text dataset -> tokenizer + token files (uint16/uint32)
     bantam pack-text     dedup + TokPack a tokenized corpus
     bantam prepare-era5  download the WeatherBench2 5.625 deg ERA5 subset
     bantam pack-era5     ERA5 fields -> error-bounded GridPack

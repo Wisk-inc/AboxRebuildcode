@@ -5,6 +5,8 @@
 --zoom 4:0.6,1:0.4 --coarse_mode lowres
                                 progressive resizing (prior art): 60% of FLOPs on
                                 2x-coarsened fields, then full resolution
+--recipe best                   the best settings measured so far (small scale, CPU)
+                                for every option the command line does not give
 
 Splits come from meta.json: by default train on the years before the test year
 (meta n_train; 2018 for the default prepare-era5 range) and evaluate on the test
@@ -37,6 +39,7 @@ from ..lowmem import load_checkpoint  # noqa: E402
 from ..models import ZoomViT  # noqa: E402
 from ..optim import build_optimizer  # noqa: E402
 from ..zoom import ZoomSchedule, lr_at  # noqa: E402
+from .recipes import NAMES as RECIPE_NAMES, apply_recipe  # noqa: E402
 
 REPORT = ["z500", "t850", "t2m"]
 # options a --resume checkpoint must share with the command line: the model, and (as
@@ -481,10 +484,21 @@ def forecast(load, data, init, steps=12, out=None, device="cpu"):
     return fc
 
 
+RECIPE_HELP = (
+    "best: the best settings measured so far, for each of these options that the command line "
+    "does not give: --optim muon --lr 1.6e-2 --coarse_mode lowres --zoom 4:0.6,1:0.4 "
+    "(low-resolution warm-up for 60%% of the FLOPs; the LR only with --optim muon). Measured at "
+    "small scale on CPU only (ERA5 5.625 deg 64x32, 1.26M-param ZoomViT, 5.5e13 FLOPs, 2018 "
+    "test year): one-step MSE 0.112 (1 seed) vs 0.124 for the Muon baseline (2 seeds); not "
+    "tested on larger models or GPUs. none (default): no change. The log records args.recipe, "
+    "the resolved values and args.recipe_applied (the options it set)")
+
+
 def build_parser():
     ap = argparse.ArgumentParser(prog="bantam weather", description=__doc__.split("\n")[0])
     ap.add_argument("--data", default=None, help="dir written by prepare-era5 (--forecast: "
                                                  "default = the model's training data)")
+    ap.add_argument("--recipe", default="none", choices=RECIPE_NAMES, help=RECIPE_HELP)
     ap.add_argument("--zoom", default="1")
     ap.add_argument("--coarse_mode", default="merge", choices=["merge", "lowres"])
     ap.add_argument("--budget", type=float, default=None, help="training FLOPs (required to train)")
@@ -560,6 +574,7 @@ def main(argv=None):
         return
     if args.data is None or args.budget is None or not args.name:
         ap.error("the following arguments are required to train: --data, --budget, --name")
+    recipe_note = apply_recipe(args, build_parser, argv, "weather")
     if args.evals < 0 or args.ic_stride < 1 or args.max_ics < 0:
         ap.error("--evals and --max_ics must be >= 0, --ic_stride >= 1")
     if not args.duty > 0:
@@ -631,6 +646,8 @@ def main(argv=None):
     print(f"[{args.name}] params={n_params/1e6:.2f}M zoom={sched} mode={args.coarse_mode} "
           f"optim={args.optim} budget={args.budget:.3e} ({args.flops_mode} FLOPs) "
           f"data={ds.source} {describe(rt)}", flush=True)
+    if recipe_note:
+        print(f"  {recipe_note}", flush=True)
     tr, te = split["train"], split["test"]
     print(f"  split: train {tr['first']}..{tr['last']}, periodic evals on "
           + (f"val {split['val']['first']}..{split['val']['last']}" if val else "the test period")

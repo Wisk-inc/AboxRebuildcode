@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bantamtrain"
 dynamic = ["version"]
-description = "Bantam: train and fine-tune small language models and weather models faster and cheaper on limited compute - Zoom Training, Muon, 8-bit/bf16 low-memory training, LoRA/QLoRA, int8/int4 weights, compressed token and weather-grid stores"
+description = "Train and fine-tune small language and weather models on limited hardware: Zoom training, Muon, 8-bit/bf16 low-memory training, LoRA/QLoRA/DoRA, int8/int4/NF4 weights, compressed data stores"
 readme = "packaging/README.md"
 license = "MIT"
 license-files = ["packaging/LICENSE"]

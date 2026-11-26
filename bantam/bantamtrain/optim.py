@@ -7,8 +7,13 @@ needs no second-moment state (half of AdamW's optimizer memory for those
 weights).
 
 Update scaling follows Moonlight (Liu et al., 2025): scale = 0.2*sqrt(max(m, n))
-makes the update RMS match AdamW's, so Muon and AdamW share one learning rate
-and one weight decay. scale="jordan" uses the original max(1, m/n)**0.5.
+makes the update RMS match AdamW's, so one learning rate and one weight decay can
+drive both parts (build_optimizer passes the same lr and weight decay to both; the
+AdamW groups that are not decayed keep 0). LRs still do not transfer between
+--optim adamw and --optim muon runs: measured here (CPU, 5.8M params) the best LR
+of a Muon run is 1.6e-2, 16x the best AdamW-only LR (1e-3), and it also drives the
+AdamW part (embeddings, norms, gates). scale="jordan" uses the original
+max(1, m/n)**0.5.
 
 Low-memory options (see bantamtrain.lowmem):
   state_bits=8   blockwise 8-bit momentum / Adam moments (4x less state memory)

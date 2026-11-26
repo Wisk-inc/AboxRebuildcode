@@ -1,4 +1,4 @@
-"""bantamtrain: train small LLMs and weather models faster on limited compute.
+"""bantamtrain: train and fine-tune small language and weather models on limited hardware.
 
 Components
   zoom      - Zoom Training (coarse-to-fine resolution annealing), schedules
@@ -12,6 +12,6 @@ Components
   cli       - the `bantam` command (`bantam doctor` for an environment report)
 """
 # the single source of the version: pyproject.toml reads it (setuptools dynamic attr)
-__version__ = "0.3.0.dev0"
+__version__ = "0.3.0"
 
 from .zoom import SlotMerge, SlotUnmerge, ZoomSchedule, lr_at  # noqa: F401,E402

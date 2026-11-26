@@ -4,8 +4,9 @@
         [--tokenizer DATA/tokenizer.json] [--max_new 200 --temperature 0.8 --top_k 40 --top_p 0.95]
 
 The tokenizer defaults to DIR/tokenizer.json (save_pretrained(tokenizer_path=...)
-copies it from the data dir). By default the prompt starts a new document, i.e.
-it follows the end-of-document token as every training document does, and
+copies it from the data dir). The prompt is encoded as prepare-text encodes
+documents (no BOS or other special tokens). By default it starts a new document,
+i.e. it follows the end-of-document token as every training document does, and
 decoding stops at that token.
 """
 import argparse
@@ -58,7 +59,14 @@ def main(argv=None):
     if eos is None:
         with open(os.path.join(args.model, "config.json")) as f:
             eos = json.load(f).get("eos_id", tok.token_to_id("<|eos|>"))
-    ids = tok.encode(args.prompt).ids
+    # as prepare-text encodes documents: no special tokens (a reused tokenizer's BOS
+    # post-processor would give a prompt unlike training), a literal "<|eos|>" is text
+    special = getattr(tok, "encode_special_tokens", None)
+    if special is not None:
+        tok.encode_special_tokens = True
+    ids = tok.encode(args.prompt, add_special_tokens=False).ids
+    if special is not None:
+        tok.encode_special_tokens = special
     if args.doc_start and eos is not None:
         ids = [eos] + ids
     if not ids:

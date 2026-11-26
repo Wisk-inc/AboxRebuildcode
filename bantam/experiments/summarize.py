@@ -40,7 +40,9 @@ RES = os.path.join(ROOT, "results")
 # args that never change what is trained or measured
 NON_RECIPE = {"seed", "name", "out", "threads", "device", "precision", "compile", "duty", "save",
               "save_every_eval", "ckpt_every", "ckpt", "resume", "stop_step", "evals", "eval_seqs",
-              "grad_ckpt", "auto_batch", "allow_arg_change",
+              "grad_ckpt", "auto_batch", "allow_arg_change", "ce_chunk",
+              # --recipe: the options it set are in args with their resolved values
+              "recipe", "recipe_applied",
               # bantam weather --forecast options (not used when training)
               "forecast", "load", "init", "steps", "forecast_out"}
 # flags added after the first runs, at the value older logs implicitly used

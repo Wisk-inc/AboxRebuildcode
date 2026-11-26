@@ -69,7 +69,10 @@ bit-identical to the code before the audit.
   were already built under that name). The training and data scripts moved into
   `bantamtrain/cli` and run as `bantam <command>`. `llm/*.py` and `weather/*.py` remain
   as thin wrappers in the repository. Old checkpoints that pickled
-  `zoomtrain.lowmem.QState` still load.
+  `zoomtrain.lowmem.QState` still load (torch >= 2.6 for that old name). A 0.2
+  checkpoint with pickled 8-bit state needs torch >= 2.4 (`add_safe_globals` on 2.4,
+  `safe_globals` from 2.5); on a torch with neither, `pretrain`/`weather --resume` raise
+  a RuntimeError that names the torch version.
 - Dependency floors: `torch>=2.4` (was 2.2), `transformers>=4.56` plus `safetensors` in
   the `finetune` extra (was 4.40), `setuptools>=77` to build. The `test` extra now holds
   everything the tests import. The version is defined once, in
@@ -117,6 +120,8 @@ bit-identical to the code before the audit.
   `*.pt`).
 - The model's `block_size` is `--seq` (was 256). This changes only the default
   generation window, the RoPE table size and `config.json`; training is unchanged.
+- `--save_every_eval` without `--save` is a usage error (exit 2, nothing written). It used
+  to be ignored silently.
 - `--data_format auto|bin` reads through `bantamtrain.data.open_tokens`: a `.tokpack`
   left from an earlier prepare run falls back to the `.bin` with a warning (instead of an
   error), and a `.bin` is read with the dtype in `meta.json` (uint16 when absent). A
@@ -291,6 +296,16 @@ bit-identical to the code before the audit.
 - `ZoomGPT.from_pretrained` returns the model in eval mode.
 - `bantam generate` with a `--model` that has no `config.json`, or `--num_samples` < 1, is
   a usage error (exit 2).
+- `bantam generate` encodes the prompt as `prepare-text` encodes documents: without the
+  tokenizer's special tokens (it used `add_special_tokens=True`, so a reused tokenizer
+  whose post-processor adds BOS, Llama style, gave a prompt unlike the training data),
+  and special-token text typed in the prompt is encoded as text. The end-of-document
+  token in front still comes from `--doc_start`. Unchanged for tokenizers that add no
+  special tokens (the `prepare-text` BPE, GPT-2, SmolLM2, Qwen2.5).
+- `save_pretrained` records `weights_file` in `config.json`, and `from_pretrained` loads
+  that file. A directory re-saved without safetensors (`model.pt`) used to load the
+  stale `model.safetensors` of an earlier save. Directories without the key load as
+  before (`model.safetensors` when present).
 
 **Optimizers (every trainer)**
 
@@ -375,6 +390,11 @@ bit-identical to the code before the audit.
   convention, including `--hf repo#format` overrides, is refused unless `--overwrite`.
 - `bench_1b.py --chinchilla_tokens` defaults to 0, meaning 20 x the parameter count (was
   2e10).
+- `summarize.py` ignores `args.recipe`, `args.recipe_applied` and `args.ce_chunk` when it
+  groups runs: a `--recipe best` run is the same recipe as the explicit command.
+- `gpu_smoke.sh` runs the Muon baseline at LR 1.6e-2 and `--recipe best` (it ran the
+  losing 4->2->1 schedule at LR 2e-3), through `python3 -m bantamtrain pretrain`. Its
+  header no longer expects Zoom to complete more steps per second.
 - `run_queue.py`: logs go to `results/logs/<llm|weather>/<name>.log`. Unfinished runs are
   re-run, resuming from `<out>/<name>.ckpt` when it exists (weather runs too); diverged
   runs are skipped; a relative `--out` is resolved against the repository root;
@@ -433,6 +453,18 @@ bit-identical to the code before the audit.
 
 **Pretraining, weather and the runtime**
 
+- `--recipe {none,best}` for `pretrain` and `weather` (default `none`: no change).
+  `best` sets the best settings measured so far, at small scale on CPU, for every one of
+  its options the command line does not give (explicit flags win; the LR only with
+  Muon). `pretrain`: `--optim muon --lr 1.6e-2 --qk_norm 1 --zoom 2:0.33,1:0.67
+  --batch_scale 2` (TinyStories, 5.8M parameters: 2.589 against 2.737, the baseline
+  needing 1.41x the compute; 2 seeds). `weather`: `--optim muon --lr 1.6e-2
+  --coarse_mode lowres --zoom 4:0.6,1:0.4` (one-step MSE 0.112 against 0.124; 1 seed).
+  The log records `args.recipe`, the resolved values and `args.recipe_applied`.
+- `pretrain --ce_chunk N` (default 0 = off): chunked cross-entropy, so the full
+  (batch, seq, vocab) logits are never built; the same loss up to fp32 summation order.
+  It is recorded in `args` and the budget is unchanged (`model_flops_exact` counts the
+  recomputed head).
 - `pretrain --auto_batch` (GPU only): the largest micro-batch that fits, keeping
   `batch x accum`, the schedule and the data order.
 - `pretrain --data_format`, `--flops_mode`, `--allow_arg_change`; DDP that
@@ -809,7 +841,6 @@ bit-identical to the code before the audit.
   torchtune, Axolotl, TRL). Bantam has no fused kernels and no bitsandbytes or torchao
   backend (GAP-2/gpu), no FP8 path (GAP-5/gpu), and no FSDP or ZeRO sharding
   (GAP-1/gpu); multi-GPU is DDP only, and `bantam weather` has no DDP.
-- `bantam pretrain` has no `--ce_chunk` flag and always builds the full logits.
 - Fine-tuning with packing: sliding-window layers lose their window (Gemma-3 at `--seq`
   above 512 or 1024; Phi-3, Mistral and Starcoder2 above their window; Gemma-2 above
   4096; the default `--seq 512` is unaffected). `flash_attention_*` implementations
@@ -823,17 +854,11 @@ bit-identical to the code before the audit.
   FileNotFoundError instead of falling back.
 - `bantam chat --quant` always uses int8 embeddings, whatever the training run's
   `--embed_quant`.
-- `bantam generate` encodes the prompt with the tokenizer's special tokens, so a reused
-  tokenizer that adds BOS (Llama style) gives a prompt that differs from the training
-  documents, which have no BOS.
 - `weightpack.save(bits=8 or 4)` re-quantizes the scale matrices of an already quantized
   state_dict; use `bits=32` for those. `torch.save` of a whole quantized model fails for
   quantized subclasses; state_dicts work.
-- `--save_every_eval` without `--save` is silently ignored; `--auto_batch` does not probe
-  the eval batch; optimizer FLOPs charge parameters with no gradient in the current zoom
-  stage (under 0.1%).
-- `from_pretrained` prefers `model.safetensors` when a directory also holds a newer
-  `model.pt`.
+- `--auto_batch` does not probe the eval batch; optimizer FLOPs charge parameters with no
+  gradient in the current zoom stage (under 0.1%).
 - Data: no DataLoader dataset with worker sharding (GAP-3/data), no multi-shard packs or
   `--data` globs, no BOS-aligned windows (the document index exists but pretraining does
   not use it), and no data mixing or benchmark decontamination (GAP-5/data).
