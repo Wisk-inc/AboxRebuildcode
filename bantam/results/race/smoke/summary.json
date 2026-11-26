@@ -1,0 +1,512 @@
+{
+ "protocol": {
+  "model": "HuggingFaceTB/SmolLM2-135M",
+  "data": "databricks/databricks-dolly-15k",
+  "split_seed": 1234,
+  "n_train": 800,
+  "n_judge": 200,
+  "max_examples": 32,
+  "bantam_eval_n": 32,
+  "seq": 512,
+  "batch": 2,
+  "accum": 2,
+  "epochs": 1.0,
+  "lr": 0.0002,
+  "warmup": 0.03,
+  "lora_r": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05,
+  "targets": [
+   "q_proj",
+   "k_proj",
+   "v_proj",
+   "o_proj",
+   "gate_proj",
+   "up_proj",
+   "down_proj"
+  ],
+  "seed": 1234,
+  "threads": 1,
+  "matched": {
+   "betas": [
+    0.9,
+    0.95
+   ],
+   "eps": 1e-08,
+   "weight_decay": 0.0,
+   "min_lr_rate": 0.1,
+   "max_grad_norm": 1.0
+  },
+  "hf_flush_denormal": false
+ },
+ "judge": {
+  "judge_n": 16,
+  "gen_tokens": 64,
+  "prompts": [
+   "What is the capital of France?",
+   "Give me three tips for staying healthy.",
+   "Summarize in one sentence: The Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Steppe."
+  ],
+  "float_base": true
+ },
+ "data": {
+  "rows": 15011,
+  "unusable_rows_skipped": 33,
+  "train_ids_head": [
+   14668,
+   4434,
+   3536,
+   12835,
+   9913,
+   13382,
+   6903,
+   8808,
+   13577,
+   8198
+  ],
+  "judge_ids_head": [
+   4740,
+   1135,
+   10954,
+   13472,
+   10251,
+   12358,
+   2720,
+   2837,
+   11190,
+   5489
+  ],
+  "full_train_examples": 800,
+  "full_train_tokens": 119981,
+  "full_train_targets": 61972,
+  "full_train_encode": {
+   "truncated": 24
+  }
+ },
+ "fairness": {
+  "token_parity": {
+   "examples": 32,
+   "bantam_examples": 32,
+   "mismatched": 0,
+   "ok": true
+  },
+  "same_lora_modules": true,
+  "supervised_tokens": {
+   "hf_peft": 2303,
+   "bantam_adamw": 1734,
+   "bantam": 1734,
+   "bantam_nf4": 1734
+  },
+  "bantam_plan_matches_log": {
+   "hf_peft": null,
+   "bantam_adamw": true,
+   "bantam": true,
+   "bantam_nf4": true
+  },
+  "bantam_step0_eval_minus_base_judge_subset": {
+   "bantam_adamw": -3.2811532157950296e-08,
+   "bantam": -3.2811532157950296e-08
+  }
+ },
+ "versions": {
+  "torch": "2.15.0+cpu",
+  "transformers": "5.24.0",
+  "peft": "0.22.0",
+  "accelerate": "1.16.0",
+  "datasets": "5.2.0",
+  "tokenizers": "0.23.3",
+  "safetensors": "0.8.0",
+  "numpy": "2.5.3",
+  "psutil": "7.2.2",
+  "bantamtrain": "0.3.0.dev0",
+  "python": "3.13.18",
+  "bantam_git": "bbc473cc15419b777f6f374cedce3e9290bb37ea"
+ },
+ "machine": {
+  "platform": "Linux-6.18.44-fc-v880-x86_64-with-glibc2.39",
+  "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+  "logical_cpus": 4,
+  "usable_cpus": 4,
+  "mem_total_gb": 15.71017837524414,
+  "loadavg": [
+   2.7919921875,
+   2.998046875,
+   2.896484375
+  ]
+ },
+ "smoke": true,
+ "arms": {
+  "base": {
+   "desc": "base model, no training (reference)",
+   "judge_loss": 2.560642722759554,
+   "judge_ci95": [
+    2.159013853787599,
+    2.939260071785219
+   ],
+   "judge_ppl": 12.944134132162572,
+   "judge_examples": 16,
+   "judge_tokens": 1366,
+   "judge_vs_base": 0.0,
+   "generations": [
+    "What is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?",
+    "Give me three tips for staying healthy.\n\nThe first tip is to eat a balanced diet. This means eating a variety of foods, including fruits, vegetables, whole grains, and lean proteins.\n\nThe second tip is to get enough sleep. Getting enough sleep can help you feel better and help you stay healthy",
+    "Summarize in one sentence: The Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Steppe.\n\nThe Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them"
+   ],
+   "judge_s": 35.03177583800061,
+   "judge_peak_rss_mb": 1152.453125,
+   "judge_vs_hf_peft": 0.033491045280221954,
+   "judge_vs_hf_peft_ci95": [
+    0.024897890932419564,
+    0.055142850654069875
+   ],
+   "est_full_judge_min": 2.0328662943751623
+  },
+  "hf_peft": {
+   "desc": "transformers Trainer + peft, dynamic padding, torch AdamW",
+   "judge_loss": 2.527151677479332,
+   "judge_ci95": [
+    2.1314666099656403,
+    2.8923575222876763
+   ],
+   "judge_ppl": 12.517800577040372,
+   "judge_examples": 16,
+   "judge_tokens": 1366,
+   "judge_vs_base": -0.033491045280221954,
+   "generations": [
+    "What is the capital of France?\n\nWhat is the capital of France?\n\nWhat is the capital of France?\n\nWhat is the capital of France?\n\nWhat is the capital of France?\n\nWhat is the capital of France?\n\nWhat is the capital of France?\n\nWhat",
+    "Give me three tips for staying healthy.\n\nThe first tip is to eat a balanced diet. This means eating a variety of foods, including fruits, vegetables, whole grains, and lean proteins.\n\nThe second tip is to get enough sleep. Getting enough sleep can help you feel better and help you stay healthy",
+    "Summarize in one sentence: The Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Steppe.\n\nThe Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them"
+   ],
+   "judge_s": 41.06505016399751,
+   "judge_peak_rss_mb": 1197.0,
+   "steps": 8,
+   "examples": 32,
+   "real_tokens": 4731,
+   "supervised_tokens": 2303,
+   "tokens_per_s": 75.84547636919476,
+   "supervised_tokens_per_s": 36.92076349149345,
+   "train_wall_s": 62.37682491399755,
+   "train_cpu_s": 61.400165888,
+   "padding_fraction": 0.29261363636363635,
+   "final_train_loss": 2.628056526184082,
+   "train_loss_tail": 2.919199824333191,
+   "trainable_params": 4884480,
+   "lora_modules": 210,
+   "settings": {
+    "optimizer": "torch.optim.AdamW (optim=adamw_torch), fp32 state",
+    "schedule": "cosine_with_min_lr (min_lr_rate 0.1), warmup_steps=0.03",
+    "batching": "one example per row, dynamic padding (DataCollatorForSeq2Seq)",
+    "loss": "model forward with labels (full logits), tokens of the whole step averaged",
+    "base": "fp32",
+    "betas": [
+     0.9,
+     0.95
+    ],
+    "attn_implementation": "sdpa",
+    "loss_over_step_tokens": true,
+    "flush_denormal": false
+   },
+   "windows": null,
+   "windows_used": null,
+   "plan_matches_log": null,
+   "peak_rss_mb": 4089.46875,
+   "maxrss_mb": 4247.32421875,
+   "process_wall_s": 69.98610319400177,
+   "process_cpu_s": 69.124974,
+   "loadavg_before": [
+    2.89599609375,
+    2.9873046875,
+    2.7314453125
+   ],
+   "command": "/usr/local/bin/python3 /home/user/wt2/race/bantam/experiments/race_finetune.py _hf --out /home/user/wt2/race/bantam/results/race/smoke --arm hf_peft",
+   "est_full_train_min": 26.365228739541816,
+   "est_full_judge_min": 2.3177096554123486
+  },
+  "bantam_adamw": {
+   "desc": "bantam finetune, torch AdamW (fp32 state), packing",
+   "judge_loss": 2.5535119113950047,
+   "judge_ci95": [
+    2.15365208310415,
+    2.927972835591186
+   ],
+   "judge_ppl": 12.852160267256453,
+   "judge_examples": 16,
+   "judge_tokens": 1366,
+   "judge_vs_base": -0.007130811364549405,
+   "generations": [
+    "What is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?",
+    "Give me three tips for staying healthy.\n\nThe first tip is to eat a balanced diet. This means eating a variety of foods, including fruits, vegetables, whole grains, and lean proteins.\n\nThe second tip is to get enough sleep. Getting enough sleep can help you feel better and help you stay healthy",
+    "Summarize in one sentence: The Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Steppe.\n\nThe Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them"
+   ],
+   "judge_s": 38.9813508139996,
+   "judge_peak_rss_mb": 1179.28515625,
+   "judge_vs_hf_peft": 0.02636023391567255,
+   "judge_vs_hf_peft_ci95": [
+    0.01963756785673265,
+    0.04353070813556048
+   ],
+   "steps": 2,
+   "examples": 32,
+   "real_tokens": 3706,
+   "supervised_tokens": 1734,
+   "tokens_per_s": 81.73175525165414,
+   "supervised_tokens_per_s": 38.241463466370284,
+   "train_wall_s": 45.343452964996686,
+   "train_cpu_s": 45.07158166800001,
+   "padding_fraction": 0.07777777777777778,
+   "final_train_loss": 3.1564208639543607,
+   "train_loss_tail": 3.1564208639543607,
+   "trainable_params": 4884480,
+   "lora_modules": 210,
+   "settings": {
+    "optimizers": [
+     [
+      "AdamW",
+      4884480
+     ]
+    ],
+    "optim": "adamw",
+    "muon_lora": 0,
+    "state_bits": 32,
+    "pack": "bfd",
+    "chunked_ce": true,
+    "ce_chunk": 2048,
+    "quant": "0",
+    "embed_quant": null,
+    "low_ram": 0,
+    "sched": "cosine",
+    "warmup": 0.03,
+    "param_dtype": "auto",
+    "precision": "auto",
+    "model_bytes": 557598208,
+    "optimizer_state_bytes": 39077520,
+    "data": {
+     "rows": 32,
+     "usable": 32,
+     "skipped": {},
+     "examples": 32,
+     "kept": 32,
+     "no_assistant_turn": 0,
+     "truncated": 2,
+     "no_target_after_truncation": 0,
+     "boundary_fallback": 0
+    },
+    "flush_denormal": true,
+    "betas": [
+     0.9,
+     0.95
+    ]
+   },
+   "windows": 10,
+   "windows_used": 8,
+   "plan_matches_log": true,
+   "peak_rss_mb": 5387.7578125,
+   "maxrss_mb": 5409.9140625,
+   "process_wall_s": 94.43369393299872,
+   "process_cpu_s": 93.430837,
+   "loadavg_before": [
+    3.06494140625,
+    3.01806640625,
+    2.7744140625
+   ],
+   "command": "/usr/local/bin/python3 -m bantamtrain finetune --model HuggingFaceTB/SmolLM2-135M --jsonl /home/user/wt2/race/bantam/results/race/smoke/data/train.jsonl --eval_jsonl /home/user/wt2/race/bantam/results/race/smoke/data/bantam_eval.jsonl --seq 512 --batch 2 --accum 2 --epochs 1.0 --lr 0.0002 --sched cosine --warmup 0.03 --wd 0 --lora 16 --lora_alpha 32 --lora_dropout 0.05 --lora_targets q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj --seed 1234 --threads 1 --eval_every 0 --save_peft 1 --optim adamw --state_bits 32 --pack bfd --out /home/user/wt2/race/bantam/results/race/smoke/runs/bantam_adamw",
+   "bantam_eval_minus_judge_subset": -1.8402989798715907e-07,
+   "est_full_train_min": 24.466418556364758,
+   "est_full_judge_min": 2.1744120333124406
+  },
+  "bantam": {
+   "desc": "bantam finetune defaults: Muon LoRA, 8-bit state, packing, chunked CE",
+   "judge_loss": 2.559436306597373,
+   "judge_ci95": [
+    2.157926009106542,
+    2.9374928825132307
+   ],
+   "judge_ppl": 12.928527535458215,
+   "judge_examples": 16,
+   "judge_tokens": 1366,
+   "judge_vs_base": -0.0012064161621809788,
+   "generations": [
+    "What is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?\nWhat is the capital of France?",
+    "Give me three tips for staying healthy.\n\nThe first tip is to eat a balanced diet. This means eating a variety of foods, including fruits, vegetables, whole grains, and lean proteins.\n\nThe second tip is to get enough sleep. Getting enough sleep can help you feel better and help you stay healthy",
+    "Summarize in one sentence: The Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Steppe.\n\nThe Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them"
+   ],
+   "judge_s": 38.44211444300163,
+   "judge_peak_rss_mb": 1206.65234375,
+   "judge_vs_hf_peft": 0.032284629118040975,
+   "judge_vs_hf_peft_ci95": [
+    0.024037252454196967,
+    0.05316646043644413
+   ],
+   "steps": 2,
+   "examples": 32,
+   "real_tokens": 3706,
+   "supervised_tokens": 1734,
+   "tokens_per_s": 89.30930233016565,
+   "supervised_tokens_per_s": 41.786921273747225,
+   "train_wall_s": 41.4962372709997,
+   "train_cpu_s": 40.93479767699999,
+   "padding_fraction": 0.07777777777777778,
+   "final_train_loss": 3.160851128357278,
+   "train_loss_tail": 3.160851128357278,
+   "trainable_params": 4884480,
+   "lora_modules": 210,
+   "settings": {
+    "optimizers": [
+     [
+      "AdamWLowMem",
+      0
+     ],
+     [
+      "Muon",
+      4884480
+     ]
+    ],
+    "optim": "muon",
+    "muon_lora": 1,
+    "state_bits": 8,
+    "pack": "bfd",
+    "chunked_ce": true,
+    "ce_chunk": 2048,
+    "quant": "0",
+    "embed_quant": null,
+    "low_ram": 0,
+    "sched": "cosine",
+    "warmup": 0.03,
+    "param_dtype": "auto",
+    "precision": "auto",
+    "model_bytes": 557598208,
+    "optimizer_state_bytes": 4960800,
+    "data": {
+     "rows": 32,
+     "usable": 32,
+     "skipped": {},
+     "examples": 32,
+     "kept": 32,
+     "no_assistant_turn": 0,
+     "truncated": 2,
+     "no_target_after_truncation": 0,
+     "boundary_fallback": 0
+    },
+    "flush_denormal": true,
+    "betas": [
+     0.9,
+     0.95
+    ]
+   },
+   "windows": 10,
+   "windows_used": 8,
+   "plan_matches_log": true,
+   "peak_rss_mb": 5352.45703125,
+   "maxrss_mb": 5421.80859375,
+   "process_wall_s": 86.63367228099742,
+   "process_cpu_s": 85.786163,
+   "loadavg_before": [
+    3.07763671875,
+    3.04345703125,
+    2.8271484375
+   ],
+   "command": "/usr/local/bin/python3 -m bantamtrain finetune --model HuggingFaceTB/SmolLM2-135M --jsonl /home/user/wt2/race/bantam/results/race/smoke/data/train.jsonl --eval_jsonl /home/user/wt2/race/bantam/results/race/smoke/data/bantam_eval.jsonl --seq 512 --batch 2 --accum 2 --epochs 1.0 --lr 0.0002 --sched cosine --warmup 0.03 --wd 0 --lora 16 --lora_alpha 32 --lora_dropout 0.05 --lora_targets q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj --seed 1234 --threads 1 --eval_every 0 --save_peft 1 --optim muon --pack bfd --out /home/user/wt2/race/bantam/results/race/smoke/runs/bantam",
+   "bantam_eval_minus_judge_subset": 1.6263107260883203e-07,
+   "est_full_train_min": 22.390538064453207,
+   "est_full_judge_min": 2.149705469737364
+  },
+  "bantam_nf4": {
+   "desc": "bantam defaults on an NF4 base (QLoRA via load_quantized)",
+   "judge_loss": 2.767703845246121,
+   "judge_ci95": [
+    2.3676153444180823,
+    3.1450189406649574
+   ],
+   "judge_ppl": 15.922032553831816,
+   "judge_examples": 16,
+   "judge_tokens": 1366,
+   "judge_vs_base": 0.20706112248656705,
+   "generations": [
+    "What is the capital of France?\n\nWhat is the capital of France?\n\nWhat is the capital of France?\n\nWhat is the capital of France?\n\nWhat is the capital of France?\n\nWhat is the capital of France?\n\nWhat is the capital of France?\n\nWhat",
+    "The following are some of the most important tips for staying healthy.\n\nGive me three tips for staying healthy.\n\nThe following are some of the most important tips for staying healthy.\n\nGive me three tips for staying healthy.\n\nThe following are some of the most important tips for staying healthy.",
+    "The Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Steppe.\n\nThe Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Ste"
+   ],
+   "judge_s": 122.07741746700049,
+   "judge_peak_rss_mb": 1324.9765625,
+   "judge_vs_hf_peft": 0.240552167766789,
+   "judge_vs_hf_peft_ci95": [
+    0.2069505859313283,
+    0.2808576365988813
+   ],
+   "judge_loss_float_base": 2.559945099524837,
+   "steps": 2,
+   "examples": 32,
+   "real_tokens": 3706,
+   "supervised_tokens": 1734,
+   "tokens_per_s": 83.428116128246,
+   "supervised_tokens_per_s": 39.035173601289415,
+   "train_wall_s": 44.42147530100192,
+   "train_cpu_s": 43.952009700999994,
+   "padding_fraction": 0.07777777777777778,
+   "final_train_loss": 3.3484886298745367,
+   "train_loss_tail": 3.3484886298745367,
+   "trainable_params": 4884480,
+   "lora_modules": 210,
+   "settings": {
+    "optimizers": [
+     [
+      "AdamWLowMem",
+      0
+     ],
+     [
+      "Muon",
+      4884480
+     ]
+    ],
+    "optim": "muon",
+    "muon_lora": 1,
+    "state_bits": 8,
+    "pack": "bfd",
+    "chunked_ce": true,
+    "ce_chunk": 2048,
+    "quant": "nf4",
+    "embed_quant": "8",
+    "low_ram": 1,
+    "sched": "cosine",
+    "warmup": 0.03,
+    "param_dtype": "auto",
+    "precision": "auto",
+    "model_bytes": 104982080,
+    "optimizer_state_bytes": 4960800,
+    "data": {
+     "rows": 32,
+     "usable": 32,
+     "skipped": {},
+     "examples": 32,
+     "kept": 32,
+     "no_assistant_turn": 0,
+     "truncated": 2,
+     "no_target_after_truncation": 0,
+     "boundary_fallback": 0
+    },
+    "flush_denormal": true,
+    "betas": [
+     0.9,
+     0.95
+    ]
+   },
+   "windows": 10,
+   "windows_used": 8,
+   "plan_matches_log": true,
+   "peak_rss_mb": 4724.875,
+   "maxrss_mb": 4884.7734375,
+   "process_wall_s": 95.29848357499941,
+   "process_cpu_s": 94.416647,
+   "loadavg_before": [
+    3.037109375,
+    3.02587890625,
+    2.8505859375
+   ],
+   "command": "/usr/local/bin/python3 -m bantamtrain finetune --model HuggingFaceTB/SmolLM2-135M --jsonl /home/user/wt2/race/bantam/results/race/smoke/data/train.jsonl --eval_jsonl /home/user/wt2/race/bantam/results/race/smoke/data/bantam_eval.jsonl --seq 512 --batch 2 --accum 2 --epochs 1.0 --lr 0.0002 --sched cosine --warmup 0.03 --wd 0 --lora 16 --lora_alpha 32 --lora_dropout 0.05 --lora_targets q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj --seed 1234 --threads 1 --eval_every 0 --save_peft 1 --optim muon --pack bfd --quant nf4 --low_ram 1 --out /home/user/wt2/race/bantam/results/race/smoke/runs/bantam_nf4",
+   "bantam_eval_minus_judge_subset": 8.274212470738007e-08,
+   "est_full_train_min": 23.96893788491416,
+   "est_full_judge_min": 4.011943566991552
+  }
+ },
+ "harness_command": "/usr/local/bin/python3 experiments/race_finetune.py --max_examples 32 --judge_n 16 --threads 1 --out results/race/smoke --quiet"
+}
