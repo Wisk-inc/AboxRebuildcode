@@ -196,8 +196,10 @@ bit-identical to the code before the audit.
   `batch x accum - 1` windows (3 of 235 in the race). Now the last step of an epoch may
   hold fewer micro-batches (its loss is the mean over its own supervised tokens), so
   epoch-based runs take up to one more step per epoch and their LR schedules stretch
-  accordingly; `--max_steps` is unchanged. `--drop_last 1` restores the old schedule
-  exactly, and a checkpoint written before this change resumes with it (with a note).
+  accordingly. `--max_steps` keeps its step count, but a run that reaches the end of a
+  pass now also takes that pass's short last step (it used to reshuffle early), so its
+  windows from then on differ. `--drop_last 1` restores the old schedule exactly, and a
+  checkpoint written before this change resumes with it (with a note).
 - Packed or padded windows on models with sliding-window attention give those layers a
   block-diagonal mask cut to their window: one windowed mask for Mistral, Mixtral,
   Phi-3 and Starcoder2 when `sliding_window` is set, and transformers' per-layer-type
@@ -215,6 +217,8 @@ bit-identical to the code before the audit.
   `examples_per_step`; `adapter_meta.json` gains `embed_quant`. A note is printed when
   packing makes an optimizer step see more than twice `batch x accum` examples.
 - `--resume` also compares `--drop_last` and `--examples_per_step`.
+- Weight decay (only when `--wd` > 0): HF `gate_proj` layers and their adapters are now
+  decayed.
 
 **`bantam chat`**
 
@@ -223,8 +227,6 @@ bit-identical to the code before the audit.
   the fixed int8 embeddings. An adapter trained with `--quant nf4` now chats over an NF4
   base by default (it used the float base); `--quant 0` restores that. New `--ftz`
   (default 1, as before through the finetune import).
-- Weight decay (only when `--wd` > 0): HF `gate_proj` layers and their adapters are now
-  decayed.
 
 **`bantam weather`**
 
@@ -508,7 +510,9 @@ bit-identical to the code before the audit.
   `--bits_per_token`, `--lora_dropout`, `--global_batch_tokens`, `--ns_steps`.
 - `experiments/race_finetune.py`: a fine-tuning race of Hugging Face Trainer + PEFT
   against `bantam finetune` on SmolLM2-135M and Dolly (protocol in
-  [docs/GUIDE.md](docs/GUIDE.md)). Its results are not in this file.
+  [docs/GUIDE.md](docs/GUIDE.md)). Its results are not in this file. Its replay of
+  bantam's data plan follows an arm's `--drop_last` flag (`--drop_last 1` reproduces the
+  published runs).
 - `compare_published.py` reports the end-of-story cost apart (`nll_end_nats`,
   `bpb_no_end`) and scores a verified local copy of a Hub model (`--hf repo=dir`).
   `run_queue.py --dry_run`.

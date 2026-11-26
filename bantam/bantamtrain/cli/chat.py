@@ -170,9 +170,12 @@ def load_model(args):
     quant = args.quant if args.quant is not None else (tq or "0")
     eq = args.embed_quant if args.embed_quant is not None else (teq or "8")
     if quant != "0":
-        if args.quant is None or (args.embed_quant is None and teq):
-            print(f"[chat] base quantized as in training: --quant {quant} --embed_quant {eq} "
-                  "(--quant 0 loads it in float)", file=sys.stderr, flush=True)
+        # name only what came from a run that quantized its base (not a float run's default)
+        told = ([f"--quant {quant}"] if args.quant is None else []) + \
+            ([f"--embed_quant {eq}"] if args.embed_quant is None and tq not in (None, "0") else [])
+        if told:
+            print(f"[chat] base quantized as in training: {' '.join(told)} (--quant 0 loads it in float)",
+                  file=sys.stderr, flush=True)
         quantize_model(model, {"8": 8, "4": 4, "nf4": "nf4"}[quant], min_numel=1 << 16,
                        embed_bits={"same": "same", "8": 8, "none": None}[eq])
         if dtype == torch.bfloat16:

@@ -48,8 +48,8 @@ def test_split_is_deterministic_disjoint_and_stripped():
 
 
 def test_hf_side_does_not_import_bantam_finetune(model_dir):
-    """bantamtrain.finetune turns on flush-to-zero when imported; the HF arm's process must
-    not get it by accident (race_tokenizer keeps its own copy of the ChatML template)."""
+    """The HF arm's process loads none of bantam (0.3.0.dev's bantamtrain.finetune turned on
+    flush-to-zero at import); race_tokenizer keeps its own copy of the ChatML template."""
     import subprocess
 
     from bantamtrain.finetune import CHATML

@@ -286,7 +286,7 @@ lines for chat data.
 | `--wd` | 0 | weight decay |
 | `--ns` | `quintic` | Muon orthogonalizer |
 | `--epochs` | 1.0 | passes over the training windows. An epoch trains on every window once; its last optimizer step may hold fewer micro-batches (its loss is the mean over its own supervised tokens) |
-| `--max_steps` | 0 | stop after this many optimizer steps (0 = use `--epochs`) |
+| `--max_steps` | 0 | stop after this many optimizer steps (0 = use `--epochs`). Each pass over the windows still ends as an epoch does, possibly with a shorter step |
 | `--drop_last` | 0 | 1: the 0.2 schedule, full optimizer steps only, so an epoch skips the windows that do not fill a last step. A checkpoint written before 0.3's full epochs resumes with it |
 | `--batch` | 4 | rows per micro-batch |
 | `--accum` | 1 | gradient accumulation; the loss is averaged over every supervised token of the step |

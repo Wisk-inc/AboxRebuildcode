@@ -57,8 +57,8 @@ TARGETS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down
 # fixed inside bantam finetune (build_optimizer's betas, lr_at's final=0.1, rt.step's clip);
 # the HF arm is set to the same values
 MATCHED = {"betas": [0.9, 0.95], "eps": 1e-8, "weight_decay": 0.0, "min_lr_rate": 0.1, "max_grad_norm": 1.0}
-# = bantamtrain.finetune.CHATML (tested); not imported, since importing bantamtrain.finetune
-# turns on flush-to-zero, which the HF arm must not get by accident
+# = bantamtrain.finetune.CHATML (tested); not imported, so the HF arm's process loads none of
+# bantam (0.3.0.dev's bantamtrain.finetune turned on flush-to-zero at import)
 CHATML = ("{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\n' + "
           "message['content'] + '<|im_end|>' + '\n' }}{% endfor %}"
           "{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}")
@@ -248,21 +248,22 @@ def token_parity(tok, jsonl, seq):
             "mismatched": bad + abs(len(mine) - len(theirs)), "ok": bad == 0 and len(mine) == len(theirs)}
 
 
-def bantam_plan(tok, jsonl, p, pack="bfd"):
+def bantam_plan(tok, jsonl, p, pack="bfd", drop_last=False):
     """Replay bantam finetune's data plan (tokenize, shuffle, BFD pack, plan_steps, window
-    order) with its own functions -> the windows it trains on, the real (non-pad) tokens and
-    supervised targets they hold, and the targets of every step (checked against log.json)."""
+    order; drop_last = its --drop_last) with its own functions -> the windows it trains on,
+    the real (non-pad) tokens and supervised targets they hold, and the targets of every step
+    (checked against log.json)."""
     from bantamtrain import finetune as ft
     items = ft.tokenize_examples(tok, ft.load_examples(bantam_args(jsonl, p["seed"])), p["seq"], 0.0, True)
     random.Random(p["seed"]).shuffle(items)
     win = ft.pack(ft.with_prompt_loss(items, 0.0), p["seq"], tok.pad_token_id, pack)
-    per, steps = ft.plan_steps(len(win), 1, p["batch"], p["accum"], p["epochs"], 0)
+    per, steps = ft.plan_steps(len(win), 1, p["batch"], p["accum"], p["epochs"], 0, drop_last)
     rng = random.Random(p["seed"])
     order = list(range(per))
     rng.shuffle(order)
     pos, used, step_targets = 0, [], []
     for _ in range(steps):
-        idx, pos = ft.step_windows(order, pos, rng, p["batch"], p["accum"])
+        idx, pos = ft.step_windows(order, pos, rng, p["batch"], p["accum"], drop_last)
         used += [i for mb in idx for i in mb]
         step_targets.append(sum(1 for mb in idx for i in mb for t in win[i][1][1:] if t != -100))
     sup = [sum(1 for t in w[1][1:] if t != -100) for w in win]
@@ -685,7 +686,8 @@ def bantam_train_result(run, plan):
                          "param_dtype": a.get("param_dtype"), "precision": a.get("precision"),
                          "model_bytes": log.get("model_bytes"),
                          "optimizer_state_bytes": log.get("optimizer_state_bytes"),
-                         "data": log.get("data"), "flush_denormal": True, "betas": MATCHED["betas"]}}
+                         "drop_last": a.get("drop_last", 1), "data": log.get("data"),
+                         "flush_denormal": bool(a.get("ftz", 1)), "betas": MATCHED["betas"]}}
 
 
 def arm_hashes(cfg, name):
@@ -734,10 +736,11 @@ def run_arm(name, cfg, args, state):
             if spec["kind"] == "bantam":
                 fl = spec.get("flags", [])
                 pack = fl[fl.index("--pack") + 1] if "--pack" in fl else "bfd"
+                drop = bool(int(fl[fl.index("--drop_last") + 1])) if "--drop_last" in fl else False
                 pa = {**p, **spec.get("override", {})}
-                key = (pack, pa["batch"], pa["accum"], pa["epochs"])
+                key = (pack, pa["batch"], pa["accum"], pa["epochs"], drop)
                 if key not in state.setdefault("plans", {}):
-                    state["plans"][key] = bantam_plan(state["tok"], cfg["files"]["train"], pa, pack)
+                    state["plans"][key] = bantam_plan(state["tok"], cfg["files"]["train"], pa, pack, drop)
                 train = bantam_train_result(run, state["plans"][key])
             else:
                 train = read_json(os.path.join(run, "hf_train.json"))

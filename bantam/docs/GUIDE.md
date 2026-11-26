@@ -307,8 +307,8 @@ bantam finetune --model HuggingFaceTB/SmolLM2-135M --dataset databricks/databric
   default (`--embed_quant 8`; `same` follows `--quant`, `none` keeps them in float).
 - `--low_ram 1` builds the model with its weights quantized one tensor at a time, so the
   float model never sits in RAM. It needs `.safetensors` weights; a checkpoint with only
-`pytorch_model.bin` is loaded the default way instead, with a warning. In one end-to-end check
-  during the 0.3 review (SmolLM2-135M, `--quant nf4`, `--seq 256 --batch 2`, 20 steps,
+  `pytorch_model.bin` is loaded the default way instead, with a warning. In one end-to-end
+  check during the 0.3 review (SmolLM2-135M, `--quant nf4`, `--seq 256 --batch 2`, 20 steps,
   one run each; not a committed result), peak RSS was 2,339 MB with `--low_ram 1`,
   2,733 MB with the default `--quant` path (it loads the float model first) and 2,668 MB
   for float LoRA.
