@@ -188,6 +188,16 @@ class ZoomGPT(nn.Module):
         """Constructor kwargs: ZoomGPT(**m.config()) rebuilds the architecture."""
         return {**self._config, "zoom_ks": list(self._config["zoom_ks"])}
 
+    def _emb_device(self):
+        """The embedding's device, without .weight (a quantized QEmbedding would dequantize)."""
+        dev = getattr(self.emb, "device", None)
+        return dev if isinstance(dev, torch.device) else self.emb.weight.device
+
+    def _head(self):
+        """Tied output head: the embedding table, or a quantized embedding itself (its
+        .matmul dequantizes block by block instead of materializing a float table)."""
+        return self.emb if callable(getattr(self.emb, "matmul", None)) else self.emb.weight
+
     def _make_rope(self, n_pos, k, device):
         p = torch.arange(n_pos, dtype=torch.float32, device=device)
         if self.rope_pos == "token":  # group p sits at its centre, in token units
@@ -198,7 +208,7 @@ class ZoomGPT(nn.Module):
         """fp32 (cos, sin) covering positions 0..n_pos-1 at zoom k. One table per
         (k, device), grown to the longest length seen; built outside inference mode,
         so a table first made under torch.inference_mode() still works in training."""
-        dev = self.emb.weight.device
+        dev = self._emb_device()
         if _is_compiling():        # mutating the cache in a graph would force a recompile
             return self._make_rope(n_pos, k, dev)
         tab = self._rope_cache.get((k, dev))
@@ -232,7 +242,8 @@ class ZoomGPT(nn.Module):
         return self.ln_f(x)
 
     def logits(self, h):
-        z = h @ self.emb.weight.t()                  # tied output head
+        head = self._head()                          # tied output head
+        z = h @ head.t() if torch.is_tensor(head) else head.matmul(h)
         if self.softcap > 0:                         # bounded logits (Gemma-2 / speedrun)
             z = self.softcap * torch.tanh(z / self.softcap)
         return z
@@ -251,7 +262,7 @@ class ZoomGPT(nn.Module):
             return self.logits(h)
         if k == 1:
             if self.ce_chunk:
-                return chunked_cross_entropy(h, self.emb.weight, targets, self.ce_chunk,
+                return chunked_cross_entropy(h, self._head(), targets, self.ce_chunk,
                                              softcap=self.softcap)
             return F.cross_entropy(self.logits(h).float().view(-1, self.vocab),
                                    targets.reshape(-1))
@@ -259,7 +270,7 @@ class ZoomGPT(nn.Module):
         if self.out_mode == "slot":
             hs = self.unmerge[str(k)](h)             # (B, T/k, k, d)
             if self.ce_chunk:
-                return chunked_cross_entropy(hs, self.emb.weight, tgt, self.ce_chunk,
+                return chunked_cross_entropy(hs, self._head(), tgt, self.ce_chunk,
                                              softcap=self.softcap)
             z = self.logits(hs).float()              # (B, T/k, k, V)
             return F.cross_entropy(z.reshape(-1, self.vocab), tgt.reshape(-1))
@@ -341,7 +352,7 @@ class ZoomGPT(nn.Module):
         the context is longer than max_ctx, the last max_ctx tokens are re-encoded
         every step, exactly as a model without a cache sees them (use_cache=False
         always does that)."""
-        dev = self.emb.weight.device
+        dev = self._emb_device()
         as_list = not torch.is_tensor(idx)
         if as_list:
             rows = [torch.as_tensor(r, dtype=torch.long).reshape(-1) for r in idx]
@@ -434,7 +445,8 @@ class ZoomGPT(nn.Module):
             sd = {n: t for n, t in sd.items() if not n.startswith(("merge.", "unmerge."))}
         sd = {n: t.detach().cpu().contiguous() for n, t in sd.items()}
         info = {"model_type": "zoomgpt",
-                "torch_dtype": str(self.emb.weight.dtype).replace("torch.", "")}
+                "torch_dtype": str(getattr(self.emb, "dtype", None) or self.emb.weight.dtype
+                                   ).replace("torch.", "")}
         if tokenizer_path:
             src = tokenizer_path
             if os.path.isdir(src):

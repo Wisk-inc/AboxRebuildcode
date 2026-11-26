@@ -193,12 +193,14 @@ def test_quantized_head_is_dequantized_in_the_compute_dtype(monkeypatch):
     seen = []
     real = ft.chunked_cross_entropy
     monkeypatch.setattr(ft, "chunked_cross_entropy",
-                        lambda h, wt, *a, **k: seen.append(wt.dtype) or real(h, wt, *a, **k))
+                        lambda h, wt, *a, **k: seen.append(wt) or real(h, wt, *a, **k))
     x = torch.randint(0, 300, (2, 12))
     ref = ft.lm_loss(m, x[:, :-1], x[:, 1:], 0).item()
     with torch.autocast("cpu", dtype=torch.bfloat16):
         loss = ft.lm_loss(m, x[:, :-1], x[:, 1:], 8)
-    assert seen == [torch.bfloat16]                       # was the full fp32 head (4 B/param)
+    # the quantized head itself: each chunk dequantizes it block by block in the autocast
+    # dtype (was the full fp32 head, 4 B/param, held across chunks)
+    assert len(seen) == 1 and seen[0] is m.lm_head
     assert abs(loss.item() - ref) < 5e-2
 
 

@@ -243,8 +243,10 @@ def test_stale_gridpack(tmp_path):
     os.utime(gp, (now - 10, now - 10))                        # (coarse-mtime filesystems)
     ds = W.ERA5(d, CPU)                                       # newer fields.npy wins
     assert ds.source == "npy" and ds.x.shape[0] == 40
-    os.utime(gp, (now + 10, now + 10))                        # stale pack that looks newer
-    with pytest.raises(ValueError, match="meta.json"):
+    os.utime(gp, (now + 10, now + 10))                        # stale pack that looks newer:
+    assert W.ERA5(d, CPU).source == "npy"                     # its n_total gives it away
+    os.remove(os.path.join(d, "fields.npy"))
+    with pytest.raises(ValueError, match="meta.json"):        # and without fields.npy: an error
         W.ERA5(d, CPU)
 
 

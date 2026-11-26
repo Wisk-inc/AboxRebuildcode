@@ -4,8 +4,11 @@
 
 Writes results/SUMMARY.md (raw tables; RESULTS.md is curated from it) and
 results/summary.json (seed aggregates and compute-to-target, machine-readable).
-Only completed runs are tabulated: logs still marked in_progress are listed as
-running, and JSON files that are not run logs (derived tables) are skipped.
+Only completed runs are tabulated: logs still marked in_progress, or with a status
+other than "finished" (e.g. "diverged"), are listed as running or interrupted, and
+JSON files that are not run logs (derived tables) are skipped. Weather tables add
+the validation-split MSE of --val_year runs (valsplit_mse: select LRs on it, not on
+the test-year val_mse) and the z500 72 h anomaly correlation.
 
 Seed aggregates: runs with the same recipe (args minus seed, name, paths, threads,
 eval cadence) and budget are pooled into n, mean and sample sd.
@@ -67,7 +70,8 @@ def scan(sub, res=None):
             continue
         if not isinstance(r, dict) or "args" not in r:
             skipped.append(name)                    # derived table, not a run log
-        elif r.get("in_progress") or ("final_val_loss" not in r and "final" not in r):
+        elif (r.get("in_progress") or r.get("status", "finished") != "finished"
+              or ("final_val_loss" not in r and "final" not in r)):    # running, diverged, killed
             ev = r.get("evals") or [{}]
             running[name] = ev[-1].get("frac")
         else:
@@ -211,6 +215,9 @@ def weather_rows(runs):
                      "budget": _f(a.get("budget"), ".2e"), "steps": r.get("steps", ""),
                      "epochs": _f(r.get("epochs"), ".2f"), "train_s": _f(r.get("train_time"), ".0f"),
                      "val_mse": _f(fin.get("val_loss"), ".4f"),
+                     # --val_year runs: the validation-split eval, the one to select LRs on
+                     "valsplit_mse": _f((r.get("final_val") or {}).get("val_loss"), ".4f"),
+                     "acc z500@72h": _f(fin.get("acc_z500_72h"), ".3f"),
                      "z500@6h": _f(fin.get("rmse_z500_6h"), ".1f"),
                      "z500@24h": _f(fin.get("rmse_z500_24h"), ".1f"),
                      "z500@72h": _f(fin.get("rmse_z500_72h"), ".1f"),
@@ -252,7 +259,8 @@ def main(argv=None):
     if wsweep:
         parts.append("\n\n## Weather learning-rate sweep (1.8e13 FLOPs)\n")
         parts.append(md_table(weather_rows(wsweep), ["run", "optim", "lr", "steps", "val_mse",
-                                                     "z500@6h", "z500@24h", "z500@72h"]))
+                                                     "valsplit_mse", "z500@6h", "z500@24h",
+                                                     "z500@72h"]))
 
     main_runs = scan_("llm")
     if main_runs:
@@ -288,7 +296,8 @@ def main(argv=None):
     if wx:
         parts.append("\n\n## Weather (ERA5 5.625 deg, 6 h step, test year 2018)\n")
         cols = ["run", "optim", "zoom", "mode", "lr", "seed", "budget", "steps", "epochs",
-                "train_s", "val_mse", "z500@6h", "z500@24h", "z500@72h", "t850@24h", "t2m@24h"]
+                "train_s", "val_mse", "valsplit_mse", "z500@6h", "z500@24h", "z500@72h",
+                "t850@24h", "t2m@24h", "acc z500@72h"]
         parts.append(md_table(weather_rows(wx), cols))
         groups = seed_groups(wx, lambda r: r["final"]["val_loss"])
         summary["weather_seed_groups"] = groups

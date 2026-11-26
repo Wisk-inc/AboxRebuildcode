@@ -121,8 +121,8 @@ def test_help_without_optional_extras():
         assert rc in ("0", "1"), (c, rc)
         if rc == "1":
             assert f"bantam {c}: " in p.stderr
-    for c in ("pretrain", "weather", "pack-text", "pack-era5", "memory", "doctor"):
-        assert rcs[c] == "0"
+    for c in cli.COMMANDS:                     # every command's imports of extras are lazy
+        assert rcs[c] == "0", c
 
 
 def test_console_entry_point_and_version():

@@ -221,6 +221,28 @@ def write_param(p, new_fp32, stochastic=True, generator=None):
         p.copy_(new_fp32.to(p.dtype))
 
 
+def load_checkpoint(path, map_location="cpu"):
+    """(checkpoint, legacy): torch.load(weights_only=True). Checkpoints written by
+    bantamtrain <= 0.2 pickle QState objects (before the rename as zoomtrain.lowmem.QState);
+    those load with QState allow-listed (legacy=True), so no arbitrary code runs either way."""
+    try:
+        return torch.load(path, map_location=map_location, weights_only=True), False
+    except Exception as e:  # noqa: BLE001 - UnpicklingError or RuntimeError, by torch version
+        err = e
+    ser = torch.serialization
+    allow = [QState]
+    if torch.__version__ >= (2, 6):            # (class, "old.module.Name") entries
+        allow.append((QState, "zoomtrain.lowmem.QState"))
+    try:
+        if hasattr(ser, "safe_globals"):       # torch >= 2.5
+            with ser.safe_globals(allow):
+                return torch.load(path, map_location=map_location, weights_only=True), True
+        ser.add_safe_globals(allow)            # torch 2.4: process-wide (QState is plain data)
+        return torch.load(path, map_location=map_location, weights_only=True), True
+    except Exception:  # noqa: BLE001
+        raise err from None
+
+
 def state_bytes(optimizer):
     """Bytes held by optimizer state (fp32 tensors and QState buffers)."""
     total = 0

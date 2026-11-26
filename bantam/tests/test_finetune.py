@@ -2,6 +2,7 @@ import math
 import os
 import sys
 
+import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,6 +15,7 @@ from bantamtrain.optim import build_optimizer, default_muon_params  # noqa: E402
 
 
 def _tiny_hf_llama():
+    pytest.importorskip("transformers")
     from transformers import LlamaConfig, LlamaForCausalLM
     cfg = LlamaConfig(vocab_size=256, hidden_size=64, intermediate_size=128, num_hidden_layers=2,
                       num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=64,
@@ -119,6 +121,7 @@ def test_default_muon_params_skips_embeddings_and_head():
 
 
 def test_finetune_data_pipeline_masks_prompt_and_packs():
+    pytest.importorskip("transformers")
     from test_finetune_fixtures import make_tokenizer   # GPT-2 style byte-level BPE, built offline
     from bantamtrain import finetune as ft
     tok = make_tokenizer("bpe")

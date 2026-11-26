@@ -41,7 +41,7 @@ import torch.nn.functional as F  # noqa: E402
 
 from . import lora as _lora  # noqa: E402
 from . import qweights as _qw  # noqa: E402
-from .device import DutyCycleLimiter, describe, setup_runtime  # noqa: E402
+from .device import DutyCycleLimiter, auto_precision, describe, setup_runtime  # noqa: E402
 from .lora import apply_lora, load_lora_state_dict, lora_state_dict, merge_lora, unwrap_lora  # noqa: E402
 from .losses import chunked_cross_entropy  # noqa: E402
 from .lowmem import state_bytes  # noqa: E402
@@ -402,11 +402,18 @@ def head_transform(model):
     return scale, get("final_logit_softcapping") or 0.0
 
 
+def _is_quantized_head(head):
+    """qweights.QLinear / QTiedHead / quantized subclasses: .matmul(h) = h @ W^T without a
+    float table (their .weight dequantizes all of it, so it is never touched here)."""
+    return callable(getattr(head, "matmul", None))
+
+
 def _split_head(model):
     """(decoder, output head) when the logits are head(decoder(x).last_hidden_state)."""
     base = getattr(model, "model", None) or getattr(model, "base_model", None)
     head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
-    if base is None or base is model or head is None or not hasattr(head, "weight"):
+    if base is None or base is model or head is None or not (
+            _is_quantized_head(head) or hasattr(head, "weight")):
         return None, None
     return base, head
 
@@ -497,8 +504,10 @@ def lm_loss_sum(model, x, y, ce_chunk, w=None, seg=None):
             opt["scale"] = scale
         if tw is not None:              # unit total weight: the returned mean times denom is the sum
             opt["token_weights"] = tw / denom
-        mean = chunked_cross_entropy(h, _head_weight(head, _compute_dtype(h)), y, ce_chunk,
-                                     bias=bias, **opt)
+        # a quantized head goes in as is: each checkpointed chunk dequantizes it block by block,
+        # so no float vocab table lives across chunks (losses.chunked_cross_entropy)
+        w = head if _is_quantized_head(head) else _head_weight(head, _compute_dtype(h))
+        mean = chunked_cross_entropy(h, w, y, ce_chunk, bias=bias, **opt)
         return mean * denom, denom
     logits = model(input_ids=x, **kw).logits.float()
     per = F.cross_entropy(logits.reshape(-1, logits.shape[-1]), y.reshape(-1),
@@ -629,9 +638,32 @@ def _match_embedding_dtype(model, dtype):
             m.register_forward_hook(hook)
 
 
+def auto_param_dtype(device, lora):
+    """--param_dtype auto: bf16 weights where bf16 runs natively (CUDA sm80+, see
+    device.auto_precision; older GPUs only emulate it) and for full fine-tuning (--lora 0),
+    whose bf16 weights + stochastic rounding halve the memory; fp32 otherwise."""
+    return "bf16" if (auto_precision(device) == "bf16" or lora == 0) else "fp32"
+
+
+def _quantized_storage(model):
+    """Modules holding quantized codes (q, s), each set of codes once: a QTiedHead shares
+    its embedding's."""
+    seen = set()
+    for m in model.modules():
+        q = getattr(m, "q", None) if hasattr(m, "s") else None
+        if torch.is_tensor(q) and id(q) not in seen:
+            seen.add(id(q))
+            yield m
+
+
 def _quantized_params(model):
-    return sum(m.q.numel() * (2 if getattr(m, "bits", 8) in (4, "nf4") else 1)
-               for m in model.modules() if hasattr(m, "q") and hasattr(m, "s"))
+    """Weights stored as codes: out x in of each quantized matrix (block padding excluded)."""
+    n = 0
+    for m in _quantized_storage(model):
+        n_in = m._n_in() if callable(getattr(m, "_n_in", None)) else \
+            m.q[0].numel() * (2 if getattr(m, "bits", 8) in (4, "nf4") else 1)
+        n += m.q.shape[0] * n_in
+    return n
 
 
 def _fix_eos(model, tok, template):
@@ -782,6 +814,8 @@ def main(argv=None):
         ap.error("--dora / --lora_plus need --lora > 0")
     if args.resume and args.eval_only:
         ap.error("--resume continues training; --eval_only does not train")
+    if not args.duty > 0:
+        ap.error(f"--duty must be in (0, 1], got {args.duty}")
 
     # ---- distributed (torchrun) ----
     world = int(os.environ.get("WORLD_SIZE", "1"))
@@ -795,17 +829,18 @@ def main(argv=None):
     rt = setup_runtime(args.device, args.precision, False, args.threads, args.seed)
     if rt.device.type == "cpu":
         rt.amp_dtype = None
+    from transformers import AutoModelForCausalLM, AutoTokenizer   # before --out is created
     os.makedirs(args.out, exist_ok=True)
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(args.model)
     template = resolve_template(tok)
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
-    pdt = args.param_dtype
-    if pdt == "auto":
-        pdt = "bf16" if (rt.device.type == "cuda" or args.lora == 0) else "fp32"
+    pdt = auto_param_dtype(rt.device, args.lora) if args.param_dtype == "auto" else args.param_dtype
     dtype = torch.bfloat16 if pdt == "bf16" else torch.float32
+    if quant and not args.grad_ckpt and is_main:
+        print("[finetune] note: --grad_ckpt 1 is recommended with --quant (activations dominate "
+              "the memory of a quantized base)", flush=True)
     report = {}
     eq = {"same": "same", "8": 8, "none": None}[args.embed_quant]
     load_quantized = getattr(_qw, "load_quantized", None)
@@ -813,8 +848,9 @@ def main(argv=None):
         res = load_quantized(args.model, quant, embed_bits=eq, dtype=dtype)
         model, rq = res if isinstance(res, tuple) else (res, None)
         report["quant"] = rq or {"bits": quant, "low_ram": True, "bytes_after": model_bytes(model)}
-        base_bytes_fp = (model_bytes(model) - sum(m.q.numel() * m.q.element_size() + m.s.numel() * 2
-                                                  for m in model.modules() if hasattr(m, "q") and hasattr(m, "s"))
+        base_bytes_fp = (model_bytes(model) - sum(m.q.numel() * m.q.element_size()
+                                                  + m.s.numel() * m.s.element_size()
+                                                  for m in _quantized_storage(model))
                          + _quantized_params(model) * dtype.itemsize)
     else:
         if args.low_ram and is_main:

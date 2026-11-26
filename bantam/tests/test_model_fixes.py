@@ -175,7 +175,7 @@ def test_muon_split_survives_deepcopy():
     torch.manual_seed(0)
     m = ZoomGPT(64, 32, 1, 2)
     c = copy.deepcopy(m)
-    assert getattr(c.blocks[0].qkv.weight, "muon_split", None) is None   # torch drops it
+    c.blocks[0].qkv.weight.__dict__.pop("muon_split", None)   # as torch's deepcopy drops it
     names = dict(m.named_parameters())
     assert m.muon_splits() == {"blocks.0.qkv.weight": 3} and set(m.muon_splits()) <= set(names)
     x = torch.randint(0, 64, (2, 17))
@@ -184,6 +184,6 @@ def test_muon_split_survives_deepcopy():
         opt = build_optimizer(model, "muon", 0.02, 0.0)
         model(x[:, :16], x[:, 1:]).backward()
         opt.step()
-    assert c.blocks[0].qkv.weight.muon_split == 3
+    assert opt.optimizers[-1]._split[c.blocks[0].qkv.weight] == 3         # from muon_splits()
     assert torch.allclose(c.blocks[0].qkv.weight - before, m.blocks[0].qkv.weight - before,
                           atol=1e-6)

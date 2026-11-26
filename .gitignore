@@ -9,3 +9,6 @@ bantam/results/logs/
 *.parquet
 *.pt
 *.zwpk
+build/
+dist/
+*.egg-info/
