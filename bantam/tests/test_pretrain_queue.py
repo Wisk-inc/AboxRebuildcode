@@ -85,7 +85,10 @@ def test_result_path_cli_spellings(queue_root):
                      ("OMP_NUM_THREADS=1 python3 /abs/bantam/llm/train.py --name x", "llm"),
                      ("python3 weather/train.py --name x", "weather"),
                      ("bantam weather --name x --init results/pretrain.pt", "weather"),
-                     ("python3 -m bantamtrain.cli.weather --name=x", "weather")]:
+                     ("python3 -m bantamtrain.cli.weather --name=x", "weather"),
+                     ("torchrun --nproc_per_node 2 llm/train.py --name x", "llm"),
+                     ("torchrun --nproc_per_node=2 -m bantamtrain pretrain --name x", "llm"),
+                     ("bantam weather --init pretrain --name x", "weather")]:
         assert rq.result_path(cmd) == ("x", str(root / "results" / sub / "x.json")), cmd
     assert rq.result_path("bantam pretrain --name=foo --out=/abs/o")[1] == "/abs/o/foo.json"
     with pytest.raises(ValueError, match="no --name"):

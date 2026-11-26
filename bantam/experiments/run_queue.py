@@ -28,8 +28,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# the trainer is read from the program words (those before the first --option)
-LLM = re.compile(r"(^|/)llm/train\.py$|^pretrain$|(^|\.)cli\.pretrain$")
+LLM = re.compile(r"(^|/)llm/train\.py$|(^|\.)cli\.pretrain$")
 VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
 
@@ -45,14 +44,13 @@ def _opt(words, flag):
 
 
 def trainer(words):
-    """'llm' for llm/train.py, `bantam pretrain`, `python -m bantamtrain[.cli.pretrain]`;
-    'weather' otherwise (weather/train.py, `bantam weather`; the old default)."""
-    prog = []
-    for w in words:
-        if w.startswith("--"):
-            break
-        prog.append(w)
-    return "llm" if any(LLM.search(w) for w in prog) else "weather"
+    """'llm' for llm/train.py, `bantam pretrain`, `python -m bantamtrain[.cli.pretrain]` (also
+    behind torchrun and its options); 'weather' otherwise (weather/train.py, `bantam weather`;
+    the old default). A `pretrain` word counts only as the command after bantam/bantamtrain."""
+    for prev, w in zip([""] + words, words):
+        if LLM.search(w) or (w == "pretrain" and os.path.basename(prev) in ("bantam", "bantamtrain")):
+            return "llm"
+    return "weather"
 
 
 def run_info(cmd):
