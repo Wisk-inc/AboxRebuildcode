@@ -1,25 +1,57 @@
-# zoomtrain: research foundation
+# Bantam: the research behind it
 
-*Status: 2026-10-15. Audience: engineers implementing zoomtrain (LLM and ERA5 weather training on tiny compute).*
+*Status: Bantam 0.3.0, 2026-11-26. Audience: engineers who want to know where
+each technique in Bantam comes from, what the literature claims for it, and
+what Bantam itself measured.*
 
-**How to read this.** A verifier pass checked every number here against its primary source. Where the verifier corrected a number, only the corrected value appears. Claims it could not confirm are marked **UNVERIFIABLE**, and claims it refuted are left out. "Inference" marks our own reasoning, not a sourced result. "Local" means measured on the project's 4-core dev box and re-measured by the verifier. That box has `avx512f` and `avx512_vnni` but no `avx512_bf16`, so CPU training there uses fp32. Citations [n] link to §7.
+**How to read this.** This file started as the literature survey written
+before Bantam was built (2026-10-15, under the project's old working name).
+A verifier pass checked every number in that survey against its primary
+source. Where the verifier corrected a number, only the corrected value
+appears. Claims it could not confirm are marked **UNVERIFIABLE**, and claims it
+refuted are left out. "Inference" marks our own reasoning, not a sourced
+result. "Local" means measured on the project's 4-core development box. That
+box has `avx512f` and `avx512_vnni` but no `avx512_bf16`, so CPU training there
+uses fp32. Citations [n] link to §7.
 
-## 1. Executive summary
+For 0.3 the survey was updated: §1 maps every Bantam technique to its sources
+and to Bantam's own result; §2.1 lists the full Polar Express coefficient table
+Bantam uses; §2.3 gives the prior art for Zoom training; §2.7-2.8 cover the
+fine-tuning and low-memory techniques; §5 notes where Bantam's measurements
+contradicted the plan. Bantam's measurements are CPU-only (4 cores, 16 GB RAM),
+on a 5.8M-parameter TinyStories model and a 1.26M-parameter ERA5 model. Nothing
+has been run on a GPU. How the techniques work in Bantam's code is in
+[docs/METHOD.md](docs/METHOD.md); how Bantam compares with other tools is in
+[docs/COMPARISON.md](docs/COMPARISON.md); full result tables are in
+[RESULTS.md](RESULTS.md).
 
-| # | Technique | Domain | Expected gain (evidence) | Effort |
-|---|---|---|---|---|
-| 1 | Muon on hidden 2-D matrices; AdamW on embeddings/head/norms/scalars | LLM, ViT | ~1.3-1.4x fewer steps than a *tuned* AdamW at 0.1B, ~1.1x at 1.2B [[1](#ref-1)]. Speedrun record 31.4 -> 24.9 min (1.26x) [[2](#ref-2)] | ~40 LoC |
-| 2 | **Zoom / coarse-to-fine**: merge K tokens or 2x2 patches early, then anneal to K=1 | both | LLM: 0.5x compute at equal PPL, 370M-2.7B (K=4, λ=2/3) [[3](#ref-3)]; TST: 1.8x (3B), 2.58x (10B-A1B) [[4](#ref-4)]. Grids: WeatherNext 3 runs 85% of steps at 1° [[5](#ref-5)]; Multigrid 4.5x wall-clock at +0.8 pt [[6](#ref-6)] | 20-100 LoC |
-| 3 | Budget-matched LR: no warmup (with zero-init), flat, then linear decay over the last 40-55% to a 0.1-0.15 floor; or constant + 5% 1-sqrt cooldown | both | ResNet-18 at a 10% budget: 62.3 vs 59.5 top-1 vs step decay [[7](#ref-7)]. Weather Swin: constant + cooldown beats cosine at every stop point [[8](#ref-8)] | 5 LoC |
-| 4 | Speedrun bundle: QK-norm + ReLU² + zero-init output projections, softcap 15, value residual | LLM | Record 5: -32% wall-clock [[9](#ref-9)]; softcap 15: -6.7% steps [[10](#ref-10)]; value residual: equal loss with 20.3% fewer tokens [[11](#ref-11)] | ~30 LoC |
-| 5 | Per-source MinHash dedup + fastText top-10-30% filter + ≤4 epochs | LLM | DCLM 1B-1x Core 30.2 vs 27.5 unfiltered [[12](#ref-12)]; FineWeb-Edu needs "almost 10x" fewer tokens to 33.6% MMLU [[13](#ref-13)]; ≤4 epochs ≈ fresh data [[14](#ref-14)] | CPU minutes |
-| 6 | Token store: uint16 in RAM + one numpy gather; rank-remap + LEB128 + zstd at rest; drop byte-shuffle | LLM | Local: 139-156 Mtok/s vs 10.1 for per-batch memmap; 0.751 B/tok vs 2.0 (2.66x). TokPack's byte-shuffle costs 14.5-25% [[15](#ref-15), [16](#ref-16)] | ~60 LoC |
-| 7 | Residual target (Δ / std of Δt-differences) + lat × level × variable weighted loss | weather | Free; the model starts at persistence skill. Standard in GraphCast, Stormer, ArchesWeather, Otter [[17](#ref-17), [18](#ref-18)] | ~20 LoC |
-| 8 | Sparse-Reslim: random 25% of tokens through the middle blocks, scatter-add the residual delta | weather ViT | 2.46x faster at 1.0°, 2.2-2.4x less memory, Z500 120 h RMSE -11.6%. Measured only at ≥8k tokens [[19](#ref-19)] | ~10 LoC |
-| 9 | Late, short rollout fine-tune (K=2->4) at 100-1000x lower LR, one Δt per sequence, or pushforward | weather | ArchesWeather: 20k of 320k steps [[20](#ref-20)]. A naive 6 h iterative CNN reached Z500 1114 at 3 d, worse than climatology [[21](#ref-21)] | ~30 LoC |
-| 10 | Precision hygiene. GPU: bf16 autocast + TF32 `high` + SDPA `is_causal` (no mask tensor) + `compile(dynamic=False)`. CPU: fp32 unless `avx512_bf16`/AMX. Always normalize in fp32 before a 16-bit cast | both | TF32: 0.11 -> 0.016 s per large A100 GEMM [[22](#ref-22), [23](#ref-23)], GPT-2 124M 1000 -> 333 ms/step (Karpathy's GPT-2 reproduction); compile: +43% average training [[24](#ref-24)]; CPU bf16 without hardware support is 3-4x slower (oneDNN docs), 6.4x measured on an i7-12700K [[25](#ref-25), [26](#ref-26)] | 10 LoC |
+## 1. Summary: each Bantam technique, its sources, and what Bantam measured
 
-Cross-cutting rule: report a speedup as compute (FLOPs or wall-clock) to a fixed loss, against a tuned baseline, over ≥5 seeds. Per-run val-loss σ at 124M is 0.0014-0.0019 nats [[2](#ref-2)], larger than many individual tricks.
+None of these ideas is Bantam's invention except the Zoom variant, and Zoom is
+a variant of patch-level training. "Measured" numbers are validation loss in
+nats/token (LLM, 6.8e13 FLOPs, Muon unless stated; baseline 2.737 ± 0.012, 3
+seeds) or normalized one-step MSE (weather, 5.5e13 FLOPs; Muon baseline 0.124,
+2 seeds). n = seeds.
+
+| Bantam technique | Main sources | What the sources report | What Bantam measured |
+|---|---|---|---|
+| Muon on hidden 2-D matrices, AdamW elsewhere | Jordan [[27](#ref-27)]; Moonshot [[30](#ref-30)]; Wen et al. [[1](#ref-1)] | ~1.3-1.4x over a *tuned* AdamW at 0.1B, ~1.1x at 1.2B [[1](#ref-1)]; 52% of AdamW's FLOPs (Moonshot's own baseline) [[30](#ref-30)] | 2.737 vs AdamW 3.332 (AdamW n=1); weather 0.124 vs 0.229. Confounded: the Muon runs also give the embedding/head a 16x higher LR (METHOD §2.3) |
+| Polar Express orthogonalizer (`--ns polar`) | Amsel et al. [[33](#ref-33)] | Lower val loss than Newton-Schulz Muon for GPT-2 on 1-10B tokens | 2.755 vs 2.737 (n=1): no gain at this scale |
+| 8-bit blockwise optimizer state | Dettmers et al. [[168](#ref-168)]; Gupta et al. (8-bit Muon) [[169](#ref-169)]; torchao [[172](#ref-172)] | 32-bit quality with ~75% less optimizer memory; 8-bit Muon at parity up to 2.7B | Short runs: Muon 3.572 (32-bit) vs 3.581 (8-bit); AdamW 4.482 vs 4.479 (n=1 each) |
+| bf16 weights + stochastic rounding | Gupta et al. 2015 [[170](#ref-170)]; Zamirai et al. [[171](#ref-171)] | Stochastic rounding recovers most of the loss of pure 16-bit updates | 8-bit Muon + bf16: 2.728 vs 2.737 fp32 (n=1; ±0.001 eval error, rerun pending); 1.6-2.6x slower on this CPU |
+| QK-norm (`--qk_norm 1`) | Henry et al. [[179](#ref-179)]; Dehghani et al. [[180](#ref-180)]; Wortsman et al. [[181](#ref-181)]; speedrun record 5 [[9](#ref-9)] | Stops attention-logit growth; allows higher LR | **2.639 ± 0.003 (n=2), 1.24x compute-equivalent**: better than Zoom alone |
+| Speedrun extras: softcap, zero-init, ReLU², WSD | [[10](#ref-10)], [[9](#ref-9)], So et al. [[182](#ref-182)], Hägele et al. [[183](#ref-183)] | Each a few % of steps in the speedrun | softcap 15: 2.726; zero-init 2.732; ReLU² 2.829; WSD 2.773 (n=1 each, older data): none helped |
+| **Zoom training** (merge k tokens early, then k=1) | Patch-level training [[3](#ref-3)]; Hourglass [[55](#ref-55)]; Funnel [[185](#ref-185)]; sequence-length warm-up [[52](#ref-52)] | ~0.5x total cost at 370M-2.7B (patch-level, K=4, 2/3 of data) | k=2 for 50% with batch ×2: 2.685 ± 0.004 (n=3), **1.12x**; with QK-norm: 2.589 ± 0.006 (n=2), 1.41x vs plain baseline. The 4→2→1 design lost (2.874, n=3). Weather: worse under Muon (0.159 vs 0.124) |
+| Low-resolution warm-up for the weather ViT | Progressive resizing [[195](#ref-195)], [[119](#ref-119)]; WeatherNext 3 [[5](#ref-5)]; GenCast [[113](#ref-113)] | Composer ~1.3x on ResNet-101; production weather models train most steps at low resolution | 0.112 vs 0.124 (n=1), z500 24 h RMSE 194 vs 217 m²/s² |
+| LoRA / QLoRA / DoRA / LoRA+ / rsLoRA | [[163](#ref-163)]-[[167](#ref-167)] | QLoRA: 65B on one 48 GB GPU at 16-bit quality; DoRA +3.4/+1.0 over LoRA (LLaMA-7B/13B); LoRA+ 1-2% and up to 2x faster | Works on SmolLM2-135M on CPU; quality cost of the frozen base: int8 +0.003, NF4 +0.18 (88 examples, before training). Speed vs other tools: being measured (race, docs/COMPARISON.md) |
+| Packed SFT with block-diagonal masks | Krell et al. [[173](#ref-173)]; best-fit packing [[174](#ref-174)]; padding-free FA2 [[175](#ref-175)] | Packing without cross-contamination matches unpacked quality; FA2 padding-free packing 1.4x throughput | Exact per-example loss to ~1e-7; 0.2 leaked across examples (fixed) |
+| Chunked cross-entropy | Liger [[176](#ref-176)]; Cut Cross-Entropy [[177](#ref-177)]; torchtune [[178](#ref-178)] | Fused kernels: large memory savings at no speed cost on GPU | Memory saving only; not timed |
+| TokPack (rank remap + LEB128 + zstd dictionary) | Local measurements [[16](#ref-16)]; [[15](#ref-15)]; [[78](#ref-78)] | Byte-shuffling token ids hurts zstd | ~6 bits/token on TinyStories (hand-measured, not committed) |
+| MinHash dedup + train/val decontamination | Lee et al. [[57](#ref-57)]; FineWeb [[13](#ref-13)] | Dedup cuts memorization; 4.6% of C4 val has near-duplicates in train | 21,800 TinyStories documents dropped, incl. 1,550 training copies of val stories |
+| GridPack (error-bounded int16 + deltas + zstd) | Klöwer et al. [[134](#ref-134)]; error-bounded compressors [[137](#ref-137)], [[138](#ref-138)] | Bit rounding + lossless coding: ~17x vs float64 at 99% information | Error bound checked on every value; ratio not benchmarked against these |
+| Counter-based rounding noise | Salmon et al. [[197](#ref-197)] | Counter-based generators give reproducible parallel streams | Ranks bit-identical; resume draws the same noise |
+
+Cross-cutting rule: report a speedup as compute (FLOPs or wall-clock) to a fixed loss, against a tuned baseline, over ≥5 seeds. Per-run val-loss σ at 124M is 0.0014-0.0019 nats [[2](#ref-2)], larger than many individual tricks. Bantam's own results use 1-3 seeds, and its baseline sd is 0.012 at 5.8M parameters; single-seed differences under about 0.02 are not meaningful.
 
 ## 2. LLM training
 
@@ -57,6 +89,8 @@ def ns5(G, steps=5, eps=1e-7):
 
 They convert as lr_original = 0.2·lr_matchrms·sqrt(min(m, n)). At d=768, 0.02 corresponds to 3.6e-3. Log the update RMS (target ~0.2, inside AdamW's 0.2-0.4) and store all matrices in one [out, in] orientation. Moonlight uses decoupled wd 0.1 and reached AdamW's loss with 52% of the FLOPs against its own AdamW baseline [[30](#ref-30)].
 
+*Bantam:* uses the `match_rms_adamw` scale (0.2·sqrt(max(m, n))), decoupled weight decay, and one learning rate for the Muon and AdamW parts. Its own sweep shows that the AdamW LR does not transfer at this scale: at one third of the budget the best AdamW-only LR was 1e-3 (3.961) and the best Muon LR 1.6e-2 (3.176), and at 1e-3 Muon (3.937) was about level with AdamW (5.8M params, 1 seed each). Every Muon run therefore also trains the embedding/head at 16x the tuned AdamW LR, which confounds the Muon-vs-AdamW comparison ([docs/METHOD.md §2.3](docs/METHOD.md)). Newton-Schulz runs in fp32 on CPU and in bf16 on CUDA, as in the reference code; at d=256 it costs about 20% of a training step's model FLOPs, far above the <1% the blog reports at speedrun scale, because Bantam's batch (4,096 tokens per step) is small.
+
 **Honest expectations**
 - Against a well-tuned AdamW [[1](#ref-1)], matrix optimizers give 1.4x at 0.1B and 1.1x at 1.2B. Muon is fastest at 1-4x Chinchilla and is overtaken by SOAP/Kron at 8-16x. Only its lr is scale-sensitive. The tuned AdamW at 130M used lr 0.008, wd 0.1, warmup 2000, betas (0.9, 0.98), eps 1e-10.
 - Essential AI [[31](#ref-31)]: 10-15% fewer tokens and a larger critical batch, so use the largest batch that fits.
@@ -64,8 +98,19 @@ They convert as lr_original = 0.2·lr_matchrms·sqrt(min(m, n)). At d=768, 0.02 
 - The blog's "1.35x" speedrun figure is the author's own statement. The record table ratio is 1.26x.
 
 **Cheaper or better orthogonalizers**
-- Polar Express [[33](#ref-33)] uses per-step minimax coefficients at the same matmul cost. The first five tuples are (8.28721201814563, -23.595886519098837, 17.300387312530933), (4.107059111542203, -2.9478499167379106, 0.5448431082926601), (3.9486908534822946, -2.908902115962949, 0.5518191394370137), (3.3184196573706015, -2.488488024314874, 0.51004894012372), (2.300652019954817, -1.6689039845747493, 0.4188073119525673). Divide a, b, c by 1.01, 1.01³, 1.01⁵ for every tuple except the last; the speedrun uses 1.02. Normalize X/(‖X‖·1.01 + 1e-7).
+- Polar Express [[33](#ref-33)] uses per-step minimax coefficients at the same matmul cost. The paper's schedule (Appendix A) has 8 tuples (a, b, c). Bantam's `bantamtrain/optim.py` (`_PE`) uses exactly these:
+  1. (8.28721201814563, -23.595886519098837, 17.300387312530933)
+  2. (4.107059111542203, -2.9478499167379106, 0.5448431082926601)
+  3. (3.9486908534822946, -2.908902115962949, 0.5518191394370137)
+  4. (3.3184196573706015, -2.488488024314874, 0.51004894012372)
+  5. (2.300652019954817, -1.6689039845747493, 0.4188073119525673)
+  6. (1.891301407787398, -1.2679958271945868, 0.37680408948524835)
+  7. (1.8750014808534479, -1.2500016453999487, 0.3750001645474248)
+  8. (1.875, -1.25, 0.375)
+
+  For safety, a, b and c of tuples 1-7 are divided by 1.01, 1.01³ and 1.01⁵. Tuple 8 is left as is; its polynomial has fixed point p(1) = 1.875 - 1.25 + 0.375 = 1, and it is repeated for any step beyond the eighth. The input is normalized as X/(‖X‖_F·1.01 + 1e-7). (0.2 kept only the first five tuples, treated the fifth as the last, so it skipped the safety factor and repeated it for extra steps; that polynomial has p(1) ≈ 1.05, so more steps pushed singular values above 1. Fixed in 0.3, audit OPT-8.) At Bantam's default of 5 steps the singular values of a random matrix land in [0.840, 1.124].
   - GPT-Small val loss at 1B tokens: 3.639 (Jordan) -> 3.588. Best lr was 0.005-0.01 at GPT-2 Small; 0.02 was best only for GPT-2 Large. The paper does not state "2x faster than NS".
+  - Bantam measured `--ns polar` at 2.755 vs 2.737 ± 0.012 for the quintic iteration (5.8M params, 1 seed): no gain at this scale.
 - cubic5 [[34](#ref-34)]: 10 matmuls instead of 15, within ~1e-3 loss (GPT-2 Small, 5 steps: 3.2811 vs 3.2822). Four steps are about as good as five.
 - Periodic Row-wise Muon [[35](#ref-35)]: full NS every K=3 steps, otherwise 0.15 × row-normalized momentum. -47..-54% optimizer time and -16..-24% step time, within 0.5% of Muon at 1.3-4B.
 
@@ -103,7 +148,29 @@ Pitfalls:
 - Slow-state optimizers (AdEMAMix, schedule-free, LAWA) all lost to the hand-tuned linear cooldown at ~1500 steps [[45](#ref-45)].
 - FP8 lm_head (record 19) is Hopper/Ada only; nanochat measured ~17% more tok/s but only ~5% net [[48](#ref-48)].
 
+*Measured in Bantam* (5.8M params, TinyStories, 6.8e13 FLOPs, Muon, CPU; baseline 2.737 ± 0.012, 3 seeds): QK-norm, normalized before RoPE, 2.639 ± 0.003 (2 seeds, 1.24x compute-equivalent); softcap 15 (`15·tanh(z/15)`, the speedrun's `30·sigmoid(z/7.5)` minus a constant) 2.726; zero-init projections 2.732; softcap plus zero-init 2.728; ReLU² 2.829; trapezoid-style WSD schedule 2.773 (1 seed each; the single-flag runs predate the 0.3 data rebuild, so treat them as indicative). Only QK-norm helped at this scale. Value residual, value embeddings, momentum warm-up, batch ramps and MTP are not implemented.
+
 ### 2.3 Coarse-to-fine pretraining and Zoom Training
+
+**What Bantam's Zoom does** (details in [docs/METHOD.md §1](docs/METHOD.md)). Early in training, every k consecutive token embeddings are merged into one position by a learned per-slot gate, the transformer runs on T/k positions, and the output is split back into k per-token states with a second learned gate, so every token keeps its own prediction. Targets are shifted by k, so a group predicts the tokens of the next group and never sees them. k drops to 1 later, and the model ends as an ordinary transformer. The merged phase can use a larger batch (`--batch_scale_k 1` or `--batch_scale 2`).
+
+**Prior art, closest first.** Zoom is a variant of an existing idea. Its closest relative is patch-level training [[3](#ref-3)].
+
+| Method | Mechanism | Published claim (conditions) | Relation to Bantam's Zoom |
+|---|---|---|---|
+| Patch-level training [[3](#ref-3), [49](#ref-49)] | Average K consecutive token embeddings into one patch (no new parameters); predict all K tokens of the next patch with the shared head (bag loss); then switch to tokens and reuse all weights | K=4 on 2/3 of the data gives 0.5x total training cost without loss of quality, 370M-2.7B on the Pile | Essentially the same schedule idea. Bantam differs by a learned gate instead of averaging, a per-token split instead of the bag loss, k=2, and Muon. The paper found that learned input and output projections hurt the final token-level model (below), a warning for Bantam's design |
+| Token-Superposition Training [[4](#ref-4)] | Same mean-pooled input and bag loss, one continued WSD schedule, ~30% of steps coarse | 1.8x less B200 time at 3B; 2.58x less compute at 10B-A1B | An independent replication of the patch-level idea at larger scale |
+| Hourglass [[55](#ref-55)] | Shorten the sequence in the middle layers (pooling by k), then upsample; a shift prevents causal leakage; permanent architecture | Beats a Transformer at equal compute on enwik8 | Bantam's merge/split is Hourglass-style shortening used only as a temporary training phase. Hourglass is also the reference for handling causality when tokens are merged |
+| Funnel-Transformer [[185](#ref-185)] | Progressively pool hidden states; a decoder upsamples for per-token tasks | Beats a standard Transformer on sequence-level tasks at comparable or fewer FLOPs (encoder) | Same "fewer positions inside, per-token output" idea |
+| Dynamic token pooling [[186](#ref-186)] | A learned boundary predictor decides which tokens to pool | Faster and more accurate than fixed-length pooling at the same budget (character-level LM) | Prior art for a learned merge; Bantam's gate is a fixed-size learned merge |
+| K-token merging [[193](#ref-193)] | A learned encoder merges each block of K tokens on the input side (fine-tuning) | Sequence compression for fine-tuning and inference | Recent prior art for a learned K-token merge in LLMs |
+| MegaByte [[187](#ref-187)], Block Transformer [[188](#ref-188)], BLT [[189](#ref-189)] | A global model over patches plus a local model inside patches | Block Transformer: 10-20x inference throughput at equal perplexity (up to 1.4B); BLT: FLOP-controlled parity with Llama 3 up to 8B | Permanent patch hierarchies. Zoom removes the hierarchy at the end, so it is a training-only trick |
+| Sequence-length warm-up [[52](#ref-52)]; Shortformer [[190](#ref-190)]; GrowLength [[191](#ref-191)]; Composer SLW [[194](#ref-194)] | Train on short sequences first, then lengthen | GPT-3 125M stable with 8x batch and 40x LR; Composer ~1.5x to the same loss (GPT-2 52M) | A different axis (shorter context instead of coarser tokens) with the same economics. The main competitor for Zoom; modded-nanogpt already uses window, sequence-length and batch-size schedules [[2](#ref-2), [44](#ref-44), [46](#ref-46)] |
+| Dataset Decomposition [[53](#ref-53)] | Length buckets plus a variable-length curriculum | Up to 6x faster to a target accuracy | Same "cheap early" family; a strong baseline to beat |
+| Token dropping [[192](#ref-192)]; Random-LTD [[54](#ref-54)] | Drop tokens in the middle layers, restore them at the output | 25% less BERT pretraining cost | Same "fewer positions in the middle, full at the output" shape |
+| ToMe [[127](#ref-127)] | Merge similar tokens inside ViT blocks | 2x ViT-L/H throughput for ~0.2-0.3% accuracy | Token merging in ViTs, relevant to the weather model |
+| Model growth [[196](#ref-196)] | Train small, then grow depth or width | MSG 2.2x (BERT), 1.4x (GPT-2); stacking 54.6% speedup for a 7B model | Another "cheap early" axis (model size) |
+| Progressive resizing [[195](#ref-195)], [[119](#ref-119)] | Train on low-resolution images first | Composer ~1.3x (ResNet-101) | What Bantam's weather `--coarse_mode lowres` is; it beat Zoom on weather |
 
 **What Shao et al. did** [[3](#ref-3), [49](#ref-49)]
 1. Input: mean of K=4 consecutive token embeddings into one position, E(p_i) = (1/K)Σ_k E(x_{iK+k}), with positions indexed over patches.
@@ -119,7 +186,7 @@ Cost is λ/K + (1-λ) = 0.5. On the Pile (360B tokens), PPL was 10.7 vs 10.9 (37
 - K=2 ≈ K=4. K≥8 degrades, and K=8 on twice the data gives no extra benefit. With a 128k vocabulary, K=2 beats K=4.
 - λ > 3/4 causes a "rapid decline".
 - Input + output projections cut patch PPL from 159 to 87 but *raised* final token PPL from 11.46 to 12.33.
-- Patch initialization was worse than the baseline at 45B tokens (2.553 vs 2.526) and better only from 180B (2.413 vs 2.423).
+- Patch initialization was worse than the baseline at 45B tokens (2.553 vs 2.526) and better only from 180B (2.413 vs 2.423). The advantage shrinks with model size: test loss is better at 370M (2.368 vs 2.392) but worse at 2.7B (1.980 vs 1.961).
 - No (K, λ) scaling law exists.
 
 **Token-Superposition Training (TST)** [[4](#ref-4)] is an independent replication. It uses the same mean-pooled input and a multi-hot bag CE (labels shifted left by s-1). Differences from Shao: one continued WSD schedule (optimizer-state handling is not discussed) and a smaller coarse fraction, r ≈ 0.3 of equal-FLOP steps.
@@ -136,32 +203,42 @@ Cost is λ/K + (1-λ) = 0.5. On the Pile (360B tokens), PPL was 10.7 vs 10.9 (37
 - Hourglass: 1.87x steps/s at equal bpc, but needs 2 full-resolution layers at each end. Without them bpc is 1.460 vs 1.128 [[55](#ref-55)].
 - Learned chunking (H-Net and successors) is unproven at toy scale [[56](#ref-56)].
 
-**How Zoom differs, and what is not yet evidenced**
+**How Bantam's Zoom differs from Shao / TST**
 
-| Aspect | Shao / TST | Zoom |
+| Aspect | Shao / TST | Bantam Zoom (0.3) |
 |---|---|---|
-| Merge | Plain mean of K embeddings; position inside the patch is lost | Slot-gated merge (learned per-slot gates) |
-| Output | One logits vector, bag loss over the K next tokens | Slot-gated unmerge: K slot-specific states, ordered targets |
-| Schedule | One switch, indexed by data fraction (λ=2/3) or step fraction (r=0.3) | Staircase K = 4 -> 2 -> 1, indexed by consumed compute |
-| Domain | Text | Text, and 2x2 patch merge on ERA5 grids |
+| Merge | Plain mean of K embeddings; position inside the patch is lost | Learned per-slot gate (default); `mean` and `linear` (per-slot d×d) as options |
+| Output | One logits vector, bag loss over the K next tokens | Per-slot split: K slot-specific states, each scored against its own next-group token; `--out_mode bag` as an option |
+| Schedule | One switch, indexed by data fraction (λ=2/3) or step fraction (r=0.3) | Any list of `k:fraction` stages over the FLOP budget. The 0.1 design was a 4 -> 2 -> 1 staircase; the measured winner is one switch, k=2 -> 1, at 33-50% of compute |
+| Batch in the coarse phase | Not a reported lever | Larger batch (×2) in the merged phase; it made the difference here |
+| Optimizer at the switch | Shao: fresh AdamW and fresh cosine; TST: one continued schedule | One continued schedule and optimizer state (restarting the LR was worse) |
+| Optimizer | AdamW | Muon (AdamW also supported) |
+| Domain | Text | Text, and 2×2 token merges on ERA5 grids |
 
-No published work tests slot-gated merge/unmerge or a 3-stage K anneal for LMs. The closest evidence is:
-1. Shao and TST for a 2-stage K -> 1.
-2. Record 53's 3-phase annealed MTP, the only published multi-stage anneal, which helps [[47](#ref-47)].
-3. Progressive resolution for grids (§3.2).
+**What Bantam measured** (5.8M parameters, d=256, 6 layers, TinyStories with a 4k vocabulary, FLOP-matched at 6.8e13, Muon, CPU; full tables in [RESULTS.md](RESULTS.md))
+- k=2 for 50% of compute with batch ×2: 2.685 ± 0.004 (3 seeds) vs baseline 2.737 ± 0.012 (3 seeds). The baseline needs 1.12x the compute to match (1.11-1.13x across seeds; the longer baselines are single runs).
+- k=2 for 33% with batch ×2: 2.680 ± 0.005 (2 seeds), 1.14x.
+- QK-norm alone: 2.639 ± 0.003 (2 seeds), 1.24x. QK-norm plus k=2 for 33% with batch ×2: 2.589 ± 0.006 (2 seeds), 1.41x. The Zoom gain (about -0.05) is the same with and without QK-norm.
+- What did not work: the original 4 -> 2 -> 1 staircase at a fixed batch (2.874 ± 0.002, 3 seeds, worse than baseline); every k=4 schedule; mean merge (2.943) and bag loss (2.860) under that staircase (1 seed each); k=2 without batch scaling (2.723, only 1.03x); batch ×4 (2.727); restarting the LR at the switch (2.760, 2.787).
+- Weather (ERA5 64×32 ViT): Zoom merging was worse than the Muon baseline (0.159 vs 0.124, 2 seeds each), while low-resolution warm-up was better (0.112, 1 seed). With AdamW, Zoom (0.180) beat the AdamW baseline (0.229), but every AdamW run lost to the Muon baseline.
+- Wall-clock: no speedup shown. On this CPU, coarse steps cost more wall-clock per charged FLOP than k=1 steps unless the batch is scaled (docs/METHOD.md §1.7).
+- Muon's optimizer FLOPs (about 20% of a baseline step's model FLOPs here) are not charged to the budget. The winning recipe takes slightly fewer optimizer steps than the baseline (422 vs 450), so this bias runs slightly against it.
 
-The main risk is that extra merge/unmerge parameters repeat Shao's projection ablation, which hurt the final model.
+**Honest novelty assessment**
+- Not new: coarse token granularity first, then full resolution, reusing all weights (patch-level training); merging adjacent tokens and upsampling at the output (Hourglass, Funnel); learning which tokens to merge (dynamic pooling, K-token merging).
+- Plausibly new, as design variants worth a short write-up if they hold up: a learned gate for the k=2 merge plus a per-token split during a temporary phase; the interaction with Muon and with a larger coarse-phase batch.
+- The evidence is thin: one small model on an easy dataset; 2-3 seeds; the closest prior art found its own advantage shrinking with model size; and weak baselines can inflate claimed speedups by up to 2x [[1](#ref-1)].
 
-**Design constraints for Zoom (derived from the evidence)**
-1. Keep coarse compute ≤ ~1/3. Shao spends (2/3)/4 ÷ 0.5 = 1/3 of compute at K=4; TST spends 30%. Untested starting point: K=4 for the first ~20% of FLOPs, K=2 until ~33%, then K=1.
-2. K_max = 4, or 2 for vocabularies ≥100k.
-3. *Inference:* initialize the gates so that Zoom at K=1 is bit-identical to the token model. Share tokenizer, embedding and head, and never re-initialize at a switch.
-4. Never select models or stop early on coarse-phase loss (patch PPL ~150 is normal).
-5. At small data, budget for parity at ~0.5-0.6x compute rather than a loss gain.
-6. A/B optimizer reset vs continuation at each switch.
-7. Pre-tokenize; streaming loaders erase the speedup [[49](#ref-49)].
-8. Log FLOPs. *Inference:* the LM head also sees 1/K positions, which matters most for a 5M model with a 4-16K vocabulary.
-9. For grids: spend the final ≥25% of compute at the native grid, PI-resize the patch embedding, interpolate the position embedding, keep the batch size fixed, and cut the LR 2-7x at the switch (§3.2).
+**Design constraints from the survey, with what Bantam found**
+1. Keep coarse compute ≤ ~1/3. Shao spends (2/3)/4 ÷ 0.5 = 1/3 of compute at K=4; TST spends 30%. *Bantam:* k=2 at 33% (2.680) and 50% (2.685) were about equal; 65% was worse (2.714); every k=4 schedule lost.
+2. K_max = 4, or 2 for vocabularies ≥100k. *Bantam:* at a 4k vocabulary and 5.8M parameters, only k=2 helped.
+3. Share tokenizer, embedding and head, and never re-initialize at a switch. *Bantam:* followed; at k=1 the merge and split are skipped entirely.
+4. Never select models or stop early on coarse-phase loss (patch PPL ~150 is normal). *Bantam:* only the final k=1 loss is reported.
+5. At small data, budget for parity at ~0.5-0.6x compute rather than a loss gain. *Bantam:* the measured saving (0.89x compute for equal loss) is much smaller than that.
+6. A/B optimizer reset vs continuation at each switch. *Bantam:* restarting the LR schedule at the switch was worse; resetting optimizer state was not tried.
+7. Pre-tokenize; streaming loaders erase the speedup [[49](#ref-49)]. *Bantam:* pre-tokenized TokPack read into RAM.
+8. Log FLOPs. *Bantam:* in slot mode the head still runs once per token, so a k=2 token costs 0.57x a k=1 token, not 0.5x (d=256, V=4096). Optimizer FLOPs are logged since 0.3 but not charged by default.
+9. For grids: spend the final ≥25% of compute at the native grid, PI-resize the patch embedding, interpolate the position embedding, keep the batch size fixed, and cut the LR 2-7x at the switch (§3.2). *Bantam:* 40% at the native grid; the LR was not cut; Zoom merging still lost under Muon.
 
 ### 2.4 Data deduplication and selection
 
@@ -199,7 +276,7 @@ Small-data notes:
   - When a memmap exceeds free RAM it drops from 60 to 3 batches/s (forum report, 90 GB float file) [[77](#ref-77)].
 - **Compression, local, 30M TinyStories tokens, 4k vocab, bytes/token** [[16](#ref-16), [15](#ref-15), [78](#ref-78)]:
 
-| uint16 | zstd-3 | zstd-10 | zstd-19 | xz-6 | rank+LEB128 (no codec) | rank+LEB128+zstd-10 | current TokPack (rank+byte-shuffle+zstd-10) |
+| uint16 | zstd-3 | zstd-10 | zstd-19 | xz-6 | rank+LEB128 (no codec) | rank+LEB128+zstd-10 | TokPack v1 of the time (rank+byte-shuffle+zstd-10) |
 |---|---|---|---|---|---|---|---|
 | 2.000 | 0.989 | 0.819 | 0.710 | **0.660** (decodes at 37-40 MB/s) | 1.362 | **0.751** | 0.938 |
 
@@ -210,7 +287,8 @@ Small-data notes:
 - **Chunks:**
   - Independently decodable chunk size vs B/tok: 4k tokens 1.138, 64k 1.068, 1M 1.000.
   - Random windows read from compressed chunks run at 0.31 Mtok/s (26 ms/batch). Consume chunks sequentially, or inflate everything to RAM at startup.
-  - Inflating the 124.6 MB pack takes 0.58 s of zstd but 3.0-3.2 s in TokPack's numpy unshuffle and gather.
+  - Inflating the 124.6 MB v1 pack takes 0.58 s of zstd but 3.0-3.2 s in TokPack's numpy unshuffle and gather.
+- *Bantam (0.3):* TokPack v2 follows this table: rank remap + LEB128 + zstd-19 in 16K-token chunks with a trained shared dictionary, about 6 bits/token (0.75 B/token) on TinyStories (hand-measured; no pack_stats.json committed). v1 files are still readable.
 - **Web text:**
   - About 4.5 text bytes per BPE token.
   - zstd on 16-bit BPE ids gives 2.31 vs 2.60 bits/char on raw C4 (-11%) [[79](#ref-79)].
@@ -256,6 +334,35 @@ Small-data notes:
   - Threads = physical cores (PyTorch's default) [[100](#ref-100)]. Use `OMP_PROC_BIND=CLOSE`, `OMP_PLACES=cores`, `num_workers=0`, `set_num_interop_threads(1)` and preload jemalloc/tcmalloc [[101](#ref-101)].
   - Call `set_flush_denormal(True)`; convolutions on denormal weights ran up to 30x slower [[102](#ref-102)].
   - Use bf16 autocast only with `avx512_bf16`/AMX. Measured slowdown without them: 6.4x on an i7-12700K [[26](#ref-26)]; oneDNN states bf16 is 3-4x slower without hardware acceleration [[25](#ref-25)]. Gains with hardware support: 1.4-2.2x on Cooper Lake [[103](#ref-103)].
+
+### 2.7 Fine-tuning: adapters, quantized bases, packing, the loss
+
+**Adapters**
+- LoRA [[163](#ref-163)]: freeze W and learn ΔW = B·A with rank r, B initialised to zero, scale α/r. Bantam's adapters follow PEFT's layout and file format, so adapters move between the two [[205](#ref-205)].
+- rsLoRA [[167](#ref-167)]: scale α/√r instead of α/r, so the update size does not shrink as r grows. Bantam turns it on automatically at r ≥ 64.
+- DoRA [[165](#ref-165)]: split the adapted weight into a per-row magnitude m and a direction (W + ΔW)/‖W + ΔW‖, with the norm treated as a constant in backward. Reported +3.4 / +1.0 commonsense-reasoning points over LoRA on LLaMA-7B / 13B.
+- LoRA+ [[166](#ref-166)]: give B a learning rate λ times A's. Reported 1-2% better and up to ~2x faster fine-tuning; LLaMA prefers λ ≈ 2-4. Bantam exposes λ as `--lora_plus`.
+- Muon on LoRA matrices: little evidence either way. Naively switching from Adam to Muon for fine-tuning an Adam-pretrained model hurts, and LoRA narrows that gap [[203](#ref-203)]; Muon stayed competitive with AdamW for full SFT of Llama and Qwen models up to 14B [[204](#ref-204)]. Bantam puts the LoRA matrices on Muon when `--optim muon` is chosen; its learning rate has not been tuned.
+
+**Quantized frozen bases**
+- QLoRA [[164](#ref-164)]: a 4-bit NormalFloat (NF4) base with double-quantized scales and paged optimizers; a 65B model fine-tuned on one 48 GB GPU at 16-bit-equivalent quality. NF4 places its 16 levels at quantiles of a normal distribution, which suits pretrained weights.
+- Bantam re-implements the NF4 and int8/int4 bases in pure PyTorch (no bitsandbytes), with fp16 block scales and no double quantization. torchtune does the same through torchao's NF4 tensor [[178](#ref-178)], so a bitsandbytes-free QLoRA is not unique.
+
+**Packing**
+- Concatenating examples into fixed windows without a mask lets examples attend to each other. Krell et al. [[173](#ref-173)] showed that packing with per-example masks and position ids matches unpacked training at a large speedup. Best-fit packing (whole examples, no truncation) improves quality over concatenate-and-split [[174](#ref-174)].
+- On GPUs, FlashAttention's variable-length kernels give the same isolation without a dense mask: padding-free packing with FA2 gave 1.4x throughput [[175](#ref-175)]. Bantam's dense block-diagonal mask is functionally equal but slower on GPU (not measured).
+
+**The loss**
+- The logits of a large vocabulary dominate activation memory. Liger Kernel's fused linear cross-entropy [[176](#ref-176)] and Apple's Cut Cross-Entropy [[177](#ref-177)] never materialize them (CCE: Gemma 2 2B loss memory 24 GB -> 1 MB). torchtune's chunked cross-entropy is the plain-PyTorch version [[178](#ref-178)]. Bantam's chunked cross-entropy is the same plain-PyTorch idea: it saves memory but not time.
+- Final-logit soft-capping (`c·tanh(z/c)`) is part of Gemma 2 [[184](#ref-184)] and of the speedrun [[10](#ref-10)]; a fine-tuning loss must apply it, or it trains a different objective than the model serves.
+
+### 2.8 Low-memory optimizers and precision
+
+- Blockwise 8-bit optimizer state [[168](#ref-168)]: quantize Adam's moments in blocks with one scale each, so outliers stay local; 32-bit-equivalent quality. bitsandbytes ships it as CUDA kernels; torchao ships AdamW8bit, AdamW4bit and AdamWFp8 in PyTorch, plus a `bf16_stochastic_round` flag and a CPU-offload optimizer [[172](#ref-172)] (Llama2-7B full-bf16 fine-tune on an A100: 51.6 GB with fused AdamW, 39.1 GB 8-bit, 33.2 GB 4-bit).
+- 8-bit Muon [[169](#ref-169)]: blockwise 8-bit Muon momentum is at parity with full precision up to 2.7B, with state about 74% smaller than 32-bit Muon. Bantam's `--optim muon --state_bits 8` is the same idea; Bantam uses a square-root companded int8 map for momentum and a log map for Adam's second moment.
+- Stochastic rounding [[170](#ref-170), [171](#ref-171)]: rounding up with probability equal to the remainder makes low-precision updates unbiased, so pure-bf16 weights can train without an fp32 master copy. Zamirai et al. also propose Kahan summation, which Bantam does not implement.
+- Counter-based random numbers [[197](#ref-197)]: deriving each random draw from counters (key, position) instead of a sequential stream makes parallel runs reproducible. Bantam seeds each update chunk's generator from a hash of (seed, optimizer, parameter, step, chunk), which keeps every data-parallel rank bit-identical and makes resume exact.
+- Other ways to cut memory, which Bantam does not implement: ZeRO and ZeRO-Offload (more than 13B on one 32 GB V100 by offloading optimizer state to the CPU) [[198](#ref-198), [199](#ref-199)]; GaLore (LLaMA-7B pretraining in 24 GB through low-rank gradient projection) [[200](#ref-200)]; APOLLO (7B under 12 GB) [[201](#ref-201)]; Adam-mini (about half of AdamW's optimizer memory) [[202](#ref-202)].
 
 ## 3. Weather (ERA5)
 
@@ -446,6 +553,7 @@ The means of the differences are ≈0. Per-cell 6 h std spans an order of magnit
 | LLM | Shape changes retrace `torch.compile` (σ 0.0014 -> 0.0023) | ≤3 stages; warm each shape; skip compile on CPU | [[45](#ref-45), [44](#ref-44)] |
 | LLM | Value embeddings / untied head dwarf a 5M model | Parameter-free value residual; small vocab; tie until 2/3 | [[11](#ref-11), [43](#ref-43)] |
 | LLM | Slow-state optimizers fail in short runs | Muon + trapezoid with linear cooldown | [[45](#ref-45)] |
+| Zoom | Merged positions trained with the usual shift of 1 see the token they predict (causal leak) | Shift targets by K so a group predicts the next group (patch-level training, Bantam), or shift inside the network (Hourglass) | [[3](#ref-3), [55](#ref-55)] |
 | Zoom | Coarse-phase loss does not predict final quality; added projections hurt | Keep architecture, embedding and head; never select on phase-1 loss | [[3](#ref-3)] |
 | Zoom | Too much coarse training collapses (λ>3/4; r=0.9 worse than baseline) | ≤~1/3 of compute coarse; ≥2/3 at K=1 | [[3](#ref-3), [4](#ref-4)] |
 | Zoom | Re-initializing embedding/head at the switch erases the gain | Share them; same tokenizer | [[4](#ref-4)] |
@@ -477,37 +585,39 @@ The means of the differences are ≈0. Per-cell 6 h std spans an order of magnit
 | Weather | Bilinear patch-embed resize collapses accuracy | PI-resize | [[121](#ref-121)] |
 | Weather | Bias tables block flash and add 40-63% params | Coordinate embeddings / relative bias; maskless SDPA | [[156](#ref-156), [157](#ref-157)] |
 
-## 5. Ranked by speedup per effort
+## 5. The pre-implementation plan, ranked by speedup per effort
+
+This is the plan written before Bantam was built (2026-10). It is kept as the survey's recommendation. Where Bantam later measured an item, the result follows in *italics*. List (a) is the only one Bantam has tested; (b) and (c) are unmeasured except where noted.
 
 **(a) ~5M-param LLM, 4 CPU cores, minutes**
-1. Data path: pre-tokenized uint16 in RAM with one numpy gather (~14x vs memmap), `num_workers=0`, 4 pinned OpenMP threads, `set_flush_denormal(True)`, fp32 (this box has no `avx512_bf16`) [[16](#ref-16), [101](#ref-101)].
-2. Budget-matched schedule: no warmup with zero-init projections, then a linear warmdown over the last 40-55% to a 0.1-0.15 floor [[7](#ref-7), [2](#ref-2)].
-3. Muon with NS in fp32 (cubic5) and Nesterov momentum warming 0.85 -> 0.95; expect ~1.3x [[1](#ref-1), [34](#ref-34)].
-4. QK-norm + ReLU² (no erf on CPU) + zero-init + softcap 15 + value residual [[9](#ref-9), [10](#ref-10), [11](#ref-11)].
-5. Vocab ~3-4k: the law extrapolates to ~2.8k, so the repo's 4096 default is reasonable [[80](#ref-80)]. Use TinyStoriesV2 or a fastText-filtered, deduplicated corpus for 2-4 epochs [[14](#ref-14)].
-6. Zoom K=4 -> 2 -> 1 with ≤1/3 of FLOPs coarse. At this data scale expect parity at ~0.5-0.6x compute, not a loss gain [[3](#ref-3), [4](#ref-4)].
-7. Annealed parameter-free MTP in the K=1 phase; batch ramp ×1/×2/×3 with LR multipliers 1.0/1.51/1.93 [[47](#ref-47), [46](#ref-46)].
+1. Data path: pre-tokenized uint16 in RAM with one numpy gather (~14x vs memmap), `num_workers=0`, 4 pinned OpenMP threads, `set_flush_denormal(True)`, fp32 (this box has no `avx512_bf16`) [[16](#ref-16), [101](#ref-101)]. *Done; flush-to-zero is on in every trainer.*
+2. Budget-matched schedule: no warmup with zero-init projections, then a linear warmdown over the last 40-55% to a 0.1-0.15 floor [[7](#ref-7), [2](#ref-2)]. *Measured worse here: WSD 2.773 and zero-init 2.732 vs cosine baseline 2.737 (1 seed each, older data).*
+3. Muon with NS in fp32 (cubic5) and Nesterov momentum warming 0.85 -> 0.95; expect ~1.3x [[1](#ref-1), [34](#ref-34)]. *Muon (quintic NS, fixed momentum 0.95) gave 2.737 vs AdamW 3.332, more than expected, but the comparison is confounded by a 16x higher LR on the embedding/head (docs/METHOD.md §2.3). cubic5 and momentum warm-up are not implemented.*
+4. QK-norm + ReLU² (no erf on CPU) + zero-init + softcap 15 + value residual [[9](#ref-9), [10](#ref-10), [11](#ref-11)]. *QK-norm helped (2.639, 2 seeds, 1.24x). ReLU² was worse (2.829); softcap 15 (2.726) and zero-init (2.732) were neutral (1 seed each). Value residual is not implemented.*
+5. Vocab ~3-4k: the law extrapolates to ~2.8k, so the repo's 4096 default is reasonable [[80](#ref-80)]. Use TinyStoriesV2 or a fastText-filtered, deduplicated corpus for 2-4 epochs [[14](#ref-14)]. *4096 vocabulary, deduplicated TinyStories V1, well under one epoch (≤0.04).*
+6. Zoom K=4 -> 2 -> 1 with ≤1/3 of FLOPs coarse. At this data scale expect parity at ~0.5-0.6x compute, not a loss gain [[3](#ref-3), [4](#ref-4)]. *The 4 -> 2 -> 1 staircase lost (2.874, 3 seeds). k=2 for 33-50% with a doubled batch won by 1.12-1.14x compute, far less than the 0.5-0.6x this item expected.*
+7. Annealed parameter-free MTP in the K=1 phase; batch ramp ×1/×2/×3 with LR multipliers 1.0/1.51/1.93 [[47](#ref-47), [46](#ref-46)]. *Not implemented.*
 8. Skip: FP8, flash kernels, `torch.compile` (unless the run exceeds ~10 min), MTP heads, Random-LTD, SemDeDup, JEST, checkpointing.
 
-**(b) ~100M-param LLM, one GPU**
+**(b) ~100M-param LLM, one GPU** (not measured by Bantam)
 1. bf16 autocast + TF32 `high` + SDPA `is_causal` + `compile(dynamic=False)` on fixed shapes: ~3x from TF32 and ~1.4x from compile on A100, less on GeForce [[22](#ref-22), [24](#ref-24)].
 2. Data: fastText top 10-30% (or FineWeb-Edu ≥3) + per-source MinHash + ≤4 epochs (several-x token efficiency) [[12](#ref-12), [13](#ref-13)].
-3. Zoom / patch-level training (Shao K=4, λ=2/3, or TST s=6, r=0.3): 0.5x compute at equal loss, verified from 270M to 2.7B [[3](#ref-3), [4](#ref-4)].
+3. Zoom / patch-level training (Shao K=4, λ=2/3, or TST s=6, r=0.3): 0.5x compute at equal loss, verified from 270M to 2.7B [[3](#ref-3), [4](#ref-4)]. *Untested at this scale by Bantam; at 5.8M its Zoom saved about 11-12% (1.12-1.14x).*
 4. Muon + Polar Express (or NorMuon) + cautious or scheduled wd: 1.3-1.4x [[33](#ref-33), [36](#ref-36)].
 5. Speedrun bundle: trapezoid LR with floor, batch ramp, window/sequence warmup, value embeddings (vocab 8-16k), tie embeddings until 2/3, annealed MTP [[2](#ref-2), [43](#ref-43)].
 6. llm.c-format pre-shuffled shards, pinned uint16, int32 inputs [[75](#ref-75)].
 7. Max-batch search to ≤85% VRAM with `expandable_segments`; checkpointing only on OOM [[94](#ref-94), [91](#ref-91)].
 8. Power cap at 70-80% of TDP: 10-20% less energy for <5-7% time [[96](#ref-96), [95](#ref-95)].
 
-**(c) ~1M-param ViT on 64×32 ERA5, CPU**
-1. Convert WB2 64×32 once into a normalized time-major int16/fp16 memmap holding only the channels you use; no loader workers [[146](#ref-146)].
-2. Compute persistence and climatology first (§3.3) as unit tests and skill denominators.
-3. Residual target with Δ std (Z500 ~228, T850 1.24, T2M 2.35), added in fp32; GraphCast variable and level weights; A/B latitude weighting [[17](#ref-17), [162](#ref-162)].
+**(c) ~1M-param ViT on 64×32 ERA5, CPU** (measured items noted)
+1. Convert WB2 64×32 once into a normalized time-major int16/fp16 memmap holding only the channels you use; no loader workers [[146](#ref-146)]. *Done: the fields stay in RAM, read from fields.npy or a GridPack.*
+2. Compute persistence and climatology first (§3.3) as unit tests and skill denominators. *Done: persistence RMSE and (since 0.3) a training-years climatology and ACC are reported.*
+3. Residual target with Δ std (Z500 ~228, T850 1.24, T2M 2.35), added in fp32; GraphCast variable and level weights; A/B latitude weighting [[17](#ref-17), [162](#ref-162)]. *Residual target normalized by the 6 h change std and a latitude-weighted MSE; no variable or level weights; no A/B.*
 4. Input stack: t, t-6h, t-12h + TOA solar + land-sea mask, orography and latitude [[116](#ref-116), [132](#ref-132)].
-5. AdamW at 1e-3 to 1.5e-3, 500-step warmup, constant LR + 5% 1-sqrt cooldown (or linear to 0) [[8](#ref-8), [7](#ref-7)].
+5. AdamW at 1e-3 to 1.5e-3, 500-step warmup, constant LR + 5% 1-sqrt cooldown (or linear to 0) [[8](#ref-8), [7](#ref-7)]. *AdamW's best LR in Bantam's sweep was 2e-3 to 4e-3 with a cosine schedule; LRs were chosen on the 2018 test year (no validation year in the committed runs).*
 6. A small ViT (ClimateLearn D=128, depth 8, patch 2: T2M 0.78 K at 6 h vs ResNet 0.72) with maskless SDPA, or a periodic-padded CNN for short leads [[132](#ref-132)].
-7. Zoom on the grid: first ~60-75% of compute at 32×16 or patch 4 (PI-resized), final ≥25% at 64×32 [[123](#ref-123), [121](#ref-121)]. Or Sparse-Reslim r=0.25, but verify it at 512 tokens [[19](#ref-19)].
-8. Muon on qkv/proj/mlp (ViT-B used Muon lr 1e-3 vs AdamW 3e-4) with Periodic Row-wise NS [[39](#ref-39), [35](#ref-35), [114](#ref-114)].
+7. Zoom on the grid: first ~60-75% of compute at 32×16 or patch 4 (PI-resized), final ≥25% at 64×32 [[123](#ref-123), [121](#ref-121)]. Or Sparse-Reslim r=0.25, but verify it at 512 tokens [[19](#ref-19)]. *Bantam (1.26M-param ViT, 5.5e13 FLOPs): low-resolution warm-up at 32×16 for 60% of compute helped (0.112 vs 0.124 val MSE, 1 seed; z500 24 h RMSE 194 vs 217 m²/s²); Zoom token merging for 60% hurt under Muon (0.159, 2 seeds). Sparse-Reslim is not implemented.*
+8. Muon on qkv/proj/mlp (ViT-B used Muon lr 1e-3 vs AdamW 3e-4) with Periodic Row-wise NS [[39](#ref-39), [35](#ref-35), [114](#ref-114)]. *Muon at lr 1.6e-2 (full Newton-Schulz every step) beat AdamW clearly: 0.124 vs 0.229 (AdamW 1 seed), with the same shared-LR caveat as the LLM.*
 9. Direct models for 1-2 leads, or a short K=2 -> 4 rollout fine-tune at 100x lower LR with fixed Δt; log the high-wavenumber energy ratio [[18](#ref-18), [158](#ref-158)].
 10. Skip: checkpointing, bf16 on this CPU, ToMe (<2k tokens), half-precision FFTs.
 
@@ -521,27 +631,22 @@ The verifiers flagged these as missing. None of their claims are used above.
   - CANS (2506.10935).
   - MuonBP (2510.16981).
   - Optimizer benchmark (2509.01440): AdEMAMix and MARS beat Muon at small batch.
-  - 8-bit Muon states (2509.23106).
 - **Speedrun:**
   - Hashed n-gram embeddings (records 62/92) and Over-Tokenized Transformer (2501.16975).
   - Depth/width pruning (records 30/35/90).
 - **Token reduction:**
   - EfficientTrain++ (2405.08768), PatchDropout (2208.07220), NaViT (2307.06304), FLIP (2212.00794).
   - Mixture-of-Depths (2404.02258).
-  - BLT (2412.09871).
   - DeepSeek-V3 MTP (2412.19437).
 - **Data:**
   - RegMix (2407.01492), CLIMB (2504.13161).
   - DataDecide (2504.11393).
   - Filter × epoch interaction (2404.07177).
   - FineWeb2 rehydration (2506.20920).
-  - Best-fit packing (2404.10830).
   - Frequency-ordered tokenization (2602.22958); Stream VByte (1709.08990).
 - **GPU:**
   - FlexAttention (2412.05496).
-  - Liger fused linear-CE (2410.10989); Cut Cross-Entropy (2411.09009).
   - Zeus power tuning.
-  - WSD cooldown origin (2405.18392).
 - **Weather:**
   - Keisler (2202.07575), design-space study (2410.07472), DLWP-HPX (2311.06253).
   - AMSE loss (2501.19374), almost-fair CRPS (2412.15832).
@@ -552,6 +657,8 @@ The verifiers flagged these as missing. None of their claims are used above.
   - Neural ERA5 compression (2210.12538, 2407.11666).
   - netCDF-C built-in BitRound.
   - ERA5 GRIB `bitsPerValue` caps.
+
+Items from the 0.2 list that are now cited in the text: 8-bit Muon states [[169](#ref-169)], BLT [[189](#ref-189)], best-fit packing [[174](#ref-174)], Liger fused linear-CE [[176](#ref-176)], Cut Cross-Entropy [[177](#ref-177)] and the WSD cooldown study [[183](#ref-183)].
 
 ## 7. References
 
@@ -570,7 +677,7 @@ The verifiers flagged these as missing. None of their claims are used above.
 <a id="ref-13"></a>[13] The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale (2024). https://arxiv.org/abs/2406.17557  
 <a id="ref-14"></a>[14] Scaling Data-Constrained Language Models (NeurIPS 2023) (2023). https://arxiv.org/abs/2305.16264  
 <a id="ref-15"></a>[15] Token-Native Storage: Read and Write in your Agent's Language (2026). https://arxiv.org/abs/2608.02376  
-<a id="ref-16"></a>[16] Local measurements on the zoomtrain dev box (TokPack, loaders, tokenizer), re-measured by the verifier (2026). file:///home/user/AboxRebuildcode/zoomtrain/zoomtrain/data/tokpack.py  
+<a id="ref-16"></a>[16] Local measurements on the development box (TokPack, loaders, tokenizer), made during the 2026-10 survey under the project's old working name and re-measured by the verifier; not committed as result files (2026). Code: bantamtrain/data/tokpack.py  
 <a id="ref-17"></a>[17] GraphCast: Learning skillful medium-range global weather forecasting (Science 2023) (2022). https://arxiv.org/abs/2212.12794  
 <a id="ref-18"></a>[18] Scaling transformer neural networks for skillful and reliable medium-range weather forecasting (Stormer, NeurIPS 2024) (2023). https://arxiv.org/abs/2312.03876  
 <a id="ref-19"></a>[19] Less Tokens, Better Forecasts: Sparse Residual Routing for Efficient Weather Prediction (Sparse-Reslim, ECCV 2026) (2026). https://arxiv.org/abs/2607.02829  
@@ -717,3 +824,46 @@ The verifiers flagged these as missing. None of their claims are used above.
 <a id="ref-160"></a>[160] Challenges of learning multi-scale dynamics with AI weather models (FouRKS) (2023). https://arxiv.org/abs/2304.07029  
 <a id="ref-161"></a>[161] google-research/weatherbench2: metrics.py (2024). https://github.com/google-research/weatherbench2/blob/main/weatherbench2/metrics.py  
 <a id="ref-162"></a>[162] Analyzing and Exploring Training Recipes for Large-Scale Transformer-Based Weather Prediction (2024). https://arxiv.org/abs/2404.19630  
+<a id="ref-163"></a>[163] LoRA: Low-Rank Adaptation of Large Language Models (Hu et al., ICLR 2022) (2021). https://arxiv.org/abs/2106.09685  
+<a id="ref-164"></a>[164] QLoRA: Efficient Finetuning of Quantized LLMs (Dettmers et al., NeurIPS 2023) (2023). https://arxiv.org/abs/2305.14314  
+<a id="ref-165"></a>[165] DoRA: Weight-Decomposed Low-Rank Adaptation (Liu et al., ICML 2024) (2024). https://arxiv.org/abs/2402.09353  
+<a id="ref-166"></a>[166] LoRA+: Efficient Low Rank Adaptation of Large Models (Hayou et al., ICML 2024) (2024). https://arxiv.org/abs/2402.12354  
+<a id="ref-167"></a>[167] A Rank Stabilization Scaling Factor for Fine-Tuning with LoRA (rsLoRA, Kalajdzievski) (2023). https://arxiv.org/abs/2312.03732  
+<a id="ref-168"></a>[168] 8-bit Optimizers via Block-wise Quantization (Dettmers et al., ICLR 2022) (2021). https://arxiv.org/abs/2110.02861  
+<a id="ref-169"></a>[169] Effective Quantization of Muon Optimizer States (Gupta et al.) (2025). https://arxiv.org/abs/2509.23106  
+<a id="ref-170"></a>[170] Deep Learning with Limited Numerical Precision (Gupta et al., ICML 2015) (2015). https://arxiv.org/abs/1502.02551  
+<a id="ref-171"></a>[171] Revisiting BFloat16 Training (Zamirai et al.) (2020). https://arxiv.org/abs/2010.06192  
+<a id="ref-172"></a>[172] torchao low-bit optimizers README (accessed 2026). https://github.com/pytorch/ao/tree/main/torchao/optim  
+<a id="ref-173"></a>[173] Efficient Sequence Packing without Cross-contamination: Accelerating Large Language Models without Impacting Performance (Krell et al.) (2021). https://arxiv.org/abs/2107.02027  
+<a id="ref-174"></a>[174] Fewer Truncations Improve Language Modeling (Ding et al., ICML 2024) (2024). https://arxiv.org/abs/2404.10830  
+<a id="ref-175"></a>[175] Enhancing Training Efficiency Using Packing with Flash Attention (IBM) (2024). https://arxiv.org/abs/2407.09105 ; Hugging Face blog: https://huggingface.co/blog/packing-with-FA2  
+<a id="ref-176"></a>[176] Liger Kernel: Efficient Triton Kernels for LLM Training (2024). https://arxiv.org/abs/2410.10989  
+<a id="ref-177"></a>[177] Cut Your Losses in Large-Vocabulary Language Models (Cut Cross-Entropy, Apple) (2024). https://arxiv.org/abs/2411.09009  
+<a id="ref-178"></a>[178] pytorch/torchtune (repository, QLoRA tutorial, chunked cross-entropy) (accessed 2026). https://github.com/pytorch/torchtune  
+<a id="ref-179"></a>[179] Query-Key Normalization for Transformers (Henry et al., Findings of EMNLP 2020) (2020). https://arxiv.org/abs/2010.04245  
+<a id="ref-180"></a>[180] Scaling Vision Transformers to 22 Billion Parameters (Dehghani et al.) (2023). https://arxiv.org/abs/2302.05442  
+<a id="ref-181"></a>[181] Small-scale proxies for large-scale Transformer training instabilities (Wortsman et al.) (2023). https://arxiv.org/abs/2309.14322  
+<a id="ref-182"></a>[182] Primer: Searching for Efficient Transformers for Language Modeling (So et al., NeurIPS 2021) (2021). https://arxiv.org/abs/2109.08668  
+<a id="ref-183"></a>[183] Scaling Laws and Compute-Optimal Training Beyond Fixed Training Durations (Hägele et al., NeurIPS 2024) (2024). https://arxiv.org/abs/2405.18392  
+<a id="ref-184"></a>[184] Gemma 2: Improving Open Language Models at a Practical Size (2024). https://arxiv.org/abs/2408.00118  
+<a id="ref-185"></a>[185] Funnel-Transformer: Filtering out Sequential Redundancy for Efficient Language Processing (Dai et al., NeurIPS 2020) (2020). https://arxiv.org/abs/2006.03236  
+<a id="ref-186"></a>[186] Efficient Transformers with Dynamic Token Pooling (Nawrot et al., ACL 2023) (2022). https://arxiv.org/abs/2211.09761  
+<a id="ref-187"></a>[187] MEGABYTE: Predicting Million-byte Sequences with Multiscale Transformers (Yu et al., NeurIPS 2023) (2023). https://arxiv.org/abs/2305.07185  
+<a id="ref-188"></a>[188] Block Transformer: Global-to-Local Language Modeling for Fast Inference (Ho et al., NeurIPS 2024) (2024). https://arxiv.org/abs/2406.02657  
+<a id="ref-189"></a>[189] Byte Latent Transformer: Patches Scale Better Than Tokens (Pagnoni et al.) (2024). https://arxiv.org/abs/2412.09871  
+<a id="ref-190"></a>[190] Shortformer: Better Language Modeling using Shorter Inputs (Press et al.) (2020). https://arxiv.org/abs/2012.15832  
+<a id="ref-191"></a>[191] GrowLength: Accelerating LLMs Pretraining by Progressively Growing Training Length (2023). https://arxiv.org/abs/2310.00576  
+<a id="ref-192"></a>[192] Token Dropping for Efficient BERT Pretraining (Hou et al., ACL 2022) (2022). https://aclanthology.org/2022.acl-long.262  
+<a id="ref-193"></a>[193] Compressing Sequences in the Latent Embedding Space: K-Token Merging for Large Language Models (Xu et al.) (2026). https://arxiv.org/abs/2604.15153  
+<a id="ref-194"></a>[194] MosaicML Composer method card: Sequence Length Warmup (accessed 2026). https://docs.mosaicml.com/projects/composer/en/latest/method_cards/seq_length_warmup.html  
+<a id="ref-195"></a>[195] MosaicML Composer method card: Progressive Resizing (accessed 2026). https://docs.mosaicml.com/projects/composer/en/latest/method_cards/progressive_resizing.html  
+<a id="ref-196"></a>[196] Model growth: Masked Structural Growth (MSG, Yao et al.) (2023) https://arxiv.org/abs/2305.02869 ; Stacking Your Transformers (Du et al., NeurIPS 2024) (2024) https://arxiv.org/abs/2405.15319  
+<a id="ref-197"></a>[197] Parallel Random Numbers: As Easy as 1, 2, 3 (Salmon, Moraes, Dror, Shaw; SC 2011) (2011). https://doi.org/10.1145/2063384.2063405  
+<a id="ref-198"></a>[198] ZeRO: Memory Optimizations Toward Training Trillion Parameter Models (Rajbhandari et al.) (2019). https://arxiv.org/abs/1910.02054  
+<a id="ref-199"></a>[199] ZeRO-Offload: Democratizing Billion-Scale Model Training (Ren et al.) (2021). https://arxiv.org/abs/2101.06840  
+<a id="ref-200"></a>[200] GaLore: Memory-Efficient LLM Training by Gradient Low-Rank Projection (Zhao et al., ICML 2024) (2024). https://arxiv.org/abs/2403.03507  
+<a id="ref-201"></a>[201] APOLLO: SGD-like Memory, AdamW-level Performance (Zhu et al., MLSys 2025) (2024). https://arxiv.org/abs/2412.05270  
+<a id="ref-202"></a>[202] Adam-mini: Use Fewer Learning Rates To Gain More (Zhang et al., ICLR 2025) (2024). https://arxiv.org/abs/2406.16793  
+<a id="ref-203"></a>[203] Can Muon Fine-tune Adam-Pretrained Models? (2026). https://arxiv.org/abs/2605.10468  
+<a id="ref-204"></a>[204] The Ephemeral Cost of Switching Optimizers Across LLM Training Stages (2026). https://arxiv.org/abs/2610.22650  
+<a id="ref-205"></a>[205] Hugging Face PEFT: LoRA developer guide (accessed 2026). https://huggingface.co/docs/peft/main/en/developer_guides/lora  
