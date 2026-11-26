@@ -89,6 +89,10 @@ ARMS = {
     "bantam_muon_steps_lr1e-3": {"kind": "bantam", "desc": "Muon LoRA with 1 window per step, LR 1e-3",
                                  "flags": ["--optim", "muon", "--pack", "bfd"],
                                  "override": {"batch": 1, "accum": 1, "lr": 1e-3}},
+    "bantam_adamw_steps_lr1e-3": {"kind": "bantam", "desc": "torch AdamW with 1 window per step, LR 1e-3 "
+                                  "(control for bantam_muon_steps_lr1e-3)",
+                                  "flags": ["--optim", "adamw", "--state_bits", "32", "--pack", "bfd"],
+                                  "override": {"batch": 1, "accum": 1, "lr": 1e-3}},
     "bantam_nf4_adamw_steps": {"kind": "bantam", "desc": "QLoRA NF4 base, torch AdamW, 1 window per step",
                                "flags": ["--optim", "adamw", "--state_bits", "32", "--pack", "bfd",
                                          "--quant", "nf4", "--low_ram", "1"],

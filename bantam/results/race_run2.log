@@ -15,3 +15,16 @@ Found the latest cached dataset configuration 'default' at /root/.cache/huggingf
   $ /usr/local/bin/python3 -m bantamtrain finetune --model HuggingFaceTB/SmolLM2-135M --jsonl /home/user/AboxRebuildcode/bantam/results/race/data/train.jsonl --eval_jsonl /home/user/AboxRebuildcode/bantam/results/race/data/bantam_eval.jsonl --seq 512 --batch 1 --accum 1 --epochs 1.0 --lr 0.0002 --sched cosine --warmup 0.03 --wd 0 --lora 16 --lora_alpha 32 --lora_dropout 0.05 --lora_targets q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj --seed 1234 --threads 4 --eval_every 0 --save_peft 1 --optim muon --pack bfd --out /home/user/AboxRebuildcode/bantam/results/race/runs/bantam_muon_steps
 [race] bantam_muon_steps: judging
   $ /usr/local/bin/python3 /home/user/AboxRebuildcode/bantam/experiments/race_finetune.py _judge --out /home/user/AboxRebuildcode/bantam/results/race --arm bantam_muon_steps
+[race] bantam_muon_steps: judge loss 2.3033, 556 s training, 216 tok/s, peak RSS 2622 MB
+[race] bantam_muon_steps_lr1e-3: training
+  $ /usr/local/bin/python3 -m bantamtrain finetune --model HuggingFaceTB/SmolLM2-135M --jsonl /home/user/AboxRebuildcode/bantam/results/race/data/train.jsonl --eval_jsonl /home/user/AboxRebuildcode/bantam/results/race/data/bantam_eval.jsonl --seq 512 --batch 1 --accum 1 --epochs 1.0 --lr 0.001 --sched cosine --warmup 0.03 --wd 0 --lora 16 --lora_alpha 32 --lora_dropout 0.05 --lora_targets q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj --seed 1234 --threads 4 --eval_every 0 --save_peft 1 --optim muon --pack bfd --out /home/user/AboxRebuildcode/bantam/results/race/runs/bantam_muon_steps_lr1e-3
+[race] bantam_muon_steps_lr1e-3: judging
+  $ /usr/local/bin/python3 /home/user/AboxRebuildcode/bantam/experiments/race_finetune.py _judge --out /home/user/AboxRebuildcode/bantam/results/race --arm bantam_muon_steps_lr1e-3
+[race] bantam_muon_steps_lr1e-3: judge loss 2.2410, 537 s training, 223 tok/s, peak RSS 2632 MB
+[race] bantam_nf4_adamw_steps: training
+  $ /usr/local/bin/python3 -m bantamtrain finetune --model HuggingFaceTB/SmolLM2-135M --jsonl /home/user/AboxRebuildcode/bantam/results/race/data/train.jsonl --eval_jsonl /home/user/AboxRebuildcode/bantam/results/race/data/bantam_eval.jsonl --seq 512 --batch 1 --accum 1 --epochs 1.0 --lr 0.0002 --sched cosine --warmup 0.03 --wd 0 --lora 16 --lora_alpha 32 --lora_dropout 0.05 --lora_targets q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj --seed 1234 --threads 4 --eval_every 0 --save_peft 1 --optim adamw --state_bits 32 --pack bfd --quant nf4 --low_ram 1 --out /home/user/AboxRebuildcode/bantam/results/race/runs/bantam_nf4_adamw_steps
+[race] bantam_nf4_adamw_steps: judging
+  $ /usr/local/bin/python3 /home/user/AboxRebuildcode/bantam/experiments/race_finetune.py _judge --out /home/user/AboxRebuildcode/bantam/results/race --arm bantam_nf4_adamw_steps
+[race] bantam_nf4_adamw_steps: judge loss 2.3682, 566 s training, 212 tok/s, peak RSS 2166 MB
+[race] wrote /home/user/AboxRebuildcode/bantam/results/race/summary.md
+exit 0
