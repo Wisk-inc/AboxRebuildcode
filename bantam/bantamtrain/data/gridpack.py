@@ -241,6 +241,7 @@ class GridPack:
 
     def __init__(self, path, verify=True):
         self.path = os.fspath(path)
+        self._abspath = os.path.abspath(self.path)    # for pickling, should the cwd change
         self.verify = verify
         self.mm = np.memmap(self.path, dtype=np.uint8, mode="r")
         if bytes(self.mm[:6]) != MAGIC:
@@ -264,7 +265,7 @@ class GridPack:
                 raise StalePackError(why)
 
     def __getstate__(self):
-        return {"path": os.path.abspath(self.path), "verify": self.verify}
+        return {"path": self._abspath, "verify": self.verify}
 
     def __setstate__(self, state):
         self.__init__(**state)

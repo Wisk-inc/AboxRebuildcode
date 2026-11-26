@@ -5,13 +5,15 @@
 Writes results/SUMMARY.md (raw tables; RESULTS.md is curated from it) and
 results/summary.json (seed aggregates and compute-to-target, machine-readable).
 Only completed runs are tabulated: logs still marked in_progress, or with a status
-other than "finished" (e.g. "diverged"), are listed as running or interrupted, and
-JSON files that are not run logs (derived tables) are skipped. Weather tables add
-the validation-split MSE of --val_year runs (valsplit_mse: select LRs on it, not on
-the test-year val_mse) and the z500 72 h anomaly correlation.
+other than "finished" (e.g. "killed"), are listed as running or interrupted, diverged
+runs (status "diverged", or a NaN final loss from before 0.3) as diverged, and JSON
+files that are not run logs (derived tables) are skipped. Weather tables add the
+validation-split MSE of --val_year runs (valsplit_mse: select LRs on it, not on the
+test-year val_mse) and the z500 72 h anomaly correlation.
 
 Seed aggregates: runs with the same recipe (args minus seed, name, paths, threads,
-eval cadence) and budget are pooled into n, mean and sample sd.
+eval cadence) and budget are pooled into n, mean and sample sd over distinct seeds
+(replicate runs of one seed are averaged into one sample first).
 
 Compute-to-target: the baseline curve is (budget, final_val_loss) of COMPLETED
 baseline runs, each with its own full LR schedule, averaged over seeds at each
@@ -36,16 +38,20 @@ RES = os.path.join(ROOT, "results")
 # args that never change what is trained or measured
 NON_RECIPE = {"seed", "name", "out", "threads", "device", "precision", "compile", "duty", "save",
               "save_every_eval", "ckpt_every", "ckpt", "resume", "stop_step", "evals", "eval_seqs",
-              "grad_ckpt"}
+              "grad_ckpt", "auto_batch", "allow_arg_change",
+              # bantam weather --forecast options (not used when training)
+              "forecast", "load", "init", "steps", "forecast_out"}
 # flags added after the first runs, at the value older logs implicitly used
 DEFAULTS = {"llm": {"state_bits": 32, "param_dtype": "fp32", "accum": 1, "batch_scale": 0.0,
                     "batch_scale_k": 0, "sched": "cosine", "decay_frac": 0.45, "lr_restart": 0,
                     "mix_fine": 0.0, "merge_mode": "", "qk_norm": 0, "mlp": "gelu", "softcap": 0.0,
                     "zero_init_proj": 0, "ns": "quintic", "warmup": 0.05, "gated": 1,
-                    "out_mode": "slot", "rope_pos": "token"},
+                    "out_mode": "slot", "rope_pos": "token", "data_format": "auto",
+                    "flops_mode": "model"},
             "weather": {"state_bits": 32, "coarse_mode": "merge", "batch_scale_k": 0,
                         "sched": "cosine", "decay_frac": 0.45, "ns": "quintic", "lr_restart": 0,
-                        "mix_fine": 0.0, "merge_mode": "", "gated": 1, "warmup": 0.05}}
+                        "mix_fine": 0.0, "merge_mode": "", "gated": 1, "warmup": 0.05,
+                        "flops_mode": "model", "ic_stride": 12, "max_ics": 96}}
 # Zoom and upgrade options: the baseline recipe has all of them at their default
 VARIANT = {"zoom": "1", "batch_scale_k": 0, "batch_scale": 0.0, "mix_fine": 0.0, "lr_restart": 0,
            "merge_mode": "", "gated": 1, "out_mode": "slot", "rope_pos": "token", "mlp": "gelu",
@@ -57,8 +63,17 @@ CTT_METHOD = ("baseline = completed runs with the run's optimizer, LR, model, da
               "points are never mixed with final losses; baseline-recipe runs are 1.00x")
 
 
-def scan(sub, res=None):
-    """(complete runs, {running name: last eval frac}, [skipped non-run files]) in res/sub."""
+def _diverged(r):
+    if r.get("status") == "diverged" or r.get("diverged"):
+        return True
+    fin = r.get("final_val_loss", (r.get("final") or {}).get("val_loss"))
+    return isinstance(fin, float) and not math.isfinite(fin)
+
+
+def scan(sub, res=None, diverged=None):
+    """(complete runs, {running name: last eval frac}, [skipped non-run files]) in res/sub.
+    Diverged runs go into the `diverged` dict ({name: step}) when one is passed, else
+    they are listed as running; they are never complete."""
     runs, running, skipped = {}, {}, []
     for p in sorted(glob.glob(os.path.join(res or RES, sub, "*.json"))):
         name = os.path.basename(p)[:-5]
@@ -70,8 +85,10 @@ def scan(sub, res=None):
             continue
         if not isinstance(r, dict) or "args" not in r:
             skipped.append(name)                    # derived table, not a run log
-        elif (r.get("in_progress") or r.get("status", "finished") != "finished"
-              or ("final_val_loss" not in r and "final" not in r)):    # running, diverged, killed
+        elif _diverged(r) and diverged is not None:
+            diverged[name] = r.get("diverged_at_step", r.get("steps"))
+        elif (r.get("in_progress") or _diverged(r) or r.get("status", "finished") != "finished"
+              or ("final_val_loss" not in r and "final" not in r)):    # running, killed
             ev = r.get("evals") or [{}]
             running[name] = ev[-1].get("frac")
         else:
@@ -118,16 +135,25 @@ def group_label(names):
     return stems.pop() if len(stems) == 1 else " / ".join(sorted(names))
 
 
+def per_seed(rs, metric):
+    """metric of each distinct seed (replicates of a seed averaged), sorted by seed."""
+    by = {}
+    for r in rs:
+        by.setdefault(json.dumps(r["args"].get("seed")), []).append(metric(r))
+    return [float(np.mean(by[k])) for k in sorted(by)]
+
+
 def seed_groups(runs, metric):
-    """[{label, n, mean, sd, runs}] for recipes run with more than one seed."""
+    """[{label, n, mean, sd, runs}] for recipes run with more than one seed; n counts
+    distinct seeds (two runs of the same seed are one sample, not two)."""
     groups = {}
     for n, r in runs.items():
         groups.setdefault(recipe(r), []).append(n)
     out = []
     for names in groups.values():
-        if len(names) < 2:
+        v = np.array(per_seed([runs[n] for n in names], metric))
+        if len(v) < 2:
             continue
-        v = np.array([metric(runs[n]) for n in names])
         out.append({"label": group_label(names), "n": len(v), "mean": float(v.mean()),
                     "sd": float(v.std(ddof=1)), "runs": sorted(names)})
     return sorted(out, key=lambda g: g["label"])
@@ -153,8 +179,9 @@ def baseline_curve(runs, key):
     pts = {}
     for r in runs.values():
         if recipe(r, budget=False) == key:
-            pts.setdefault(r["args"]["budget"], []).append(r["final_val_loss"])
-    return [(b, float(np.mean(v))) for b, v in sorted(pts.items())]
+            pts.setdefault(r["args"]["budget"], []).append(r)
+    return [(b, float(np.mean(per_seed(v, lambda r: r["final_val_loss"]))))
+            for b, v in sorted(pts.items())]
 
 
 def compute_to_target(runs):
@@ -165,7 +192,7 @@ def compute_to_target(runs):
                 for g in seed_groups(runs, lambda r: r["final_val_loss"])]
     for label, names in targets:
         r = runs[names[0]]
-        target = float(np.mean([runs[n]["final_val_loss"] for n in names]))
+        target = float(np.mean(per_seed([runs[n] for n in names], lambda r: r["final_val_loss"])))
         budget = r["args"]["budget"]
         base_key = recipe(r, budget=False, reset=True)
         row = {"run": label, "val_loss": target, "run_flops": budget, "baseline_flops": None,
@@ -240,12 +267,16 @@ def main(argv=None):
     args = ap.parse_args(argv)
     res = args.results
     parts = ["# Results summary (auto-generated by experiments/summarize.py)\n"]
-    summary = {"compute_to_target_method": CTT_METHOD, "running": {}, "skipped": {}}
+    summary = {"compute_to_target_method": CTT_METHOD, "running": {}, "diverged": {},
+               "skipped": {}}
 
     def scan_(sub):
-        runs, running, skipped = scan(sub, res)
+        diverged = {}
+        runs, running, skipped = scan(sub, res, diverged)
         if running:
             summary["running"][sub] = running
+        if diverged:
+            summary["diverged"][sub] = diverged
         if skipped:
             summary["skipped"][sub] = skipped
         return runs
@@ -315,6 +346,11 @@ def main(argv=None):
         parts.append(md_table([{"run": f"{sub}/{n}", "last eval frac": _f(fr, ".3f")}
                                for sub, d in summary["running"].items() for n, fr in d.items()],
                               ["run", "last eval frac"]))
+    if summary["diverged"]:
+        parts.append("\n\n## Diverged (not tabulated)\n")
+        parts.append(md_table([{"run": f"{sub}/{n}", "step": "" if st is None else st}
+                               for sub, d in summary["diverged"].items() for n, st in d.items()],
+                              ["run", "step"]))
     if summary["skipped"]:
         parts.append("\n\nSkipped (not run logs): " + ", ".join(
             f"{sub}/{n}.json" for sub, names in summary["skipped"].items() for n in names))

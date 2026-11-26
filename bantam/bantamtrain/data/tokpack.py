@@ -408,6 +408,7 @@ class TokPack:
 
     def __init__(self, path, cache_chunks=64, verify=True):
         self.path = os.fspath(path)
+        self._abspath = os.path.abspath(self.path)    # for pickling, should the cwd change
         self.cache_chunks = cache_chunks
         self.verify = verify
         self._open()
@@ -459,7 +460,7 @@ class TokPack:
         self._empty.flags.writeable = False
 
     def __getstate__(self):
-        return {"path": os.path.abspath(self.path), "cache_chunks": self.cache_chunks,
+        return {"path": self._abspath, "cache_chunks": self.cache_chunks,
                 "verify": self.verify}
 
     def __setstate__(self, state):

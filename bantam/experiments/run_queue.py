@@ -1,6 +1,6 @@
 """Run a queue of training commands with a fixed number of CPU workers.
 
-    python experiments/run_queue.py QUEUE.txt --workers 2 --threads 2
+    python experiments/run_queue.py QUEUE.txt --workers 2 --threads 2 [--dry_run]
 
 QUEUE.txt holds one shell command per line (blank lines and # comments are
 skipped; NAME=value lines define $NAME / ${NAME} substitutions for later lines,
@@ -12,9 +12,11 @@ where <name> is taken from its --name argument.
 Finished runs (results JSON without "in_progress" and with "final_val_loss" or
 "final") are skipped, so a queue can be re-run to fill in gaps; diverged runs
 are reported and not re-run. Unfinished runs (killed, crashed, in progress, or a
-truncated JSON) run again: a pretrain run resumes from its checkpoint
-(<out>/<name>.ckpt or --ckpt, written with --ckpt_every) when one exists. The
-exit status is 1 if any command failed.
+truncated JSON) run again and resume from their checkpoint (<out>/<name>.ckpt or
+--ckpt, written with --ckpt_every) when one exists; a weather run writes no JSON
+before it finishes, so a missing JSON next to its checkpoint resumes too.
+--dry_run prints what each command would do (skip, run or resume) and runs
+nothing. The exit status is 1 if any command failed.
 """
 import argparse
 import json
@@ -96,18 +98,26 @@ def run_state(path):
     return "finished"
 
 
-def run(cmd, threads):
+def plan(cmd, threads):
+    """(run_info, state, argv, resume) of a command; argv is None when it is skipped."""
     info = run_info(cmd)
-    name, state = info["name"], run_state(info["json"])
-    if state == "finished":
-        return name, "skipped", 0.0
-    if state == "diverged":
-        return name, "skipped (diverged)", 0.0
+    state = run_state(info["json"])
+    if state in ("finished", "diverged"):
+        return info, state, None, False
     argv = info["words"] + ["--threads", str(threads)]
-    resume = (info["sub"] == "llm" and state == "unfinished" and os.path.exists(info["ckpt"])
+    resumable = ("unfinished",) if info["sub"] == "llm" else ("unfinished", "missing")
+    resume = (state in resumable and os.path.exists(info["ckpt"])
               and _opt(info["words"], "--resume") is None)
     if resume:
         argv += ["--resume", info["ckpt"]]
+    return info, state, argv, resume
+
+
+def run(cmd, threads):
+    info, state, argv, resume = plan(cmd, threads)
+    name = info["name"]
+    if argv is None:
+        return name, "skipped" if state == "finished" else "skipped (diverged)", 0.0
     log = os.path.join(ROOT, "results", "logs", info["sub"], f"{name}.log")
     os.makedirs(os.path.dirname(log), exist_ok=True)
     t0 = time.time()
@@ -142,10 +152,18 @@ def main(argv=None):
     ap.add_argument("queue")
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--dry_run", action="store_true", help="print the plan, run nothing")
     args = ap.parse_args(argv)
     cmds = parse_queue(args.queue)
     for c in cmds:
         run_info(c)                               # fail fast on a line without --name
+    if args.dry_run:
+        for c in cmds:
+            info, state, argv, resume = plan(c, args.threads)
+            what = "skip" if argv is None else "resume" if resume else "run"
+            print(f"{info['name']}: {state} -> {what}"
+                  + (f": {shlex.join(argv)}" if argv else ""), flush=True)
+        return 0
     print(f"{len(cmds)} commands, {args.workers} workers x {args.threads} threads", flush=True)
     failed = 0
     with ThreadPoolExecutor(args.workers) as ex:

@@ -232,7 +232,7 @@ def test_ci_workflow():
     test, pkg = wf["jobs"]["test"], wf["jobs"]["package"]
     assert test["strategy"]["matrix"]["python"] == ["3.10", "3.13"]
     steps = " ".join(s.get("run", "") for s in test["steps"])
-    assert 'pip install -e "bantam[test,finetune,data]"' in steps
+    assert 'pip install -e "bantam[test,finetune,data,weather]"' in steps   # xarray: test_data_era5
     assert '-m "not slow and not network and not gpu"' in steps
     steps = " ".join(s.get("run", "") for s in pkg["steps"])
     assert "packaging/release.sh" in steps and "twine" in steps

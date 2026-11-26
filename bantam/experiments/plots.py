@@ -76,7 +76,8 @@ def plot_weather(runs, names, fname, title, out=None):
     for n in names:
         r = runs[n]
         a = r["args"]
-        kind = f"{a['optim']}/{'base' if r['schedule'] == '1:1' else a['coarse_mode']}"
+        mode = a.get("coarse_mode", "merge")                 # absent from the oldest logs
+        kind = f"{a['optim']}/{'base' if r['schedule'] == '1:1' else mode}"
         c = COLORS.get(kind.replace("merge", "zoom"), MUTED)
         y = [r["final"][f"rmse_z500_{h}h"] for h in hours]
         ax.plot(hours, y, color=c, linewidth=2, marker="o", markersize=5,
