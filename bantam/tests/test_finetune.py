@@ -119,11 +119,9 @@ def test_default_muon_params_skips_embeddings_and_head():
 
 
 def test_finetune_data_pipeline_masks_prompt_and_packs():
-    from transformers import AutoTokenizer
+    from test_finetune_fixtures import make_tokenizer   # GPT-2 style byte-level BPE, built offline
     from bantamtrain import finetune as ft
-    tok = AutoTokenizer.from_pretrained("gpt2") if os.environ.get("HF_HUB_OFFLINE") != "1" else None
-    if tok is None:
-        return
+    tok = make_tokenizer("bpe")
     exs = [{"prompt": "What is 2+2?", "response": "4"},
            {"messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]}]
     items = ft.tokenize_examples(tok, exs, seq=64)
@@ -131,6 +129,9 @@ def test_finetune_data_pipeline_masks_prompt_and_packs():
     for ids, labels, weights in items:
         assert len(ids) == len(labels) == len(weights)
         assert labels[0] == -100 and labels[-1] != -100 and weights[-1] == 1.0
+    # exactly the response is supervised, its first token included
+    assert [tok.decode([t for t in l if t != -100]) for _, l, _ in items] == \
+        ["4<|endoftext|>", " hello<|endoftext|>"]
     pad = tok.pad_token_id or 0
     for mode in ("bfd", "wrapped", "none"):
         w = ft.pack(items, 16, pad, mode)
