@@ -15,6 +15,7 @@
 `bantam <command> --help` lists a command's options.
 """
 import importlib
+import importlib.util
 import inspect
 import sys
 
@@ -47,9 +48,16 @@ def _missing_extra(e, module):
     if name and (module == name or module.startswith(name + ".")):
         return f"this installation has no `{module}` (upgrade bantamtrain)"
     top = name.split(".")[0]
-    if top not in EXTRAS:
+    if top not in EXTRAS or _installed(top):    # a missing submodule is a version problem: re-raise
         return None
     return f"needs `{top}`, which is not installed: pip install 'bantamtrain[{EXTRAS[top]}]'"
+
+
+def _installed(module):
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ValueError, ImportError):            # blocked or broken (sys.modules[m] = None)
+        return False
 
 
 def _run(mod, rest):

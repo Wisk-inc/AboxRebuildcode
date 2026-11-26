@@ -89,6 +89,14 @@ def test_missing_optional_dependency_gives_install_hint(monkeypatch, capsys):
     assert cli.main(["fake"]) == 1
     assert "pip install 'bantamtrain[data]'" in capsys.readouterr().err
 
+    def main_submodule(argv=None):                    # installed package, missing submodule
+        import json.no_such_submodule  # noqa: F401
+
+    mod.main = main_submodule
+    monkeypatch.setitem(cli.EXTRAS, "json", "data")
+    with pytest.raises(ModuleNotFoundError):
+        cli.main(["fake"])
+
 
 def test_help_without_optional_extras():
     """Core-only install: every --help works or names the extra to install; no traceback."""
