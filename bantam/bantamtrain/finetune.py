@@ -13,7 +13,8 @@ What it gives you
   * SFT data from a HuggingFace dataset or a local JSONL: prompt/response
     columns, Dolly-style instruction/context/response, or chat `messages`.
     Uses the tokenizer's chat template when it has one; the loss is computed
-    on response tokens only; examples are packed into fixed windows.
+    on response tokens only; examples are packed into fixed windows with a block-diagonal mask
+    (packed examples never see each other).
   * Multi-GPU with torchrun (DistributedDataParallel), resumable JSON logs,
     adapter-only checkpoints (MBs) and an optional merged save_pretrained().
 """
@@ -161,9 +162,9 @@ def tokenize_examples(tok, examples, seq, prompt_loss_weight=0.0):
     return items
 
 
-def _pad(x, y, w, n, pad_id):
+def _pad(x, y, w, g, n, pad_id):
     k = n - len(x)
-    return x + [pad_id] * k, y + [-100] * k, w + [0.0] * k
+    return x + [pad_id] * k, y + [-100] * k, w + [0.0] * k, g + [-1] * k
 
 
 def pack(items, seq, pad_id, mode="bfd"):
@@ -172,25 +173,30 @@ def pack(items, seq, pad_id, mode="bfd"):
     mode="bfd":     best-fit-decreasing bin packing, examples never split (TRL default)
     mode="wrapped": concatenate everything and cut every seq tokens (may split examples)
     mode="none":    one example per window, padded
-    Each window is (ids, labels, weights) of length seq+1 (inputs = [:-1], targets = [1:]).
+    Each window is (ids, labels, weights, segments) of length seq+1 (inputs = [:-1],
+    targets = [1:]). `segments` numbers the examples inside the window (-1 = padding);
+    lm_loss turns it into a block-diagonal causal mask with per-example positions, so a
+    packed example never attends to its neighbours. The first token of every example
+    is never a target (it would be predicted from the previous example).
     """
     n = seq + 1
-    items = [t for t in items if len(t[0]) >= 2]
+    items = [(i, [-100] + l[1:], w) for i, l, w in items if len(i) >= 2]
     if mode != "wrapped":                               # one example per bin: truncate to fit
         items = [(i[:n], l[:n], w[:n]) for i, l, w in items]
     if mode == "wrapped":
-        ids, labels, ws = [], [], []
-        for i, l, w in items:
+        ids, labels, ws, gs = [], [], [], []
+        for e, (i, l, w) in enumerate(items):
             ids += i
             labels += l
             ws += w
+            gs += [e] * len(i)
         out = []
         for s in range(0, len(ids) - 1, seq):
-            x, y, w = ids[s:s + n], labels[s:s + n], ws[s:s + n]
-            out.append(_pad(x, y, w, n, pad_id))
+            x, y, w, g = ids[s:s + n], labels[s:s + n], ws[s:s + n], gs[s:s + n]
+            out.append(_pad(x, y, w, [v - g[0] for v in g], n, pad_id))
         return out
     if mode == "none":
-        return [_pad(i, l, w, n, pad_id) for i, l, w in items]
+        return [_pad(i, l, w, [0] * len(i), n, pad_id) for i, l, w in items]
     bins = []                                           # best-fit decreasing
     for i, l, w in sorted(items, key=lambda t: -len(t[0])):
         best, best_left = None, None
@@ -199,21 +205,42 @@ def pack(items, seq, pad_id, mode="bfd"):
             if len(i) <= left and (best_left is None or left < best_left):
                 best, best_left = b, left
         if best is None:
-            best = {"len": 0, "x": [], "y": [], "w": []}
+            best = {"len": 0, "x": [], "y": [], "w": [], "g": []}
             bins.append(best)
+        best["g"] += [best["g"][-1] + 1 if best["g"] else 0] * len(i)
         best["x"] += i
         best["y"] += l
         best["w"] += w
         best["len"] += len(i)
-    return [_pad(b["x"], b["y"], b["w"], n, pad_id) for b in bins]
+    return [_pad(b["x"], b["y"], b["w"], b["g"], n, pad_id) for b in bins]
+
+
+def segment_mask(seg):
+    """(B, T) example ids (-1 = padding) -> (B, 1, T, T) bool block-diagonal causal mask
+    and (B, T) position ids restarting at 0 for every example; None, None when every
+    row is a single unpadded example (keeps the plain causal fast path)."""
+    if bool((seg == seg[:, :1]).all()):
+        return None, None
+    B, T = seg.shape
+    idx = torch.arange(T, device=seg.device).expand(B, T)
+    start = torch.ones_like(seg, dtype=torch.bool)
+    start[:, 1:] = seg[:, 1:] != seg[:, :-1]
+    pos = idx - torch.where(start, idx, torch.zeros_like(idx)).cummax(dim=1).values
+    causal = torch.ones(T, T, dtype=torch.bool, device=seg.device).tril()
+    return ((seg[:, :, None] == seg[:, None, :]) & causal)[:, None], pos
 
 
 # ----------------------------------------------------------------------------- model
-def lm_loss(model, x, y, ce_chunk, w=None):
+def lm_loss(model, x, y, ce_chunk, w=None, seg=None):
     """Mean CE over supervised tokens (optionally weighted); chunked head when the
-    model exposes base + output embeddings."""
+    model exposes base + output embeddings. `seg` (B, T) keeps packed examples apart."""
+    kw = {}
+    if seg is not None:
+        mask, pos = segment_mask(seg)
+        if mask is not None:
+            kw = {"attention_mask": mask, "position_ids": pos}
     if w is not None and bool((w != 1.0).logical_and(y != -100).any()):
-        logits = model(input_ids=x).logits.float()
+        logits = model(input_ids=x, **kw).logits.float()
         per = torch.nn.functional.cross_entropy(logits.reshape(-1, logits.shape[-1]),
                                                 y.reshape(-1), ignore_index=-100, reduction="none")
         wf = w.reshape(-1).float()
@@ -221,10 +248,10 @@ def lm_loss(model, x, y, ce_chunk, w=None):
     base = getattr(model, "model", None) or getattr(model, "base_model", None)
     head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
     if ce_chunk and base is not None and head is not None and hasattr(head, "weight"):
-        h = base(input_ids=x).last_hidden_state
+        h = base(input_ids=x, **kw).last_hidden_state
         bias = getattr(head, "bias", None)
         return chunked_cross_entropy(h, head.weight, y, ce_chunk, bias=bias)
-    logits = model(input_ids=x).logits.float()
+    logits = model(input_ids=x, **kw).logits.float()
     return torch.nn.functional.cross_entropy(logits.reshape(-1, logits.shape[-1]), y.reshape(-1),
                                              ignore_index=-100)
 
@@ -236,8 +263,9 @@ def evaluate(model, windows, rt, batch, ce_chunk):
     for i in range(0, len(windows), batch):
         xs = torch.tensor([w[0] for w in windows[i:i + batch]], device=rt.device)
         ys = torch.tensor([w[1] for w in windows[i:i + batch]], device=rt.device)
+        gs = torch.tensor([w[3] for w in windows[i:i + batch]], device=rt.device)
         with rt.autocast():
-            loss = lm_loss(model, xs[:, :-1], ys[:, 1:], ce_chunk)   # eval: response tokens only
+            loss = lm_loss(model, xs[:, :-1], ys[:, 1:], ce_chunk, seg=gs[:, :-1])   # response tokens only
         nv = int((ys[:, 1:] != -100).sum())
         tot += loss.float().item() * nv
         n += nv
@@ -257,6 +285,7 @@ def main(argv=None):
     ap.add_argument("--messages_col", default="messages")
     ap.add_argument("--max_examples", type=int, default=0)
     ap.add_argument("--eval_frac", type=float, default=0.05)
+    ap.add_argument("--eval_jsonl", default="", help="held-out JSONL (same columns); overrides --eval_frac")
     ap.add_argument("--seq", type=int, default=512)
     ap.add_argument("--pack", default="bfd", choices=["bfd", "wrapped", "none"])
     ap.add_argument("--prompt_loss_weight", type=float, default=0.0,
@@ -354,8 +383,13 @@ def main(argv=None):
     examples = load_examples(args)
     items = tokenize_examples(tok, examples, args.seq, args.prompt_loss_weight)
     random.Random(args.seed).shuffle(items)
-    n_eval = max(1, int(len(items) * args.eval_frac))
-    eval_w = pack(items[:n_eval], args.seq, tok.pad_token_id, args.pack)
+    if args.eval_jsonl:
+        ev_args = argparse.Namespace(**{**vars(args), "jsonl": args.eval_jsonl, "max_examples": 0})
+        eval_items, n_eval = tokenize_examples(tok, load_examples(ev_args), args.seq), 0
+    else:
+        n_eval = max(1, int(len(items) * args.eval_frac))
+        eval_items = items[:n_eval]
+    eval_w = pack(eval_items, args.seq, tok.pad_token_id, args.pack)
     train_w = pack(items[n_eval:], args.seq, tok.pad_token_id, args.pack)
     n_sup = sum(1 for w in train_w for t in w[1][1:] if t != -100)
     pad_frac = sum(w[0].count(tok.pad_token_id) for w in train_w) / max(1, len(train_w) * (args.seq + 1))
@@ -390,11 +424,11 @@ def main(argv=None):
     rng = random.Random(args.seed + rank)
     order = list(range(len(train_w)))
     rng.shuffle(order)
-    pos, t_train = 0, 0.0
+    pos, t_train, cpu_train = 0, 0.0, 0.0
     for step in range(1, total_steps + 1):
         for g in opt.param_groups:
             g["lr"] = lr_at(step / total_steps, args.lr, warmup=args.warmup, sched=args.sched)
-        t0 = time.perf_counter()
+        t0, c0 = time.perf_counter(), time.process_time()
         opt.zero_grad(set_to_none=True)
         loss_acc = 0.0
         for a in range(args.accum):
@@ -406,13 +440,16 @@ def main(argv=None):
             xs = torch.tensor([train_w[i][0] for i in idx], device=rt.device)
             ys = torch.tensor([train_w[i][1] for i in idx], device=rt.device)
             ws = torch.tensor([train_w[i][2] for i in idx], device=rt.device)
+            gs = torch.tensor([train_w[i][3] for i in idx], device=rt.device)
             with rt.autocast():
-                loss = lm_loss(fwd_model, xs[:, :-1], ys[:, 1:], args.ce_chunk, ws[:, 1:]) / args.accum
+                loss = lm_loss(fwd_model, xs[:, :-1], ys[:, 1:], args.ce_chunk, ws[:, 1:],
+                               seg=gs[:, :-1]) / args.accum
             rt.backward(loss, opt, [p for p in model.parameters() if p.requires_grad], step=False)
             loss_acc += loss.float().item()
         rt.step(opt, [p for p in model.parameters() if p.requires_grad])
         dt = time.perf_counter() - t0
         t_train += dt
+        cpu_train += time.process_time() - c0
         limiter(dt)
         if is_main and (step % 10 == 0 or step == 1):
             log["train"].append({"step": step, "loss": loss_acc, "time": t_train})
@@ -426,6 +463,7 @@ def main(argv=None):
 
     if is_main:
         log["train_time"] = t_train
+        log["train_cpu_time"] = cpu_train
         log["optimizer_state_bytes"] = state_bytes(opt)      # allocated lazily at step 1
         log["final_eval_loss"] = log["evals"][-1]["eval_loss"]
         if args.lora:

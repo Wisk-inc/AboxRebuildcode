@@ -134,17 +134,19 @@ def test_finetune_data_pipeline_masks_prompt_and_packs():
     pad = tok.pad_token_id or 0
     for mode in ("bfd", "wrapped", "none"):
         w = ft.pack(items, 16, pad, mode)
-        assert all(len(x) == 17 and len(y) == 17 and len(z) == 17 for x, y, z in w)
+        assert all(len(x) == len(y) == len(z) == len(g) == 17 for x, y, z, g in w)
     # wrapped: every response token is predicted exactly once (window position 0 is input only)
     w = ft.pack(items, 16, pad, "wrapped")
-    n_targets = sum(1 for x, y, z in w for t in y[1:] if t != -100)
+    n_targets = sum(1 for x, y, z, g in w for t in y[1:] if t != -100)
     n_resp = sum(1 for i, l, _ in items for t in l[1:] if t != -100)
     assert n_targets == n_resp
     # bfd never splits an example and fills bins best-first
     big = [(list(range(9)), list(range(9)), [1.0] * 9)] * 3 + [(list(range(5)), list(range(5)), [1.0] * 5)]
     w = ft.pack(big, 16, pad, "bfd")          # capacity 17: {9+5}, {9}, {9} -> 3 bins, no splits
-    fill = sorted(sum(1 for v in z if v != 0.0) for _, _, z in w)   # weights are 0 on padding
+    fill = sorted(sum(1 for v in z if v != 0.0) for _, _, z, _ in w)   # weights are 0 on padding
     assert len(w) == 3 and fill == [9, 9, 14]
+    two = [x for x in w if max(x[3]) == 1][0]           # the {9 + 5} bin: segments 0 then 1, pad -1
+    assert two[3] == [0] * 9 + [1] * 5 + [-1] * 3 and two[1][9] == -100   # no cross-example target
     # prompt_loss_weight > 0 supervises prompt tokens with that weight
     items2 = ft.tokenize_examples(tok, exs[:1], seq=64, prompt_loss_weight=0.3)
     ids, labels, weights = items2[0]
@@ -164,3 +166,31 @@ def test_resolve_template_installs_chatml_for_base_vocab():
     t = FakeTok()
     assert ft.resolve_template(t) == "chatml-installed"
     assert t.eos_token == "<|im_end|>" and "generation_prompt" in t.chat_template
+
+
+def test_packed_examples_do_not_attend_to_each_other():
+    """A packed window must give each example exactly the logits it gets alone."""
+    from bantamtrain import finetune as ft
+    m = _tiny_hf_llama()
+    torch.manual_seed(1)
+    a, b = torch.randint(0, 256, (11,)).tolist(), torch.randint(0, 256, (7,)).tolist()
+    items = [(a, a, [1.0] * 11), (b, b, [1.0] * 7)]
+    (x, y, w, g), = ft.pack(items, 20, 0, "bfd")
+    xs, gs = torch.tensor([x]), torch.tensor([g])
+    mask, pos = ft.segment_mask(gs)
+    assert pos[0, :11].tolist() == list(range(11)) and pos[0, 11:18].tolist() == list(range(7))
+    with torch.no_grad():
+        packed = m(input_ids=xs, attention_mask=mask, position_ids=pos).logits[0]
+        alone_a = m(input_ids=torch.tensor([a])).logits[0]
+        alone_b = m(input_ids=torch.tensor([b])).logits[0]
+        leaky = m(input_ids=xs).logits[0]
+    assert torch.allclose(packed[:11], alone_a, atol=1e-5)
+    assert torch.allclose(packed[11:18], alone_b, atol=1e-5)
+    assert not torch.allclose(leaky[11:18], alone_b, atol=1e-3)      # what plain packing did
+    # the training loss on the packed window equals the per-example losses combined
+    ys = torch.tensor([y])
+    loss = ft.lm_loss(m, xs[:, :-1], ys[:, 1:], 0, seg=gs[:, :-1])
+    ref = torch.nn.functional.cross_entropy(
+        torch.cat([alone_a[:-1], alone_b[:-1]]), torch.tensor(a[1:] + b[1:]))
+    assert abs(loss.item() - ref.item()) < 1e-5
+    assert ft.segment_mask(torch.zeros(2, 5, dtype=torch.long)) == (None, None)
