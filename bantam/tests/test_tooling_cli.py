@@ -209,6 +209,8 @@ def test_release_script_builds_with_readme_and_license(tmp_path):
     pytest.importorskip("build")
     pytest.importorskip("twine")
     env = {**ENV, "BUILD_DIR": str(tmp_path), "BUILD_ARGS": "--no-isolation"}
+    egg = os.path.join(ROOT, "bantamtrain.egg-info")
+    egg_before = os.path.exists(egg)                # e.g. left by an earlier in-tree build
     p = subprocess.run(["bash", os.path.join(ROOT, "packaging", "release.sh")], env=env,
                        capture_output=True, text=True, timeout=600)
     assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
@@ -217,7 +219,7 @@ def test_release_script_builds_with_readme_and_license(tmp_path):
     assert bantamtrain.__version__ in files[0]
     assert "README and LICENSE present" in p.stdout
     assert "contents: the wheel holds only bantamtrain/" in p.stdout
-    assert not os.path.exists(os.path.join(ROOT, "bantamtrain.egg-info"))
+    assert egg_before or not os.path.exists(egg)    # release.sh leaves no egg-info behind
 
 
 def test_markers_registered(request):

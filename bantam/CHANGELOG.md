@@ -14,7 +14,7 @@ commit instead.
 Every measured number in this file comes from one CPU-only sandbox (4 cores, 16 GB RAM,
 PyTorch 2.15 for CPU) with small models. Nothing has been run on a GPU.
 
-## [0.3.0]
+## [0.3.0] - 2026-11-26
 
 ### Highlights
 
