@@ -36,8 +36,8 @@ import numpy as np  # noqa: E402
 
 from ..data import open_tokens as open_tokens_any  # noqa: E402
 from ..data.tokpack import TokPack  # noqa: E402
-from ..device import (DutyCycleLimiter, describe, find_batch_size,  # noqa: E402
-                      maybe_compile, setup_runtime)
+from ..device import (PRECISIONS, DutyCycleLimiter, describe,  # noqa: E402
+                      find_batch_size, maybe_compile, setup_runtime)
 from ..models import ZoomGPT  # noqa: E402
 from ..lowmem import QState, load_checkpoint, state_bytes  # noqa: E402
 from ..optim import build_optimizer  # noqa: E402
@@ -411,7 +411,8 @@ def main(argv=None):
                          "than the curve's: compare it with finals, not with evals[])")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="auto")
-    ap.add_argument("--precision", default="auto", help="auto|fp32|bf16|fp16")
+    ap.add_argument("--precision", default="auto", choices=PRECISIONS,
+                    help="GPU autocast (CPU runs are always fp32)")
     ap.add_argument("--compile", action="store_true")
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--duty", type=float, default=1.0, help="cap average device load (0 < duty <= 1)")
@@ -457,6 +458,11 @@ def main(argv=None):
         meta = json.load(open(os.path.join(args.data, "meta.json")))
     except OSError as e:
         ap.error(f"--data {args.data}: {e}")
+    try:                                     # --d/--heads/--merge_mode/...: a skeleton, no memory
+        with torch.device("meta"):
+            build_model(args, meta["vocab_size"])
+    except ValueError as e:
+        ap.error(f"model options: {e}")
     max_seqs = (len(val) - 1) // args.seq
     if max(args.eval_seqs, args.final_eval_seqs) > max_seqs:
         ap.error(f"the val split holds {max_seqs} windows of --seq {args.seq}: lower --eval_seqs "
@@ -467,12 +473,18 @@ def main(argv=None):
     if max_batch > n_windows:
         ap.error(f"the train split holds {n_windows} windows of --seq {args.seq}, fewer than one "
                  f"step's batch ({max_batch} sequences over {world} rank(s))")
-    resume = load_ckpt(args.resume) if args.resume else None
+    try:
+        resume = load_ckpt(args.resume) if args.resume else None
+    except OSError as e:
+        ap.error(f"--resume {args.resume}: {e}")
     if resume is not None:
         refused, warned = resume_arg_changes(resume["args"], vars(args), ap.get_default)
         old_src = resume["log"].get("data_source", {}).get("train", {})
         if old_src.get("tokens", train_src["tokens"]) != train_src["tokens"]:
             refused.append(f"train data ({old_src['tokens']} -> {train_src['tokens']} tokens)")
+        old_world = resume["log"].get("world_size", 1)    # global batch = batch*accum*world
+        if old_world != world:
+            refused.append(f"WORLD_SIZE ({old_world} -> {world})")
         if refused and not args.allow_arg_change:
             ap.error(f"--resume: options differ from the checkpoint: {refused} (they change the "
                      "model, data order or schedule; --allow_arg_change overrides)")

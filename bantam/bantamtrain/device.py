@@ -90,8 +90,13 @@ def auto_precision(device):
     return "bf16" if tuple(torch.cuda.get_device_capability(device)) >= (8, 0) else "fp16"
 
 
+PRECISIONS = ("auto", "fp32", "bf16", "fp16")
+
+
 def setup_runtime(device="auto", precision="auto", compile=False, threads=None, seed=0):
-    """precision: 'auto' | 'fp32' | 'bf16' | 'fp16'."""
+    """precision: 'auto' | 'fp32' | 'bf16' | 'fp16' (anything else is an error, not fp32)."""
+    if precision not in PRECISIONS:
+        raise ValueError(f"precision must be one of {PRECISIONS}, got {precision!r}")
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
     dev = torch.device(device)
