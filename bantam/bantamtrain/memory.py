@@ -95,10 +95,12 @@ def capacity_bytes(gpu_gb, headroom=1.0):
 
 
 def muon_ns_flops(d, L, ns_steps=5, mlp_mult=4):
-    """Newton-Schulz FLOPs of one Muon step on a GPT block stack (fused qkv split in 3)."""
-    mats = [(d, d)] * 4 + [(mlp_mult * d, d), (d, mlp_mult * d)]
-    per_iter = sum(4 * min(a, b) ** 2 * max(a, b) + 2 * min(a, b) ** 3 for a, b in mats)
-    return ns_steps * L * per_iter
+    """Newton-Schulz FLOPs of one Muon step on a GPT block stack (fused qkv split in 3),
+    counted as bantamtrain.optim.ns_flops / optimizer_flops count them."""
+    from .optim import ns_flops
+    per_layer = (ns_flops(d, d, ns_steps, batch=4)               # q, k, v blocks + proj
+                 + ns_flops(mlp_mult * d, d, ns_steps) + ns_flops(d, mlp_mult * d, ns_steps))
+    return L * per_layer
 
 
 def measure_saved_bytes(fn, exclude=()):

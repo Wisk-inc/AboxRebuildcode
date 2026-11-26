@@ -30,6 +30,7 @@ import torch.nn as nn
 from torch.optim import Optimizer
 
 from .lowmem import QBLOCK, QState, write_param
+from .qweights import QBase, QTiedHead
 
 NS_COEFFS = (3.4445, -4.7750, 2.0315)
 # Polar Express (Amsel et al., 2025, Appendix A): per-step minimax coefficients, same
@@ -555,9 +556,12 @@ def optimizer_flops(opt, with_grad_only=False):
 
 
 def _is_conv1d(m):
-    """transformers' Conv1D (GPT-2 style): a linear layer with weight stored (in, out)."""
+    """transformers' Conv1D (GPT-2 style): a linear layer with weight stored (in, out).
+    The name is checked first: .weight of a quantized module is a full dequantization."""
+    if type(m).__name__ != "Conv1D":
+        return False
     w = getattr(m, "weight", None)
-    return type(m).__name__ == "Conv1D" and isinstance(w, torch.Tensor) and w.dim() == 2
+    return isinstance(w, torch.Tensor) and w.dim() == 2
 
 
 def _is_norm(m):
@@ -569,12 +573,16 @@ def _is_norm(m):
 def default_muon_params(model, include_lora=False):
     """Muon candidates for an arbitrary model: trainable 2-D weights of nn.Linear
     (and transformers Conv1D) layers that are not embeddings or the output head
-    (and not LoRA adapters unless include_lora). Works for HuggingFace causal LMs."""
-    skip = {id(m.weight) for m in model.modules() if isinstance(m, nn.Embedding)}
+    (and not LoRA adapters unless include_lora). Works for HuggingFace causal LMs.
+    Quantized modules (bantamtrain.qweights) are frozen and skipped without touching
+    their .weight, which would dequantize the whole matrix."""
+    quant = (QBase, QTiedHead)
+    skip = {id(m.weight) for m in model.modules()
+            if isinstance(m, nn.Embedding) and not isinstance(m, quant)}
     get_out = getattr(model, "get_output_embeddings", None)
     if callable(get_out):
         out = get_out()
-        if out is not None and hasattr(out, "weight"):
+        if out is not None and not isinstance(out, quant) and hasattr(out, "weight"):
             skip.add(id(out.weight))
     params, seen = [], set()
 
@@ -583,6 +591,8 @@ def default_muon_params(model, include_lora=False):
             seen.add(id(p))
             params.append(p)
     for name, m in model.named_modules():
+        if isinstance(m, quant):
+            continue
         if (isinstance(m, nn.Linear) or _is_conv1d(m)) and "lora_" not in name \
                 and name.split(".")[-1] not in ("lm_head", "head", "output", "score"):
             add(m.weight)
