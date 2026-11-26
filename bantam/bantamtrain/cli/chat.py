@@ -1,10 +1,12 @@
 """Chat with a Hugging Face causal LM, optionally with a fine-tuned adapter.
 
     bantam chat --model HuggingFaceTB/SmolLM2-135M --adapter runs/dolly --prompt "Name three colours"
-    bantam chat --model HuggingFaceTB/SmolLM2-135M --adapter runs/dolly --quant 4    # interactive
+    bantam chat --model HuggingFaceTB/SmolLM2-135M --adapter runs/dolly --quant nf4    # interactive
 
 --adapter takes a `bantam finetune` output dir (adapter.pt with adapter_meta.json, or an
 older run's log.json), an adapter.pt file, or a PEFT adapter dir (adapter_config.json).
+The base is quantized as in training (the run's --quant and --embed_quant) unless --quant /
+--embed_quant say otherwise; --quant 0 loads it in float.
 The prompt is rendered as in training: with the tokenizer saved next to the adapter
 (chat template, eos) when there is one, else the model's template, else the plain
 format. Tokens are streamed to stdout. In the REPL, /reset clears the conversation and
@@ -89,6 +91,29 @@ def attach_adapter(model, path, lora_alpha=None, rslora=None):
     return "bantam"
 
 
+QUANTS, EMBED_QUANTS = ("0", "8", "4", "nf4"), ("same", "8", "none")
+
+
+def trained_quant(adapter):
+    """(--quant, --embed_quant) of the `bantam finetune` run that wrote `adapter` (its dir's
+    adapter_meta.json, else log.json), or (None, None) when unknown (PEFT dir, bare file)."""
+    if not adapter:
+        return None, None
+    d = adapter if os.path.isdir(adapter) else os.path.dirname(adapter)
+    meta, run = {}, {}
+    if _has(d, "adapter_meta.json"):
+        with open(os.path.join(d, "adapter_meta.json")) as f:
+            meta = json.load(f)
+    if _has(d, "log.json"):
+        with open(os.path.join(d, "log.json")) as f:
+            run = json.load(f).get("args", {})
+    q = str(meta.get("quant", run.get("quant")))
+    eq = str(meta.get("embed_quant", run.get("embed_quant", "8")))     # 8: finetune's default
+    if q not in QUANTS:
+        return None, None
+    return q, eq if eq in EMBED_QUANTS else "8"
+
+
 def prompt_ids(tok, msgs, plain_format="instruction"):
     """Token ids of the generation prompt, rendered exactly as finetune renders a prompt.
     Without a chat template, "instruction" answers the last user message on its own
@@ -141,8 +166,15 @@ def load_model(args):
     dtype = {"fp32": torch.float32, "bf16": torch.bfloat16}.get(
         args.dtype, torch.bfloat16 if dev.type == "cuda" else torch.float32)
     model = AutoModelForCausalLM.from_pretrained(args.model, dtype=dtype)
-    if args.quant != "0":
-        quantize_model(model, {"8": 8, "4": 4, "nf4": "nf4"}[args.quant], min_numel=1 << 16, embed_bits=8)
+    tq, teq = trained_quant(args.adapter)              # the CLI flags override the training run's
+    quant = args.quant if args.quant is not None else (tq or "0")
+    eq = args.embed_quant if args.embed_quant is not None else (teq or "8")
+    if quant != "0":
+        if args.quant is None or (args.embed_quant is None and teq):
+            print(f"[chat] base quantized as in training: --quant {quant} --embed_quant {eq} "
+                  "(--quant 0 loads it in float)", file=sys.stderr, flush=True)
+        quantize_model(model, {"8": 8, "4": 4, "nf4": "nf4"}[quant], min_numel=1 << 16,
+                       embed_bits={"same": "same", "8": 8, "none": None}[eq])
         if dtype == torch.bfloat16:
             _match_embedding_dtype(model, dtype)
     if args.adapter:
@@ -155,7 +187,10 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", required=True, help="HF model id or local dir (the base model)")
     ap.add_argument("--adapter", default="", help="finetune output dir, adapter.pt, or PEFT adapter dir")
-    ap.add_argument("--quant", default="0", choices=["0", "8", "4", "nf4"], help="quantize the base")
+    ap.add_argument("--quant", default=None, choices=QUANTS,
+                    help="quantize the base (default: as the adapter's training run, else 0)")
+    ap.add_argument("--embed_quant", default=None, choices=EMBED_QUANTS,
+                    help="embeddings / output head with --quant (default: as in training, else 8)")
     ap.add_argument("--prompt", default="", help="answer this and exit (default: interactive)")
     ap.add_argument("--system", default="", help="system message")
     ap.add_argument("--max_new", type=int, default=256)
@@ -168,8 +203,10 @@ def main(argv=None):
     ap.add_argument("--rslora", type=int, default=-1, help="override the adapter's rsLoRA setting")
     ap.add_argument("--dtype", default="auto", choices=["auto", "fp32", "bf16"])
     ap.add_argument("--device", default="auto")
+    ap.add_argument("--ftz", type=int, default=1, help="CPU flush-to-zero / denormals-are-zero (0 = off)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
+    torch.set_flush_denormal(bool(args.ftz))
     torch.manual_seed(args.seed)
     tok = load_tokenizer(args.model, args.adapter)
     model = load_model(args)

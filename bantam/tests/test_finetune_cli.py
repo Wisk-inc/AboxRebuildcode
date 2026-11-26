@@ -289,7 +289,8 @@ def test_ddp_uneven_shards_finish_in_sync(chatml_dir, tmp_path):
     assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-3000:]
     with open(out / "log.json") as f:
         log = json.load(f)
-    assert log["train_windows"] == 10 and log["steps"] == 4 and log["world_size"] == 2
+    # 5 windows per rank at batch 1 x accum 2: 3 steps per epoch, the last with one micro-batch
+    assert log["train_windows"] == 10 and log["steps"] == 6 and log["world_size"] == 2
     a, b = log["replica_checksums"]
     assert a == b                     # bf16 stochastic rounding identical on both ranks
     assert os.path.exists(out / "model" / "config.json")

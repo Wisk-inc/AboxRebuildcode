@@ -262,16 +262,9 @@ def bantam_plan(tok, jsonl, p, pack="bfd"):
     rng.shuffle(order)
     pos, used, step_targets = 0, [], []
     for _ in range(steps):
-        n = 0
-        for _ in range(p["accum"]):
-            if pos + p["batch"] > len(order):
-                rng.shuffle(order)
-                pos = 0
-            for i in order[pos:pos + p["batch"]]:
-                used.append(i)
-                n += sum(1 for t in win[i][1][1:] if t != -100)
-            pos += p["batch"]
-        step_targets.append(n)
+        idx, pos = ft.step_windows(order, pos, rng, p["batch"], p["accum"])
+        used += [i for mb in idx for i in mb]
+        step_targets.append(sum(1 for mb in idx for i in mb for t in win[i][1][1:] if t != -100))
     sup = [sum(1 for t in w[1][1:] if t != -100) for w in win]
     return {"windows": len(win), "steps": steps, "windows_used": len(used),
             "real_tokens": sum(len(win[i][3]) - win[i][3].count(-1) for i in used),
@@ -574,7 +567,7 @@ def hf_worker(out, arm):
     cfg = read_json(os.path.join(out, "race_config.json"))
     p, run = cfg["protocol"], os.path.join(out, "runs", arm)
     torch.set_num_threads(p["threads"])
-    if p.get("hf_flush_denormal"):                  # bantam finetune always does this at import
+    if p.get("hf_flush_denormal"):                  # bantam finetune does this (--ftz 1, its default)
         torch.set_flush_denormal(True)
     import peft
     from transformers import (AutoModelForCausalLM, DataCollatorForSeq2Seq, Trainer, TrainerCallback,

@@ -10,7 +10,9 @@ exact. bits=8 quantizes every floating tensor with >= 2 dims and >= 4096 element
 (blocks of 256 elements, only the last block padded, one scale = absmax/127 per block:
 fp16, or fp32 when a scale is outside the fp16 normal range, ~0.8 % overhead); bits=4
 uses packed int4 codes with block 64 (bantamtrain.qweights), ~0.53 B/param. Everything
-else (norm gains, biases, merge gates, small matrices) is kept exactly. Tensors that
+else (norm gains, biases, merge gates, small matrices) is kept exactly, and so is a
+model already quantized by bantamtrain.qweights: its codes are integers and its scales
+(a `<module>.s` next to integer codes `<module>.q`) are never re-quantized. Tensors that
 share storage (tied embeddings) are stored once and come back shared. Everything is then
 byte-shuffled and zstd-compressed.
 
@@ -83,11 +85,26 @@ def _storage_key(t):
             t.dtype, t.device.type)
 
 
+def qweights_scales(state_dict):
+    """Names of the scale tensors of qweights-quantized modules in a state_dict: a float
+    `<prefix>s` with one row per row of the integer codes `<prefix>q` next to it."""
+    out = set()
+    for name, q in state_dict.items():
+        if not (name == "q" or name.endswith(".q")) or not torch.is_tensor(q) or \
+                q.dtype not in (torch.int8, torch.uint8):
+            continue
+        s = state_dict.get(name[:-1] + "s")
+        if torch.is_tensor(s) and s.is_floating_point() and s.dim() == 2 and q.dim() >= 2 \
+                and s.shape[0] == q.shape[0]:
+            out.add(name[:-1] + "s")
+    return out
+
+
 def save(path, state_dict, bits=8, level=10):
     """Write state_dict to `path`; returns the file size in bytes."""
     if bits not in (4, 8, 16, 32):
         raise ValueError(f"bits must be 4, 8, 16 or 32, got {bits}")
-    meta, blobs, first = [], [], {}
+    meta, blobs, first, keep = [], [], {}, qweights_scales(state_dict)
     for name, t in state_dict.items():
         t = t.detach()
         key = _storage_key(t)
@@ -101,14 +118,15 @@ def save(path, state_dict, bits=8, level=10):
         if dt not in _DTYPES:
             raise TypeError(f"{name}: unsupported dtype {t.dtype}")
         entry = {"name": name, "shape": list(t.shape), "dtype": dt}
-        quant = t.is_floating_point() and t.dim() >= 2 and t.numel() >= 4096 and bits in (4, 8)
+        quant = (t.is_floating_point() and t.dim() >= 2 and t.numel() >= 4096 and bits in (4, 8)
+                 and name not in keep)
         if quant:
             blk = BLOCK if bits == 8 else BLOCK4
             x, pad = _flat_blocks(t, blk)
             q, s, _ = quantize_rows(x, bits, blk)
             entry.update(enc=f"int{bits}", pad=pad, block=blk, scale=str(s.dtype).split(".")[-1])
             parts = [_le_bytes(q), _le_bytes(s)]
-        elif bits == 16 and t.dtype in (torch.float32, torch.float64):
+        elif bits == 16 and t.dtype in (torch.float32, torch.float64) and name not in keep:
             entry["enc"] = "bf16"
             parts = [_le_bytes(t.to(torch.bfloat16))]
         else:

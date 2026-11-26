@@ -171,11 +171,14 @@ def test_fast_bfd_matches_the_reference_and_scales():
 def test_plan_steps_is_the_same_on_every_rank():
     # 15 windows on 2 ranks used to be 8/7 -> 2 vs 1 steps at batch 4: a hang at the last step
     per, steps = ft.plan_steps(15, 2, 4, 1, 1.0, 0)
-    assert per == 7 and steps == 1
+    assert per == 7 and steps == 2                      # an epoch covers every window (4 + 3)
     shards = [list(range(15))[:per * 2][r::2] for r in range(2)]
     assert len(shards[0]) == len(shards[1]) == per
-    assert ft.plan_steps(39, 2, 2, 1, 1.0, 0) == (19, 9)
-    assert ft.plan_steps(10, 1, 4, 1, 2.0, 0) == (10, 4) and ft.plan_steps(10, 1, 4, 1, 2.0, 7)[1] == 7
+    assert ft.plan_steps(39, 2, 2, 1, 1.0, 0) == (19, 10)
+    assert ft.plan_steps(10, 1, 4, 1, 2.0, 0) == (10, 6) and ft.plan_steps(10, 1, 4, 1, 2.0, 7)[1] == 7
+    # --drop_last 1: the 0.2 schedule, full steps only
+    assert ft.plan_steps(15, 2, 4, 1, 1.0, 0, drop_last=True) == (7, 1)
+    assert ft.plan_steps(39, 2, 2, 1, 1.0, 0, True) == (19, 9) and ft.plan_steps(10, 1, 4, 1, 2.0, 0, True) == (10, 4)
 
 
 def test_existing_pipeline_still_masks_and_packs():

@@ -1,6 +1,6 @@
 {
  "model": "HuggingFaceTB/SmolLM2-135M",
- "eval": "100 held-out Dolly examples, response tokens, before any training",
+ "eval": "88 held-out Dolly examples (--eval_frac 0.25 of 355 usable; 43 packed windows), response tokens, before any training; 0.2 code, whose packed windows had no block-diagonal mask",
  "rows": [
   {
    "linears": "0",

@@ -137,7 +137,7 @@ def test_bantam_plan_replays_the_finetune_run(model_dir, tmp_path):
     tok = race.race_tokenizer(model_dir)
     plan = race.bantam_plan(tok, data, p)
     assert race.check_plan(plan, log)
-    assert plan["windows_used"] == log["steps"] * 4 <= plan["windows"]
+    assert plan["windows_used"] == plan["windows"] == log["windows_used"]       # one epoch: every window
     assert plan["supervised_tokens"] <= plan["supervised_tokens_all"] == log["supervised_tokens"]
     assert sum(plan["step_targets"]) == plan["supervised_tokens"]
     assert not race.check_plan(race.bantam_plan(tok, data, {**p, "seed": 8}), log)
