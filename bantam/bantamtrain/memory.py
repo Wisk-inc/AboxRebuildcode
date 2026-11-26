@@ -277,7 +277,7 @@ def storage_table(N, tokens, bits_per_token=5.97):
     return [
         ("weights fp32 (RAM or disk)", 4 * N),
         ("weights bf16", 2 * N),
-        ("weights bf16, lossless (WeightPack 16: byte-shuffle + zstd, ~71 %)", 1.42 * N),
+        ("weights WeightPack 16 (bf16, rounds fp32; shuffle + zstd, ~71 %)", 1.42 * N),
         ("weights int8 (qweights / WeightPack 8)", 1.03 * N),
         ("weights int4 (qweights / WeightPack 4)", 0.53 * N),
         ("resumable ckpt: fp32 weights + fp32 AdamW", 12 * N),

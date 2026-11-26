@@ -79,6 +79,25 @@ written by `bantam prepare-text` (and `bantam pack-text`, if you ran it).
 
 Required: `--data`, `--budget`, `--name`.
 
+**Recipe**
+
+| flag | default | meaning |
+|---|---|---|
+| `--recipe` | `none` | `best`: set `--optim muon --lr 1.6e-2 --qk_norm 1 --zoom 2:0.33,1:0.67 --batch_scale 2` for every one of these options the command line does not give. `none`: no change |
+
+`--recipe best` is the best combination measured so far, at small scale on CPU only:
+TinyStories, the 5.8M-parameter default model, 6.8e13 FLOPs. Its final validation loss
+was 2.589 (2 seeds) against 2.737 for the Muon baseline (3 seeds), so the baseline needs
+about 1.41x the compute to match. It has not been tested on larger models or on GPUs.
+Options you pass explicitly always win, also at their default value (`--zoom 1` keeps
+the baseline schedule). The LR is tied to the optimizer it was measured with: with an
+explicit `--optim adamw`, `--lr` keeps its default and the run prints a note. Likewise
+`--batch_scale`, which overrides `--batch_scale_k`, is not set when you pass
+`--batch_scale_k 1`. The run
+log records `args.recipe`, the resolved values of every option and
+`args.recipe_applied` (the options the recipe set). To resume such a run, repeat the
+same command line with `--resume`.
+
 **Data and budget**
 
 | flag | default | meaning |
@@ -152,10 +171,10 @@ transfer to Muon runs.
 | `--batch` | 16 | sequences per step (per process) |
 | `--accum` | 1 | gradient accumulation steps |
 | `--grad_ckpt` | 0 | 1: activation checkpointing per block |
+| `--ce_chunk N` | 0 | chunked cross-entropy: compute the loss over N positions at a time and recompute their logits in backward, so the full (batch, seq, vocab) logits are never built (for example 2048; 0 = off). Same loss up to fp32 summation order; one extra head matmul in backward (counted in `model_flops_exact`, not in the budget). `--out_mode bag` at k > 1 is not chunked |
 | `--auto_batch` | off | GPU only: split `batch x accum` into the largest micro-batch that fits, keeping the effective batch, schedule and data order. On CPU it prints a note and does nothing |
 
-There is no chunked cross-entropy flag in `pretrain`: the full logits are always built.
-(`bantam finetune` has `--ce_chunk`.)
+The `bantam memory` scoreboard rows 2-5 assume chunked cross-entropy (`--ce_chunk 2048`).
 
 **Evaluation**
 
@@ -188,7 +207,7 @@ bf16-weight model is always scored as an fp32 copy.
 | `--name` | required | run name |
 | `--out` | `results/llm` | directory for `<name>.json` (the run log, rewritten at every eval) |
 | `--save PATH` | `''` | write the final weights to PATH (a state_dict) and a `<root>_pretrained/` directory (config.json, weights, the data dir's `tokenizer.json`) that `bantam generate` reads |
-| `--save_every_eval` | 0 | 1: also save `<root>_f<frac><ext>` at every eval (needs `--save`) |
+| `--save_every_eval` | 0 | 1: also save `<root>_f<frac><ext>` at every eval. Needs `--save`: without it the command is a usage error (exit 2) |
 | `--ckpt_every N` | 0 | write a resumable checkpoint (model, optimizer, data position, RNG) every N steps |
 | `--ckpt PATH` | `<out>/<name>.ckpt` | checkpoint path |
 | `--resume PATH` | `''` | continue from a checkpoint. Bit-exact on CPU (tested) |
@@ -207,6 +226,9 @@ any file is written.
 # baseline, the measured CPU recipe (TinyStories, 5.8M params)
 bantam pretrain --data data/tinystories --budget 6.8e13 --zoom 1 \
     --optim muon --lr 1.6e-2 --name base
+
+# the best measured settings (same as the next command without --save)
+bantam pretrain --data data/tinystories --budget 6.8e13 --recipe best --name best
 
 # QK-norm plus Zoom (k=2 for the first third, batch x2), keep the model
 bantam pretrain --data data/tinystories --budget 6.8e13 --zoom 2:0.33,1:0.67 --batch_scale 2 \
@@ -348,6 +370,18 @@ process (no DDP).
 
 Required to train: `--data`, `--budget`, `--name`.
 
+**Recipe**
+
+| flag | default | meaning |
+|---|---|---|
+| `--recipe` | `none` | `best`: set `--optim muon --lr 1.6e-2 --coarse_mode lowres --zoom 4:0.6,1:0.4` for every one of these options the command line does not give. `none`: no change |
+
+`--recipe best` is the best combination measured so far, at small scale on CPU only
+(ERA5 64x32, the 1.26M-parameter default ViT, 5.5e13 FLOPs, 2018 test year): one-step
+MSE 0.112 (1 seed) against 0.124 for the Muon baseline (2 seeds). It works as in
+`pretrain`: explicit options win, the LR is applied only with Muon, and the log records
+`args.recipe` and `args.recipe_applied`.
+
 **Data, splits and evaluation**
 
 | flag | default | meaning |
@@ -412,7 +446,7 @@ z500, t850 and t2m, next to persistence and a train-years climatology.
 bantam weather --data data/era5_64x32 --budget 5.5e13 --zoom 1 \
     --optim muon --lr 1.6e-2 --name base --save runs/wx_base.pt
 
-# low-resolution warm-up for 60% of the budget, then full resolution
+# low-resolution warm-up for 60% of the budget, then full resolution (= --recipe best)
 bantam weather --data data/era5_64x32 --budget 5.5e13 --zoom 4:0.6,1:0.4 --coarse_mode lowres \
     --optim muon --lr 1.6e-2 --name lowres
 
@@ -593,7 +627,7 @@ cache. Needs `pip install 'bantamtrain[data]'` (for `tokenizers`).
 |---|---|---|
 | `--model DIR` | required | directory with `config.json` (from `save_pretrained`) |
 | `--tokenizer FILE` | `DIR/tokenizer.json` | tokenizer file |
-| `--prompt TEXT` | required | prompt |
+| `--prompt TEXT` | required | prompt, encoded as `prepare-text` encodes documents: without the tokenizer's special tokens (no BOS), and special-token text typed in the prompt stays text |
 | `--max_new` | 200 | new tokens |
 | `--temperature` | 0.8 | <= 0: greedy |
 | `--top_k` | 40 | 0: off |

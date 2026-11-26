@@ -3,8 +3,9 @@
 CPU
   * flush-to-zero / denormals-are-zero. Must be enabled before the first
     parallel op so every OpenMP worker inherits it; call `enable_ftz()` right
-    after `import torch`. Measured here: denormal softmax gradients made a
-    (8192x4096)@(4096x256) matmul 15x slower (897 ms -> 57 ms with FTZ).
+    after `import torch`. Denormal operands (e.g. tiny softmax gradients) can
+    make CPU matmuls much slower; with FTZ they are treated as zero. (No timing
+    of this is committed.)
 GPU
   * bf16 autocast on compute capability >= 8.0, fp16 + GradScaler before
     (precision="auto"), TF32 matmuls, fused AdamW, torch.compile,

@@ -436,7 +436,9 @@ class ZoomGPT(nn.Module):
         if safetensors is not installed). strip_zoom drops the merge/unmerge maps,
         which only training at k>1 uses, leaving a plain k=1 model. tokenizer_path:
         a tokenizer.json, or a data dir holding one, copied alongside; eos_id
-        (default: the data dir's meta.json) is recorded in config.json."""
+        (default: the data dir's meta.json) is recorded in config.json, and so is
+        weights_file, so a directory re-saved without safetensors never loads the
+        model.safetensors an earlier save left there."""
         os.makedirs(out_dir, exist_ok=True)
         cfg = self.config()
         sd = self.state_dict()
@@ -460,11 +462,14 @@ class ZoomGPT(nn.Module):
                     eos_id = json.load(f).get("eos_id")
         if eos_id is not None:
             info["eos_id"] = int(eos_id)
-        with open(os.path.join(out_dir, "config.json"), "w") as f:
-            json.dump({**info, **cfg}, f, indent=1)
         try:
             from safetensors.torch import save_file
         except ImportError:
+            save_file = None
+        info["weights_file"] = "model.pt" if save_file is None else "model.safetensors"
+        with open(os.path.join(out_dir, "config.json"), "w") as f:
+            json.dump({**info, **cfg}, f, indent=1)
+        if save_file is None:
             torch.save(sd, os.path.join(out_dir, "model.pt"))
         else:
             save_file(sd, os.path.join(out_dir, "model.safetensors"), metadata={"format": "pt"})
@@ -473,18 +478,20 @@ class ZoomGPT(nn.Module):
     @classmethod
     def from_pretrained(cls, path, map_location="cpu"):
         """Rebuild a model written by save_pretrained, in eval mode. Weights keep
-        their saved dtype and are loaded into a meta-device skeleton (no second copy)."""
+        their saved dtype and are loaded into a meta-device skeleton (no second copy).
+        They come from config.json's weights_file (directories saved before it existed:
+        model.safetensors if present, else model.pt)."""
         with open(os.path.join(path, "config.json")) as f:
             raw = json.load(f)
         names = set(inspect.signature(cls.__init__).parameters) - {"self"}
         cfg = {k: v for k, v in raw.items() if k in names}
-        st = os.path.join(path, "model.safetensors")
-        if os.path.exists(st):
+        wf = raw.get("weights_file") or ("model.safetensors" if os.path.exists(
+            os.path.join(path, "model.safetensors")) else "model.pt")
+        if wf.endswith(".safetensors"):
             from safetensors.torch import load_file
-            sd = load_file(st, device=str(torch.device(map_location)))
+            sd = load_file(os.path.join(path, wf), device=str(torch.device(map_location)))
         else:
-            sd = torch.load(os.path.join(path, "model.pt"), map_location=map_location,
-                            weights_only=True)
+            sd = torch.load(os.path.join(path, wf), map_location=map_location, weights_only=True)
         with torch.device("meta"):
             model = cls(**cfg)
         model.load_state_dict(sd, strict=True, assign=True)

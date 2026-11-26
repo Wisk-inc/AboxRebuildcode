@@ -135,6 +135,11 @@ model FLOPs. Loss is `final_val_loss` (nats per token, first 2,048 validation wi
 | QK-norm | `--qk_norm 1` | 2.639 +- 0.003 | 2 | 1.24x |
 | QK-norm + Zoom (k=2 for a third, batch x2) | `--qk_norm 1 --zoom 2:0.33,1:0.67 --batch_scale 2` | 2.589 +- 0.006 | 2 | 1.41x |
 
+`--recipe best` sets the last row's flags (`--optim muon --lr 1.6e-2 --qk_norm 1
+--zoom 2:0.33,1:0.67 --batch_scale 2`) for every one of them you do not pass yourself;
+`--recipe none`, the default, changes nothing. It is the best measured combination at
+this small scale on CPU, not a tested recipe for larger models or GPUs.
+
 "Baseline compute needed to match" reads each loss off the curve of plain Muon runs
 trained at 1x, 1.25x, 1.5x and 2x the budget (interpolated in log-FLOPs;
 `experiments/summarize.py` computes it). The runs above 1x are single seeds, and the
@@ -485,6 +490,8 @@ How to read this:
 - Low-resolution warm-up (`--coarse_mode lowres`: train on 2x2-coarsened fields for the
   first 60% of the budget) gave about 10% lower MSE than the Muon baseline, in one seed.
   This is progressive resizing, established practice, not something new.
+  `bantam weather --recipe best` sets its flags (`--optim muon --lr 1.6e-2
+  --coarse_mode lowres --zoom 4:0.6,1:0.4`) for every one you do not pass yourself.
 - Every model beats persistence clearly (z500 at 24 h: 217 against 569).
 
 ### Forecasts
@@ -568,7 +575,7 @@ matching run is `bantam finetune --quant nf4 --low_ram 1 --grad_ckpt 1`.
 |---|---|
 | quantized frozen base, never holding the float model | `finetune --quant nf4 --low_ram 1` |
 | smaller activations | `--grad_ckpt 1` (pretrain, finetune), `--accum N` with a smaller `--batch` |
-| never build the full logits | `finetune --ce_chunk 2048` (the default) |
+| never build the full logits | `finetune --ce_chunk 2048` (the default); `pretrain --ce_chunk 2048` (off by default) |
 | smaller optimizer state | `--state_bits 8` (pretrain, finetune, weather) |
 | no fp32 master weights | `pretrain --param_dtype bf16`; `finetune --param_dtype bf16` |
 | GPU micro-batch that fits | `pretrain --auto_batch` |
@@ -621,10 +628,8 @@ torchrun --standalone --nproc_per_node 4 -m bantamtrain pretrain \
 
 `experiments/gpu_smoke.sh` is the first thing to run on a new card (set `DATA=` to your
 prepared data directory). It checks that the bf16, compile and duty-cycle paths run; it
-is not a benchmark. Its LR (2e-3) and batch (64) are not the CPU-tuned recipe, and its
-Zoom runs use the original 4->2->1 schedule, which lost to the baseline on CPU. The
-script's header expects the Zoom run to complete more steps per second; nothing measured
-so far supports that. Re-sweep the LR when you change the batch size.
+is not a benchmark. It runs a Muon baseline (LR 1.6e-2) and `--recipe best` at batch 64,
+which is not the CPU-tuned batch, so re-sweep the LR when you change the batch size.
 
 What is untested or missing:
 

@@ -2,8 +2,9 @@
 
 Every run gets the same FLOP budget and reads the same pre-tokenized chunks in
 the same order: one seeded permutation of the windows, of which DDP ranks read
-disjoint slices. Baseline: --zoom 1. Zoom Training: e.g.
---zoom 4:0.35,2:0.25,1:0.4 (zoom level : fraction of the FLOP budget).
+disjoint slices. Baseline: --zoom 1. Zoom Training: e.g. --zoom 2:0.33,1:0.67
+(zoom level : fraction of the FLOP budget). --recipe best sets the best settings
+measured so far (small scale, CPU) for every option the command line does not give.
 Validation is always plain next-token loss at k=1 (the deployable model) in the
 arithmetic of an fp32-weight run (a bf16-weight model is scored as an fp32
 copy). Periodic evals use the first --eval_seqs val windows, the final eval the
@@ -13,8 +14,8 @@ model_flops (ZoomGPT.flops_per_step: causal-half attention, the FLOP convention 
 every recorded run; plus opt_flops with --flops_mode total); model_flops_exact, the
 matmuls the kernels execute (flops_per_step(exact=True)), is logged beside it.
 
-    python llm/train.py --data DIR --budget 6.8e13 --zoom 4:0.35,2:0.25,1:0.4 \
-        --optim muon --name my_run [--device cuda --precision bf16 --compile]
+    bantam pretrain --data DIR --budget 6.8e13 --recipe best --name my_run \
+        [--device cuda --precision bf16 --compile]
 
 Exit status: 0 finished (or stopped by --stop_step), 2 bad arguments,
 3 diverged (non-finite loss: the JSON says "status": "diverged", no --save).
@@ -42,6 +43,7 @@ from ..models import ZoomGPT  # noqa: E402
 from ..lowmem import QState, load_checkpoint, state_bytes  # noqa: E402
 from ..optim import build_optimizer  # noqa: E402
 from ..zoom import ZoomSchedule, lr_at  # noqa: E402
+from .recipes import NAMES as RECIPE_NAMES, apply_recipe  # noqa: E402
 
 KMAX = 4            # windows hold seq + max(KMAX, largest zoom level) tokens
 EXIT_DIVERGED = 3
@@ -137,19 +139,22 @@ RESUME_FIELDS = MODEL_FIELDS + ("seq", "seed", "budget", "batch_scale", "batch_s
                                 "state_bits", "param_dtype", "lr", "sched", "warmup", "decay_frac",
                                 "lr_restart", "mix_fine", "wd", "ns", "evals", "flops_mode")
 RESUME_IGNORE = ("resume", "stop_step", "ckpt_every", "ckpt", "threads", "allow_arg_change",
-                 "auto_batch", "batch", "accum")
+                 "auto_batch", "batch", "accum",
+                 "recipe_applied")       # the values --recipe set are compared as options
 
 
 def build_model(a, vocab, grad_ckpt=False):
     """ZoomGPT from an argparse namespace / run-log args (shared with the eval scripts).
-    block_size = --seq: generate()'s default window is the trained context (not a weight)."""
+    block_size = --seq: generate()'s default window is the trained context (not a weight);
+    ce_chunk (memory only, same loss) is 0 for logs that predate it."""
     g = lambda k, default: getattr(a, k, default) if not isinstance(a, dict) else a.get(k, default)  # noqa: E731
     return ZoomGPT(vocab, g("d", 256), g("layers", 6), g("heads", 4),
                    zoom_ks=ZoomSchedule.parse(g("zoom", "1")).ks, gated=bool(g("gated", 1)),
                    out_mode=g("out_mode", "slot"), rope_pos=g("rope_pos", "token"),
                    qk_norm=bool(g("qk_norm", 0)), merge_mode=g("merge_mode", "") or None,
                    grad_ckpt=grad_ckpt, mlp=g("mlp", "gelu"), softcap=float(g("softcap", 0.0)),
-                   zero_init_proj=bool(g("zero_init_proj", 0)), block_size=int(g("seq", 256)))
+                   zero_init_proj=bool(g("zero_init_proj", 0)),
+                   ce_chunk=int(g("ce_chunk", 0) or 0), block_size=int(g("seq", 256)))
 
 
 def stage_batch(batch, k, batch_scale=0.0, batch_scale_k=0):
@@ -353,11 +358,23 @@ def auto_micro_batch(args, vocab, sched, rt):
 
 
 # ------------------------------------------------------------------ main
-def main(argv=None):
+RECIPE_HELP = (
+    "best: the best settings measured so far, for each of these options that the command line "
+    "does not give: --optim muon --lr 1.6e-2 --qk_norm 1 --zoom 2:0.33,1:0.67 --batch_scale 2 "
+    "(the LR only with --optim muon; --batch_scale, which overrides --batch_scale_k, not with "
+    "a --batch_scale_k 1). Measured at small scale on CPU only (TinyStories, "
+    "5.8M-param ZoomGPT, d=256, 6.8e13 FLOPs): final val loss 2.589 (2 seeds) vs 2.737 for "
+    "the Muon baseline (3 seeds), which needs 1.41x the compute to match; not tested on "
+    "larger models or GPUs. none (default): no change. The log records args.recipe, the "
+    "resolved values and args.recipe_applied (the options it set)")
+
+
+def build_parser():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="dir with train/val .bin or .tokpack")
     ap.add_argument("--data_format", default="auto", choices=["auto", "bin", "tokpack"],
                     help="auto: <split>.tokpack if present, else the raw <split>.bin")
+    ap.add_argument("--recipe", default="none", choices=RECIPE_NAMES, help=RECIPE_HELP)
     ap.add_argument("--zoom", default="1")
     ap.add_argument("--budget", type=float, required=True, help="training FLOPs")
     ap.add_argument("--flops_mode", default="model", choices=["model", "total"],
@@ -369,6 +386,11 @@ def main(argv=None):
     ap.add_argument("--param_dtype", default="fp32", choices=["fp32", "bf16"],
                     help="bf16: weights in bf16, updates written with stochastic rounding")
     ap.add_argument("--grad_ckpt", type=int, default=0, help="activation checkpointing per block")
+    ap.add_argument("--ce_chunk", type=int, default=0,
+                    help="chunked cross-entropy: the loss is computed over this many positions "
+                         "at a time (logits recomputed in backward), so the (batch, seq, vocab) "
+                         "logits are never materialized; same loss up to fp32 summation order. "
+                         "0 = off (default); e.g. 2048. Not used by --out_mode bag at k > 1")
     ap.add_argument("--accum", type=int, default=1, help="gradient accumulation steps")
     ap.add_argument("--auto_batch", action="store_true",
                     help="GPU: split batch*accum into the largest micro-batch that fits in memory "
@@ -423,7 +445,8 @@ def main(argv=None):
                          "model.save_pretrained (with the --data tokenizer.json and eos_id, "
                          "ready for `bantam generate`)")
     ap.add_argument("--save_every_eval", type=int, default=0,
-                    help="also save <save root>_f<frac><ext> at every evaluation (compute curve)")
+                    help="also save <save root>_f<frac><ext> at every evaluation (compute curve; "
+                         "needs --save)")
     ap.add_argument("--ckpt_every", type=int, default=0,
                     help="write a resumable checkpoint (model+optimizer+data position) every N steps")
     ap.add_argument("--ckpt", default="", help="resumable checkpoint path (default <out>/<name>.ckpt)")
@@ -431,7 +454,13 @@ def main(argv=None):
     ap.add_argument("--allow_arg_change", action="store_true",
                     help="--resume even if model / data-order / schedule options differ")
     ap.add_argument("--stop_step", type=int, default=0, help="stop after this many steps (tests)")
+    return ap
+
+
+def main(argv=None):
+    ap = build_parser()
     args = ap.parse_args(argv)
+    recipe_note = apply_recipe(args, build_parser, argv, "pretrain")
     args.ckpt = args.ckpt or os.path.join(args.out, f"{args.name}.ckpt")
 
     # ---- validate before any compute is spent or any file is written
@@ -440,6 +469,8 @@ def main(argv=None):
     for flag in ("budget", "evals", "batch", "accum", "seq", "eval_seqs", "final_eval_seqs"):
         if not getattr(args, flag) > 0:
             ap.error(f"--{flag} must be positive")
+    if args.save_every_eval and not args.save:
+        ap.error("--save_every_eval needs --save (the eval checkpoints are named after it)")
     try:
         sched = ZoomSchedule.parse(args.zoom)
     except (ValueError, AssertionError) as e:
@@ -506,7 +537,7 @@ def main(argv=None):
             torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
     rt = setup_runtime(args.device, args.precision, args.compile, args.threads, args.seed)
     if rt.device.type == "cpu":
-        rt.amp_dtype, rt.scaler = None, None  # fp32 on CPU (no bf16 matmul units on this class of CPU)
+        rt.amp_dtype, rt.scaler = None, None  # CPU: fp32, as in every recorded run
     auto = None
     if args.auto_batch and rt.device.type == "cuda":
         fits = auto_micro_batch(args, meta["vocab_size"], sched, rt)
@@ -562,6 +593,8 @@ def main(argv=None):
     if is_main:
         print(f"[{args.name}] params={n_params/1e6:.2f}M zoom={sched} optim={args.optim} "
               f"budget={args.budget:.3e} world={world} {describe(rt)}", flush=True)
+        if recipe_note:
+            print(f"  {recipe_note}", flush=True)
 
     model_flops, opt_flops, tokens, step, train_time = 0.0, 0.0, 0, 0, 0.0
     exact_flops = 0.0     # flops_per_step(exact=True): the matmuls the kernels run (logged only)

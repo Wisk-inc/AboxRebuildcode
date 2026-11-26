@@ -6,7 +6,10 @@ element and *every* target element, but early in training it merges each group
 of K neighbouring elements (K tokens in text, a 2x2 block of patches on a
 weather grid) into one position, runs the body on N/K positions, and unmerges
 the result back to one prediction per original element. Over training K is
-annealed 4 -> 2 -> 1, ending with an ordinary model.
+lowered stage by stage to 1, ending with an ordinary model. The schedule that
+measured best on text is k=2 for the first third of the FLOPs, then k=1
+(--zoom 2:0.33,1:0.67 with --batch_scale 2); the original 4 -> 2 -> 1 schedule lost
+to the baseline (about equal with batch x k).
 
 Two small modules make the merge reversible enough to transfer:
 
@@ -17,7 +20,8 @@ Two small modules make the merge reversible enough to transfer:
                 slot, so each original element gets its own prediction
                 instead of a single bag-of-tokens distribution.
 
-Both cost K*d parameters per zoom level and are dropped at K=1.
+Both cost K*d parameters per zoom level and are unused at K=1 (they stay in the
+state_dict and training checkpoints; ZoomGPT.save_pretrained strips them).
 mode="linear" replaces the per-channel gates with per-slot d x d maps
 (z = sum_j W_j x_j, y_j = U_j h; init W_j = I/K, U_j = I): K*d^2 parameters
 per level, i.e. a learned patch embedding / un-embedding over the slots.
@@ -94,7 +98,7 @@ class ZoomSchedule:
     """Piecewise-constant zoom level as a function of compute spent.
 
     stages: list of (k, fraction_of_budget); every k is an int >= 1, fractions
-    are >= 0 and sum to 1. Example: [(4, .35), (2, .25), (1, .40)].
+    are >= 0 and sum to 1. Example: [(2, .33), (1, .67)].
     """
 
     def __init__(self, stages):
@@ -137,7 +141,7 @@ class ZoomSchedule:
 
     @staticmethod
     def parse(spec):
-        """'4:0.35,2:0.25,1:0.4' -> ZoomSchedule; '1' -> baseline; a bare 'k' is 'k:1'."""
+        """'2:0.33,1:0.67' -> ZoomSchedule; '1' -> baseline; a bare 'k' is 'k:1'."""
         spec = "" if spec is None else str(spec).strip()
         if spec in ("1", "baseline", ""):
             return ZoomSchedule([(1, 1.0)])
