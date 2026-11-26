@@ -1,3 +1,4 @@
+import functools
 """finetune.main end to end on tiny offline models: evaluation, outputs, option checks,
 default targets, the Muon default, resume, wave-2 flags and 2-process DDP."""
 import inspect
@@ -208,7 +209,8 @@ _LORA = inspect.signature(lora.apply_lora).parameters
 def test_lora_plus_gives_b_matrices_a_larger_lr(chatml_dir, data, tmp_path, monkeypatch):
     seen = []
     real = ft.build_optimizer
-    monkeypatch.setattr(ft, "build_optimizer", lambda *a, **k: seen.append(real(*a, **k)) or seen[-1])
+    monkeypatch.setattr(ft, "build_optimizer",
+                        functools.wraps(real)(lambda *a, **k: seen.append(real(*a, **k)) or seen[-1]))
     run(chatml_dir, data, tmp_path, "--lora_plus", 16, "--max_steps", 1, "--lr", 1e-3)
     scales = {g.get("lr_scale", 1.0) for g in seen[0].param_groups if g["params"]}
     assert scales == {1.0, 16.0}

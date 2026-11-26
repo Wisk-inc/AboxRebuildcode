@@ -550,7 +550,10 @@ def main(argv=None):
         if bad:
             ap.error(f"--resume: options differ from the checkpoint: {bad}")
     ds = ERA5(args.data, rt.device, stats_end=train_end)
-    sched = ZoomSchedule.parse(args.zoom)
+    try:
+        sched = ZoomSchedule.parse(args.zoom)
+    except ValueError as e:
+        ap.error(f"--zoom {args.zoom!r}: {e}")
     c_in = len(ds.channels) + 6
     torch.manual_seed(args.seed)          # model init depends on --seed only
     try:

@@ -194,7 +194,9 @@ def test_optimizer_flops_match_flop_counter():
     muon = opt.optimizers[-1]
     with FlopCounterMode(display=False) as fc:
         muon.step()
-    assert W.optimizer_step_flops(muon) == pytest.approx(fc.get_total_flops(), rel=0.02)
+    # FlopCounterMode counts matmuls only; optimizer_flops also charges the element-wise work
+    mm = fc.get_total_flops()
+    assert mm <= W.optimizer_step_flops(muon) <= 1.1 * mm
     assert W.optimizer_step_flops(opt) > W.optimizer_step_flops(muon)
 
 
