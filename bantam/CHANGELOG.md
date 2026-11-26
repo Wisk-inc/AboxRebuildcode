@@ -72,7 +72,7 @@ PyTorch 2.15 for CPU) with small models. Nothing has been run on a GPU.
   packed windows per step Bantam took 58 steps instead of 200 and lost 0.056. Muon on
   the LoRA matrices did not beat AdamW. The race ran on the code before full epochs
   and before flush-to-zero moved to `--ftz` (`--drop_last 1` reproduces its epochs).
-- **Quality checks.** 658 tests pass and 7 are skipped (CUDA-only or slow) on CPU. A
+- **Quality checks.** 671 tests pass and 7 are skipped (CUDA-only or slow) on CPU. A
   GitHub Actions workflow runs the suite and a packaging check.
 
 ### Breaking and behaviour changes
@@ -643,6 +643,15 @@ bit-identical to the code before the audit.
 - `--low_ram 1` crashed on checkpoints with only `pytorch_model.bin` weights.
 - `bantam chat --quant` always used int8 embeddings, whatever the run's `--embed_quant`.
 - A missing `datasets`, data source or model left an empty `--out` directory.
+- `--grad_ckpt 1` called `gradient_checkpointing_enable`, which transformers 5 deprecates
+  (a FutureWarning on every run) and removes in v6, where `--grad_ckpt` would have done
+  nothing without a word. It now calls `activation_checkpointing_enable` when the model
+  has it, and prints a note when a model has neither (0.3.0 walkthrough).
+- The data line printed "no target left after truncation to --seq 2", which reads as a
+  `--seq` value; it now names the reason and the count apart ("no response token within
+  --seq 512: 2"). The start line printed `state=0MB` for every run, because the
+  optimizer state is allocated at the first step; the size is now printed at the end
+  (0.3.0 walkthrough).
 
 **Quantization, LoRA and WeightPack**
 
@@ -670,6 +679,12 @@ bit-identical to the code before the audit.
   larger than bf16) and tied tensors stored twice (WP-6). `bits=8`/`4` re-quantized the
   scale matrices of a qweights-quantized state_dict.
 - `experiments/weightpack_eval.py` rebuilt the wrong architecture (EXP-1/quant).
+- `qweights.load_quantized` (`finetune --low_ram 1`) warned "12 checkpoint tensors not
+  used" for GPT-2's `attn.bias` causal-mask buffers, which `from_pretrained` drops on
+  purpose. It now skips the keys the model class lists in
+  `_keys_to_ignore_on_load_unexpected` and old rotary `inv_freq` / `position_ids`
+  buffers, as transformers does; any other unused tensor still warns (0.3.0
+  walkthrough).
 
 **Optimizers and low-memory state**
 
@@ -790,6 +805,11 @@ bit-identical to the code before the audit.
   Newton-Schulz FLOPs were not counted (MEM-10). The FLOP convention was not stated
   (MEM-11). The cross-entropy chunk did not match the code (MEM-12). `model_dims`
   silently substituted a different model at small sizes (MEM-15).
+- `bantam memory --ce_chunk 0` (the scoreboard, not `--finetune`) left rows 2-5 marked
+  "chunked" with a 0-token chunk, so it charged no loss memory at all and showed less
+  memory than the chunked default. 0 now means the full logits, as `bantam pretrain`
+  without `--ce_chunk`: one sequence less per micro-batch in rows 2 and 3 (5 and 6),
+  which SCOREBOARD_5B section 3 had worked out by hand (0.3.0 walkthrough).
 
 **Experiment tooling**
 
@@ -825,12 +845,22 @@ bit-identical to the code before the audit.
   returned None (PKG-12). The end-to-end resume test needed a machine-specific path
   (PKG-8). The version was defined twice (GAP-3/pkg).
 - CI skipped the `prepare-era5` tests (no weather extra) (1902d92).
+- A mistyped input path (`pack-text`/`pack-era5`/`weather --data`, `finetune --jsonl`,
+  `chat --adapter`, `weather --forecast --load`, `prepare-text --train`) ended in a
+  FileNotFoundError traceback. `bantam` now prints one `bantam <command>: error: ...`
+  line and exits 2, as `pretrain` and `generate` already did, and `bantam weather`
+  creates `--out` only after it has read `--data` (0.3.0 walkthrough).
 
 **Documentation**
 
 - The docs were rewritten for 0.3. Commands, imports and paths use `bantamtrain` and
   `bantam` (CLM-3, EXPV-2, FT-19, MEM-7, PKG-11, DATA-14), and `pip install` lines quote
   the extras for zsh (PKG-13). The corrected claims are listed in the next section.
+- The PEFT loading snippets in the README, GUIDE and PyPI page called
+  `AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M")`. transformers 5
+  loads a checkpoint in its stored dtype, bf16 for SmolLM2, so the "same logits as
+  Bantam" claim did not hold for the snippet as written (up to 4 apart in one check).
+  They now pass `dtype=torch.float32` (0.3.0 walkthrough).
 
 ### Results corrected
 

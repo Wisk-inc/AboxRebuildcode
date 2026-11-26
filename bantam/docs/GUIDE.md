@@ -41,7 +41,7 @@ cd bantam
 python -m pytest tests -q -m "not slow and not network and not gpu"   # what CI runs
 ```
 
-The full suite on the sandbox: 658 passed, 7 skipped (CUDA-only or slow tests).
+The full suite on the sandbox: 671 passed, 7 skipped (CUDA-only or slow tests).
 
 ---
 
@@ -390,13 +390,18 @@ A LoRA run writes to `--out`: `adapter.pt` and `adapter_meta.json` (Bantam forma
 To use the adapter in the Hugging Face stack:
 
 ```python
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
-base = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M")
+base = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M", dtype=torch.float32)
 model = PeftModel.from_pretrained(base, "runs/dolly")     # logits match Bantam's to ~1e-5 (tested)
 tok = AutoTokenizer.from_pretrained("runs/dolly")          # with the chat template used in training
 ```
+
+`dtype=torch.float32` matters: transformers 5 loads a checkpoint in its stored dtype by
+default (bf16 for SmolLM2), and Bantam trains and saves against the fp32 base on a CPU.
+On the bf16 base the logits differ from Bantam's by much more than 1e-5.
 
 The other way, `bantamtrain.lora.load_peft_adapter(model, adapter_dir)` loads a PEFT
 LoRA or DoRA adapter into a float or quantized model, and `bantam chat --adapter` accepts

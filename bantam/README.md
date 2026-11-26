@@ -283,7 +283,7 @@ From a source checkout (for development):
 ```bash
 cd bantam
 pip install -e '.[data,finetune,weather,test]'
-python -m pytest tests -q    # 658 passed, 7 skipped (CUDA / slow) on the CPU sandbox
+python -m pytest tests -q    # 671 passed, 7 skipped (CUDA / slow) on the CPU sandbox
 ```
 
 ## Quickstart: pretrain a small language model
@@ -424,17 +424,23 @@ or ShareGPT `conversations`. The tokenizer's chat template is used when it has o
 - with `--save_merged 1`: `merged/`, a plain `save_pretrained()` model
   (`bantam chat --model runs/mine/merged` works too).
 
-Load the adapter in PEFT (needs `pip install peft`; checked to give the same logits as
-Bantam):
+Load the adapter in PEFT (needs `pip install peft`; with the base in fp32, as Bantam
+trains it on a CPU, checked to give the same logits as Bantam):
 
 ```python
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
-base = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M")
+base = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M", dtype=torch.float32)
 model = PeftModel.from_pretrained(base, "runs/dolly")
 tok = AutoTokenizer.from_pretrained("runs/dolly")   # has the chat template used in training
 ```
+
+Pass the dtype: transformers 5 loads a checkpoint in its stored dtype by default, which is
+bf16 for SmolLM2. On that bf16 base the logits differed from Bantam's by up to 4.1 (largest
+absolute difference over one prompt; one check, an adapter trained for 8 steps on 100
+Dolly rows); on the fp32 base they were identical.
 
 `bantam chat --adapter` also accepts a PEFT adapter directory trained elsewhere. In
 the interactive chat, `/reset` clears the conversation and `/exit` quits.
@@ -727,7 +733,8 @@ weightpack.save("model.zwpk", model.state_dict(), bits=8)   # compressed checkpo
 state = weightpack.load("model.zwpk")
 qweights.quantize_model(model, bits=8)   # int8 weight-only layers in RAM ("nf4" and 4 too)
 # lora.apply_lora(...), lora.save_peft_adapter(...), lora.load_peft_adapter(...)
-# bantamtrain.losses.chunked_cross_entropy(...), bantamtrain.data.tokpack, .gridpack, .dedup
+# from bantamtrain.losses import chunked_cross_entropy
+# from bantamtrain.data import tokpack, gridpack, dedup   (submodules: import them by name)
 ```
 
 ## Credit: ideas Bantam implements

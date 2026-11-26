@@ -46,8 +46,9 @@ The `llm/` and `weather/` scripts exist only in the source repository, not in th
 package. The repository's old package name is gone; see [../CHANGELOG.md](../CHANGELOG.md).
 
 Exit status, for every command: 0 means success, 1 means an error (a message or a
-traceback), and 2 means bad arguments (argparse usage error). `bantam pretrain` also uses 3 for a run
-that diverged (non-finite loss).
+traceback), and 2 means bad arguments (argparse usage error, or through `bantam` an input
+path that does not exist: one `bantam <command>: error: ...` line). `bantam pretrain` also
+uses 3 for a run that diverged (non-finite loss).
 
 **Hardware note.** Every command was developed and measured on a 4-core CPU with no GPU.
 The CUDA code paths (`--device cuda`, `--precision`, `--compile` on GPU, NCCL DDP) exist
@@ -602,7 +603,7 @@ assumptions, not a measurement: nothing in it has been checked on a GPU. Two tab
 | `--fp8_speedup` | 1.20 | assumed FP8 throughput gain |
 | `--power_tput` | 0.95 | throughput kept under the power cap |
 | `--act_factor` | 1.0 | scale the measured activation constants (0.7 approximates fused kernels) |
-| `--ce_chunk` | 2048 | chunked cross-entropy chunk (`--finetune`: 0 = unchunked) |
+| `--ce_chunk` | 2048 | chunked cross-entropy chunk; 0 = unchunked (the full logits, as `bantam pretrain` without `--ce_chunk`), which also drops "+ chunked CE" from row 2 |
 | `--bits_per_token` | 5.97 | TokPack size for the storage lines (measured on TinyStories with a 4k vocab; a 32k-vocab web corpus needs roughly 7.3-9) |
 | `--markdown` | off | print a Markdown table |
 
@@ -617,7 +618,8 @@ assumptions, not a measurement: nothing in it has been checked on a GPU. Two tab
 
 Part of the scoreboard describes something Bantam cannot run today: there is no FP8
 code path (row 4, "FP8 linears", is a literature estimate). Rows 2 to 5 assume chunked
-cross-entropy, which `bantam pretrain` turns on with `--ce_chunk 2048` (off by default).
+cross-entropy, which `bantam pretrain` turns on with `--ce_chunk 2048` (off by default);
+`bantam memory --ce_chunk 0` shows the rows without it.
 
 ```bash
 bantam memory                                        # 5B model on one 96 GiB card

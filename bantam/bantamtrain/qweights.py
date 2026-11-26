@@ -33,6 +33,7 @@ import contextlib
 import inspect
 import json
 import os
+import re
 import struct
 import warnings
 
@@ -663,6 +664,11 @@ def load_quantized(model_id_or_path, bits, embed_bits=8, dtype=torch.float32, fa
                      and (obj.q if kind == "q" else obj).is_meta)
     if missing:
         raise RuntimeError(f"weights missing from the checkpoint: {missing[:8]}")
+    # keys from_pretrained also drops quietly: the model class's own patterns (GPT-2's causal
+    # mask buffers attn.bias, ...) and old checkpoints' rotary inv_freq / position_ids buffers
+    quiet = set(getattr(model, "_keys_to_ignore_on_load_unexpected", None) or ()) | {
+        r"rotary_emb\.inv_freq$", r"(^|\.)position_ids$"}
+    unexpected = [k for k in unexpected if not any(re.search(p, k) for p in quiet)]
     if unexpected:
         warnings.warn(f"{len(unexpected)} checkpoint tensors not used, e.g. {unexpected[:4]}")
     report["bytes_after"] = model_bytes(model)

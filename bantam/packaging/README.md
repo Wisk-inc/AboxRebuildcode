@@ -176,11 +176,15 @@ directory holds a standard PEFT adapter (`adapter_config.json` +
 `pip install peft`:
 
 ```python
+import torch
 from transformers import AutoModelForCausalLM
 from peft import PeftModel
-model = PeftModel.from_pretrained(
-    AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M"), "runs/dolly")
+base = AutoModelForCausalLM.from_pretrained("HuggingFaceTB/SmolLM2-135M", dtype=torch.float32)
+model = PeftModel.from_pretrained(base, "runs/dolly")
 ```
+
+Load the base in fp32 as above: transformers 5 otherwise loads SmolLM2 in its stored
+bf16, and the logits then no longer match Bantam's.
 
 ### Train a small weather model
 

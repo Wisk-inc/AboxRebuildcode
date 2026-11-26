@@ -151,7 +151,7 @@ of 34 bytes corresponds to `--act_factor 0.7`.
 | activations 1.6x the measured constants | `--act_factor 1.6` | max micro-batch 4 in rows 2-5; row 1 still does not fit |
 | decimal reading of "96 GB" | `--gpu_gb 89.4` | max micro-batch 5 (row 2) and 6 (rows 3-5); row 1 does not fit |
 | Muon gain like a tuned-AdamW benchmark at 1.2B (Wen et al. 2025: about 1.1x) | `--muon_flops 0.9` | row 3: 163 days, 1.08x over row 2 |
-| no chunked cross-entropy (`bantam pretrain` without `--ce_chunk`, its default) | hand arithmetic | one sequence less per micro-batch (row 2: 5, row 3: 6); days unchanged |
+| no chunked cross-entropy (`bantam pretrain` without `--ce_chunk`, its default) | `--ce_chunk 0` | one sequence less per micro-batch (row 2: 5, row 3: 6); days unchanged |
 
 The Muon row carries most of the claimed speed-up, and it rests entirely on
 the literature. Wen et al. 2025 find that against a carefully tuned AdamW,
@@ -234,8 +234,8 @@ bantam pretrain --data DIR --budget 3.1e21 --zoom 1 --optim muon --lr 1.6e-2 \
 Gaps:
 - **Chunked cross-entropy is off by default.** Rows 2-5 assume it; pass
   `--ce_chunk 2048` as above. Without it pretraining builds the full logits and
-  the micro-batch is one sequence smaller (section 3). Its memory saving has not
-  been measured on a GPU.
+  the micro-batch is one sequence smaller (section 3; `bantam memory --ce_chunk 0`).
+  Its memory saving has not been measured on a GPU.
 - **No FP8 path** (row 4).
 - **No peak-GPU-memory logging.** The run log has no
   `torch.cuda.max_memory_allocated` field yet, which a measurement needs.
@@ -303,6 +303,7 @@ bantam memory --markdown                        # section 1 (markdown)
 bantam memory --headroom 1                      # section 1.1
 bantam memory --tokens 2e10                     # section 1.2
 bantam memory --mfu 0.59 --act_factor 0.7       # section 3
+bantam memory --ce_chunk 0                      # section 3, no chunked cross-entropy
 bantam memory --params 1e9 --d 2048             # other sizes
 bantam memory --finetune --params 7e9 --gpu_gb 24   # full / LoRA / QLoRA fine-tuning table
 ```
