@@ -270,25 +270,26 @@ class ZoomGPT(nn.Module):
         """Analytic training FLOPs (fwd + bwd = 3x fwd) for one step.
 
         Default: the budget convention of every recorded run (body + tied head,
-        attention charged at the causal half, 2nd per position). exact=True counts
-        the matmuls the kernels execute, as torch.utils.flop_counter does: full
-        n x n attention (4nd per position; the SDPA backward recomputes the scores,
-        2.5x), the merge/unmerge maps of merge_mode="linear", and the forward that
-        grad_ckpt (body) and ce_chunk (head) recompute in the backward pass.
+        attention charged at the causal half, 2nd per position), plus the per-slot
+        d x d maps of merge_mode="linear", which no recorded run used (gate/mean
+        merges are elementwise and not charged). exact=True counts the matmuls the
+        kernels execute, as torch.utils.flop_counter does: full n x n attention
+        (4nd per position; the SDPA backward recomputes the scores, 2.5x) and the
+        forward that grad_ckpt (body) and ce_chunk (head) recompute in backward.
         Kernels that skip the masked half (CPU flash attention) do less attention
         work than counted here; the default charge is closer to them."""
         n = seq // k
         d, L, V = self.d, self.n_layer, self.vocab
         head_slots = k if (k > 1 and self.out_mode == "slot") else 1
         head = 2 * d * V * head_slots
-        if not exact:
-            body = L * (24 * d * d + 2 * n * d)      # per position, causal attention
-            return 3 * batch * n * (body + head)
-        merge = 0
+        merge = 0                                    # per group; gate/mean modes are free
         if k > 1 and str(k) in self.merge:
             merge += 2 * k * d * d * (self.merge[str(k)].mode == "linear")
             if self.out_mode == "slot":
                 merge += 2 * k * d * d * (self.unmerge[str(k)].mode == "linear")
+        if not exact:
+            body = L * (24 * d * d + 2 * n * d)      # per position, causal attention
+            return 3 * batch * n * (body + head + merge)
         ck = 1 if self.grad_ckpt else 0
         ce = 1 if self.ce_chunk and (k == 1 or self.out_mode == "slot") else 0
         # checkpoint recomputes qkv, proj, fc (16 d^2) and attention, but stops

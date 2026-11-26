@@ -89,16 +89,32 @@ def test_exact_flops_match_flop_counter(kw):
 
 
 def test_default_flops_unchanged_and_linear_merge_charged():
-    """The default (budget) numbers stay as recorded; exact adds 4kd^2 per group."""
+    """PRE-13: the budget numbers of gate/mean runs stay as recorded; the linear
+    merge/unmerge maps (4kd^2 per group) are charged by default and by exact."""
+    from torch.utils.flop_counter import FlopCounterMode
     gate = ZoomGPT(4096, 256, 6, 4, zoom_ks=[2, 4])
     lin = ZoomGPT(4096, 256, 6, 4, zoom_ks=[2, 4], merge_mode="linear")
+    mean = ZoomGPT(4096, 256, 6, 4, zoom_ks=[2, 4], gated=False)
     d, L, V, seq, B = 256, 6, 4096, 256, 16
     for k in (1, 2, 4):
         n = seq // k
         old = 3 * B * n * (L * (24 * d * d + 2 * n * d) + 2 * d * V * (k if k > 1 else 1))
-        assert gate.flops_per_step(B, seq, k) == old == lin.flops_per_step(B, seq, k)
-        extra = lin.flops_per_step(B, seq, k, exact=True) - gate.flops_per_step(B, seq, k, True)
-        assert extra == (3 * B * n * 4 * k * d * d if k > 1 else 0)
+        assert gate.flops_per_step(B, seq, k) == old == mean.flops_per_step(B, seq, k)
+        extra = 3 * B * n * 4 * k * d * d if k > 1 else 0
+        assert lin.flops_per_step(B, seq, k) - old == extra
+        assert lin.flops_per_step(B, seq, k, True) - gate.flops_per_step(B, seq, k, True) == extra
+    # the charged difference is what the linear maps actually cost
+    torch.manual_seed(0)
+    small = {m: ZoomGPT(96, 32, 2, 2, zoom_ks=[2, 4], merge_mode=m) for m in ("gate", "linear")}
+    x = torch.randint(0, 96, (2, 68))
+    for k in (2, 4):
+        measured = {}
+        for mode, m in small.items():
+            with FlopCounterMode(display=False) as fc:
+                m(x[:, :64], x[:, k:64 + k], k=k).backward()
+            measured[mode] = fc.get_total_flops()
+        charged = small["linear"].flops_per_step(2, 64, k) - small["gate"].flops_per_step(2, 64, k)
+        assert charged == measured["linear"] - measured["gate"]
 
 
 def test_merge_mode_validated():
