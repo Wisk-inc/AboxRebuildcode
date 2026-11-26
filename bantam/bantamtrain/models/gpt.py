@@ -214,7 +214,7 @@ class ZoomGPT(nn.Module):
 
     def hidden(self, idx, k=1):
         B, T = idx.shape
-        if k > 1:
+        if k != 1:
             if str(k) not in self.merge:
                 raise ValueError(f"k={k} is not a zoom level of this model "
                                  f"(zoom_ks={self._config['zoom_ks']})")
@@ -438,7 +438,9 @@ class ZoomGPT(nn.Module):
             src = tokenizer_path
             if os.path.isdir(src):
                 src = os.path.join(src, "tokenizer.json")
-            shutil.copyfile(src, os.path.join(out_dir, "tokenizer.json"))
+            dst = os.path.join(out_dir, "tokenizer.json")
+            if os.path.abspath(src) != os.path.abspath(dst):
+                shutil.copyfile(src, dst)
             meta = os.path.join(os.path.dirname(os.path.abspath(src)), "meta.json")
             if eos_id is None and os.path.exists(meta):
                 with open(meta) as f:

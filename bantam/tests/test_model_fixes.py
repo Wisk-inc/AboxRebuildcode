@@ -124,8 +124,9 @@ def test_constructor_and_input_checks():
     x = torch.randint(0, 64, (2, 30))
     with pytest.raises(ValueError, match="divisible"):
         m(x[:, :22], x[:, 4:26], k=4)
-    with pytest.raises(ValueError, match="zoom level"):
-        m(x[:, :24], x[:, 3:27], k=3)
+    for k in (3, 0):
+        with pytest.raises(ValueError, match="zoom level"):
+            m(x[:, :24], x[:, 3:27], k=k)
 
 
 @pytest.mark.parametrize("spec", ["0:0.5,1:0.5", "4:1.5,1:-0.5", "4:0.5,1:0.2", "4:0.35,x,1:0.65",

@@ -54,6 +54,7 @@ def test_save_pretrained_bf16_tokenizer_and_eos(tmp_path):
     assert cfg["eos_id"] == 7 and cfg["torch_dtype"] == "bfloat16"
     assert cfg["model_type"] == "zoomgpt"
     assert (tmp_path / "m" / "tokenizer.json").read_text() == "{}"
+    m.save_pretrained(str(data), tokenizer_path=str(data))     # into the data dir itself
     r = ZoomGPT.from_pretrained(out)
     assert r.emb.weight.dtype == torch.bfloat16
     assert all(torch.equal(a, b) for a, b in zip(r.state_dict().values(), m.state_dict().values()))
