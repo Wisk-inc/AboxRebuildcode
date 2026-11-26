@@ -1,0 +1,145 @@
+{
+ "_eval": {
+  "stories": 1000,
+  "bytes": 756822,
+  "source": "/root/.cache/bantamtrain_hf/datasets--roneneldan--TinyStories/snapshots/f54c09fd23315a6f9c86f9dc80f725de7d8f9c64/data/validation-00000-of-00001-869c898b519ad725.parquet",
+  "clean_subset": true,
+  "end_of_story_scored": true,
+  "denominator": "UTF-8 bytes of the original V1 validation text",
+  "l2c_lossy_stories": 38,
+  "signature": {
+   "version": 3,
+   "stories": 1000,
+   "bytes": 756822,
+   "text_sha256": "1eb0a0dc8649a42160dc970970724cb5d12f555b1b3695145dd7f55125fe000b",
+   "clean_subset": true,
+   "end_of_story_scored": true,
+   "ctx_cap": 512,
+   "boundary_policy": "native: each family in its training format, prefix unscored",
+   "boundary_overrides": [
+    "roneneldan/TinyStories-1M#eos",
+    "roneneldan/TinyStories-28M#eos",
+    "roneneldan/TinyStories-33M#eos",
+    "roneneldan/TinyStories-3M#eos",
+    "roneneldan/TinyStories-8M#eos"
+   ]
+  },
+  "signature_id": "4280ea1f55341ba6",
+  "purpose": "roneneldan models re-scored with 0.3 in the 0.2 convention ([eos] story [eos], via --hf repo#eos): the NLL matches the 0.2 compare_clean1000.json bit for bit, so the change in compare_clean1000.json comes from the boundary format alone. Other families' convention did not change."
+ },
+ "roneneldan/TinyStories-1M": {
+  "name": "roneneldan/TinyStories-1M",
+  "family": "published",
+  "params": 3745984,
+  "params_non_embedding": 529536,
+  "vocab": 50257,
+  "context": 512,
+  "nll_nats": 457928.6340332031,
+  "tokens": 179579,
+  "nll_end_nats": 11453.793014526367,
+  "end_tokens": 1000,
+  "boundary_format": "eos",
+  "weights": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/audit/experiments/dl/ts1m",
+  "weights_sha256": {
+   "pytorch_model.bin": "07f9609ea882b8163ff3b23d40e2b82cb715d409631beb15c84b164f3877dae7"
+  },
+  "eval_seconds": 114.51809096336365,
+  "signature_id": "4280ea1f55341ba6",
+  "bpb": 0.8729283363865732,
+  "nats_per_token": 2.550012161963276,
+  "bytes_per_token": 4.214423735514732,
+  "bpb_no_end": 0.8510944964857434
+ },
+ "roneneldan/TinyStories-3M": {
+  "name": "roneneldan/TinyStories-3M",
+  "family": "published",
+  "params": 8278400,
+  "params_non_embedding": 1845504,
+  "vocab": 50257,
+  "context": 512,
+  "nll_nats": 377112.2236328125,
+  "tokens": 179579,
+  "nll_end_nats": 12680.86196899414,
+  "end_tokens": 1000,
+  "boundary_format": "eos",
+  "weights": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/dl/ts3m",
+  "weights_sha256": {
+   "pytorch_model.bin": "0e4f93a86407a3f685520e48481a236c7b5e3a4f8e4fc8d1e58f3a748d97a37c"
+  },
+  "eval_seconds": 130.34353685379028,
+  "signature_id": "4280ea1f55341ba6",
+  "bpb": 0.7188717226688288,
+  "nats_per_token": 2.0999795278557767,
+  "bytes_per_token": 4.214423735514732,
+  "bpb_no_end": 0.694698777541883
+ },
+ "roneneldan/TinyStories-8M": {
+  "name": "roneneldan/TinyStories-8M",
+  "family": "published",
+  "params": 19702528,
+  "params_non_embedding": 6836736,
+  "vocab": 50257,
+  "context": 512,
+  "nll_nats": 341580.3918457031,
+  "tokens": 179579,
+  "nll_end_nats": 12374.2328414917,
+  "end_tokens": 1000,
+  "boundary_format": "eos",
+  "weights": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/audit/experiments/dl/ts8m",
+  "weights_sha256": {
+   "pytorch_model.bin": "22c355bfabebc1f6c861b3f5d7a801e96c7f6da4af4bb0f7780096ab82ea6716"
+  },
+  "eval_seconds": 152.5100929737091,
+  "signature_id": "4280ea1f55341ba6",
+  "bpb": 0.6511390226244809,
+  "nats_per_token": 1.9021176855072315,
+  "bytes_per_token": 4.214423735514732,
+  "bpb_no_end": 0.6275505905291857
+ },
+ "roneneldan/TinyStories-28M": {
+  "name": "roneneldan/TinyStories-28M",
+  "family": "published",
+  "params": 51987968,
+  "params_non_embedding": 26256384,
+  "vocab": 50257,
+  "context": 512,
+  "nll_nats": 307146.9963378906,
+  "tokens": 179579,
+  "nll_end_nats": 12003.856956481934,
+  "end_tokens": 1000,
+  "boundary_format": "eos",
+  "weights": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/dl/ts28m",
+  "weights_sha256": {
+   "pytorch_model.bin": "8ddd260f51b439744c8cc785b5516327d4bf32e31ccbfa9009bfadf12557fcf5"
+  },
+  "eval_seconds": 278.8812358379364,
+  "signature_id": "4280ea1f55341ba6",
+  "bpb": 0.5855002212417391,
+  "nats_per_token": 1.710372573284686,
+  "bytes_per_token": 4.214423735514732,
+  "bpb_no_end": 0.5626178196959899
+ },
+ "roneneldan/TinyStories-33M": {
+  "name": "roneneldan/TinyStories-33M",
+  "family": "published",
+  "params": 68514048,
+  "params_non_embedding": 29916672,
+  "vocab": 50257,
+  "context": 512,
+  "nll_nats": 303406.0656738281,
+  "tokens": 179579,
+  "nll_end_nats": 12477.318481445312,
+  "end_tokens": 1000,
+  "boundary_format": "eos",
+  "weights": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/audit/experiments/dl/ts33m",
+  "weights_sha256": {
+   "pytorch_model.bin": "41316d3bad3cf7766cbc36443a71c5ef05321a1c4fa14855df537998c6dad302"
+  },
+  "eval_seconds": 284.9003882408142,
+  "signature_id": "4280ea1f55341ba6",
+  "bpb": 0.5783690568234843,
+  "nats_per_token": 1.6895409021869379,
+  "bytes_per_token": 4.214423735514732,
+  "bpb_no_end": 0.5545841173043193
+ }
+}

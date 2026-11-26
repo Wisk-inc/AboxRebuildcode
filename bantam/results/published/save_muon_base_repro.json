@@ -1,0 +1,351 @@
+{
+ "args": {
+  "data": "/home/user/data/tinystories/tok4k",
+  "data_format": "auto",
+  "zoom": "1",
+  "budget": 68000000000000.0,
+  "flops_mode": "model",
+  "optim": "muon",
+  "state_bits": 32,
+  "param_dtype": "fp32",
+  "grad_ckpt": 0,
+  "accum": 1,
+  "auto_batch": false,
+  "d": 256,
+  "layers": 6,
+  "heads": 4,
+  "seq": 256,
+  "batch": 16,
+  "batch_scale_k": 0,
+  "batch_scale": 0.0,
+  "lr": 0.016,
+  "warmup": 0.05,
+  "sched": "cosine",
+  "decay_frac": 0.45,
+  "lr_restart": 0,
+  "mix_fine": 0.0,
+  "wd": 0.1,
+  "gated": 1,
+  "merge_mode": "",
+  "out_mode": "slot",
+  "rope_pos": "token",
+  "qk_norm": 0,
+  "mlp": "gelu",
+  "softcap": 0.0,
+  "zero_init_proj": 0,
+  "ns": "quintic",
+  "evals": 10,
+  "eval_seqs": 256,
+  "final_eval_seqs": 2048,
+  "seed": 0,
+  "device": "auto",
+  "precision": "auto",
+  "compile": false,
+  "threads": 1,
+  "duty": 1.0,
+  "name": "save_muon_base_repro",
+  "out": "results/published",
+  "save": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/ckpt/save_muon_base_repro.pt",
+  "save_every_eval": 1,
+  "ckpt_every": 0,
+  "ckpt": "results/published/save_muon_base_repro.ckpt",
+  "resume": "",
+  "allow_arg_change": false,
+  "stop_step": 0
+ },
+ "schedule": "1:1",
+ "params": 5770496,
+ "evals": [
+  {
+   "frac": 0.0,
+   "flops": 0.0,
+   "tokens": 0,
+   "step": 0,
+   "train_time": 0.0,
+   "val_loss": 8.351752996444702,
+   "opt_flops": 0.0,
+   "total_flops": 0.0
+  },
+  {
+   "frac": 0.1001895863717647,
+   "flops": 6812891873280.0,
+   "tokens": 184320,
+   "step": 45,
+   "train_time": 104.72011948000727,
+   "val_loss": 4.024186551570892,
+   "opt_flops": 1365467950080.0,
+   "total_flops": 8178359823360.0,
+   "checkpoint": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/ckpt/save_muon_base_repro_f0.10.pt"
+  },
+  {
+   "frac": 0.2003791727435294,
+   "flops": 13625783746560.0,
+   "tokens": 368640,
+   "step": 90,
+   "train_time": 207.38962226602962,
+   "val_loss": 3.4398840069770813,
+   "opt_flops": 2730935900160.0,
+   "total_flops": 16356719646720.0,
+   "checkpoint": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/ckpt/save_muon_base_repro_f0.20.pt"
+  },
+  {
+   "frac": 0.3005687591152941,
+   "flops": 20438675619840.0,
+   "tokens": 552960,
+   "step": 135,
+   "train_time": 304.4604156740279,
+   "val_loss": 3.208597779273987,
+   "opt_flops": 4096403850240.0,
+   "total_flops": 24535079470080.0,
+   "checkpoint": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/ckpt/save_muon_base_repro_f0.30.pt"
+  },
+  {
+   "frac": 0.4007583454870588,
+   "flops": 27251567493120.0,
+   "tokens": 737280,
+   "step": 180,
+   "train_time": 405.8679901540381,
+   "val_loss": 3.049010157585144,
+   "opt_flops": 5461871800320.0,
+   "total_flops": 32713439293440.0,
+   "checkpoint": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/ckpt/save_muon_base_repro_f0.40.pt"
+  },
+  {
+   "frac": 0.5009479318588236,
+   "flops": 34064459366400.0,
+   "tokens": 921600,
+   "step": 225,
+   "train_time": 510.6024175390339,
+   "val_loss": 2.9071409702301025,
+   "opt_flops": 6827339750400.0,
+   "total_flops": 40891799116800.0,
+   "checkpoint": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/ckpt/save_muon_base_repro_f0.50.pt"
+  },
+  {
+   "frac": 0.6011375182305883,
+   "flops": 40877351239680.0,
+   "tokens": 1105920,
+   "step": 270,
+   "train_time": 610.3474500820412,
+   "val_loss": 2.788523316383362,
+   "opt_flops": 8192807700480.0,
+   "total_flops": 49070158940160.0,
+   "checkpoint": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/ckpt/save_muon_base_repro_f0.60.pt"
+  },
+  {
+   "frac": 0.7013271046023529,
+   "flops": 47690243112960.0,
+   "tokens": 1290240,
+   "step": 315,
+   "train_time": 707.5032107220395,
+   "val_loss": 2.6649797558784485,
+   "opt_flops": 9558275650560.0,
+   "total_flops": 57248518763520.0,
+   "checkpoint": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/ckpt/save_muon_base_repro_f0.70.pt"
+  },
+  {
+   "frac": 0.8015166909741176,
+   "flops": 54503134986240.0,
+   "tokens": 1474560,
+   "step": 360,
+   "train_time": 808.4143250050292,
+   "val_loss": 2.5664127469062805,
+   "opt_flops": 10923743600640.0,
+   "total_flops": 65426878586880.0,
+   "checkpoint": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/ckpt/save_muon_base_repro_f0.80.pt"
+  },
+  {
+   "frac": 0.9017062773458824,
+   "flops": 61316026859520.0,
+   "tokens": 1658880,
+   "step": 405,
+   "train_time": 909.8759946620157,
+   "val_loss": 2.4992154240608215,
+   "opt_flops": 12289211550720.0,
+   "total_flops": 73605238410240.0,
+   "checkpoint": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/ckpt/save_muon_base_repro_f0.90.pt"
+  },
+  {
+   "frac": 1.0018958637176472,
+   "flops": 68128918732800.0,
+   "tokens": 1843200,
+   "step": 450,
+   "train_time": 1016.2951991630034,
+   "val_loss": 2.450384020805359,
+   "opt_flops": 13654679500800.0,
+   "total_flops": 81783598233600.0,
+   "checkpoint": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/ckpt/save_muon_base_repro_f1.00.pt"
+  }
+ ],
+ "train": [
+  {
+   "step": 25,
+   "frac": 0.053434446064941174,
+   "k": 1,
+   "loss": 4.756420612335205,
+   "train_time": 58.71056895800575
+  },
+  {
+   "step": 50,
+   "frac": 0.10909532738258823,
+   "k": 1,
+   "loss": 4.1645283699035645,
+   "train_time": 116.7219853890092
+  },
+  {
+   "step": 75,
+   "frac": 0.1647562087002353,
+   "k": 1,
+   "loss": 3.8462324142456055,
+   "train_time": 173.94642862102046
+  },
+  {
+   "step": 100,
+   "frac": 0.22041709001788234,
+   "k": 1,
+   "loss": 3.8540420532226562,
+   "train_time": 229.2141698620253
+  },
+  {
+   "step": 125,
+   "frac": 0.2760779713355294,
+   "k": 1,
+   "loss": 3.5893990993499756,
+   "train_time": 282.3370482720202
+  },
+  {
+   "step": 150,
+   "frac": 0.3317388526531765,
+   "k": 1,
+   "loss": 3.2626101970672607,
+   "train_time": 337.71844210903146
+  },
+  {
+   "step": 175,
+   "frac": 0.38739973397082356,
+   "k": 1,
+   "loss": 3.4446170330047607,
+   "train_time": 394.2127836620348
+  },
+  {
+   "step": 200,
+   "frac": 0.44306061528847057,
+   "k": 1,
+   "loss": 3.2547810077667236,
+   "train_time": 455.086397030027
+  },
+  {
+   "step": 225,
+   "frac": 0.49872149660611764,
+   "k": 1,
+   "loss": 3.0688633918762207,
+   "train_time": 510.6024175390339
+  },
+  {
+   "step": 250,
+   "frac": 0.5543823779237647,
+   "k": 1,
+   "loss": 3.1696202754974365,
+   "train_time": 565.9658290090374
+  },
+  {
+   "step": 275,
+   "frac": 0.6100432592414118,
+   "k": 1,
+   "loss": 3.0710387229919434,
+   "train_time": 621.1654552050386
+  },
+  {
+   "step": 300,
+   "frac": 0.6657041405590588,
+   "k": 1,
+   "loss": 2.98406720161438,
+   "train_time": 675.2059628140378
+  },
+  {
+   "step": 325,
+   "frac": 0.7213650218767059,
+   "k": 1,
+   "loss": 2.8396754264831543,
+   "train_time": 729.3630902210389
+  },
+  {
+   "step": 350,
+   "frac": 0.7770259031943529,
+   "k": 1,
+   "loss": 2.620819330215454,
+   "train_time": 786.0299412400345
+  },
+  {
+   "step": 375,
+   "frac": 0.832686784512,
+   "k": 1,
+   "loss": 2.833911657333374,
+   "train_time": 842.8452380200251
+  },
+  {
+   "step": 400,
+   "frac": 0.8883476658296471,
+   "k": 1,
+   "loss": 2.591200828552246,
+   "train_time": 898.7068274730118
+  },
+  {
+   "step": 425,
+   "frac": 0.9440085471472941,
+   "k": 1,
+   "loss": 2.7046797275543213,
+   "train_time": 955.5524016080126
+  },
+  {
+   "step": 450,
+   "frac": 0.9996694284649412,
+   "k": 1,
+   "loss": 2.747560501098633,
+   "train_time": 1016.2951991630034
+  }
+ ],
+ "runtime": "device=cpu amp=None compile=False threads=1 pid=20014",
+ "world_size": 1,
+ "data_source": {
+  "train": {
+   "format": "tokpack",
+   "file": "/home/user/data/tinystories/tok4k/train.tokpack",
+   "tokens": 116765743
+  },
+  "val": {
+   "format": "tokpack",
+   "file": "/home/user/data/tinystories/tok4k/val.tokpack",
+   "tokens": 4884029
+  },
+  "dedup_params": {
+   "ngram": 8,
+   "num_perm": 64,
+   "bands": 8,
+   "threshold": 0.8
+  }
+ },
+ "flops_mode": "model",
+ "opt_flops_per_step": 30343732224.0,
+ "eval_subset": {
+  "periodic_first_seqs": 256,
+  "final_first_seqs": 2048,
+  "seq": 256
+ },
+ "train_time": 1016.2951991630034,
+ "tokens": 1843200,
+ "steps": 450,
+ "data_epochs": 0.015785492693728555,
+ "model_flops": 68128918732800.0,
+ "opt_flops": 13654679500800.0,
+ "total_flops": 81783598233600.0,
+ "status": "finished",
+ "saved": {
+  "state_dict": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/ckpt/save_muon_base_repro.pt",
+  "pretrained": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/ckpt/save_muon_base_repro_pretrained"
+ },
+ "final_val_loss": 2.735179401934147,
+ "final_val_loss_eval_seqs": 2.450384020805359,
+ "optimizer_state_bytes": 27289656,
+ "param_bytes": 23081984
+}

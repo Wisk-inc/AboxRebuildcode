@@ -1,0 +1,169 @@
+{
+ "eval": {
+  "stories": 1000,
+  "bytes": 756822,
+  "source": "/root/.cache/bantamtrain_hf/datasets--roneneldan--TinyStories/snapshots/f54c09fd23315a6f9c86f9dc80f725de7d8f9c64/data/validation-00000-of-00001-869c898b519ad725.parquet",
+  "clean_subset": true,
+  "end_of_story_scored": false,
+  "denominator": "UTF-8 bytes of the original V1 validation text",
+  "l2c_lossy_stories": 38,
+  "signature": {
+   "version": 3,
+   "stories": 1000,
+   "bytes": 756822,
+   "text_sha256": "1eb0a0dc8649a42160dc970970724cb5d12f555b1b3695145dd7f55125fe000b",
+   "clean_subset": true,
+   "end_of_story_scored": false,
+   "ctx_cap": 512,
+   "boundary_policy": "native: each family in its training format, prefix unscored",
+   "boundary_overrides": []
+  },
+  "signature_id": "0882099116c17f70",
+  "derived": {
+   "from": "compare_clean1000.json",
+   "how": "nll_nats - nll_end_nats per row (the end-of-story tokens' NLL)",
+   "checked_against_no_end_run": [
+    "save_muon_base_repro",
+    "stories260K"
+   ],
+   "max_abs_bpb_diff": 9.237208553614096e-09
+  },
+  "not_rescored": {
+   "stories110M": {
+    "bpb_0.2": 0.47984366673863216,
+    "reason": "not re-scored (a 438 MB download over this rerun's budget). Its convention ([BOS] story [BOS]) and code path are unchanged, and the re-scored stories260K/15M/42M reproduce their 0.2 NLL bit for bit, so its 0.2 value should still hold; it is far above Bantam's compute range and enters no ratio."
+   },
+   "long_muon_10x_f0.10/f0.20/f0.30": {
+    "bpb_0.2": [
+     1.1512897290097441,
+     1.074625610228285,
+     1.038735400093908
+    ],
+    "reason": "dropped: mid-schedule checkpoints of an unfinished run (results/published/long_muon_10x.json, status killed at 30%), and the checkpoints are gone."
+   },
+   "save_muon_base": {
+    "bpb_0.2": 1.0291095475547996,
+    "reason": "its weights are gone; replaced by save_muon_base_repro, the same recorded command retrained with 0.3 (results/published/save_muon_base_repro.json: final_val_loss 2.7352 vs 2.7365)."
+   }
+  }
+ },
+ "rows": [
+  {
+   "name": "save_muon_base_repro",
+   "family": "ours",
+   "params": 5770496,
+   "bpb": 1.0268791950635439,
+   "compute": 63817069363200,
+   "lo": 63817069363200,
+   "hi": 63817069363200,
+   "mid": false,
+   "ours_compute_to_match": null,
+   "compute_ratio": null,
+   "match_kind": null
+  },
+  {
+   "name": "stories260K",
+   "family": "published-llama2c",
+   "params": 260032,
+   "bpb": 1.0945497960215287,
+   "compute": 1.001643264e+16,
+   "lo": 1.001643264e+16,
+   "hi": 1.001643264e+16,
+   "mid": false,
+   "ours_compute_to_match": 63817069363200,
+   "compute_ratio": 156.9553841934327,
+   "match_kind": "upper bound"
+  },
+  {
+   "name": "roneneldan/TinyStories-1M",
+   "family": "published",
+   "params": 3745984,
+   "bpb": 0.8210045519180444,
+   "compute": 2.1397060608e+17,
+   "lo": 2.1397060608e+17,
+   "hi": 2.1397060608e+17,
+   "mid": false,
+   "ours_compute_to_match": null,
+   "compute_ratio": null,
+   "match_kind": null
+  },
+  {
+   "name": "roneneldan/TinyStories-3M",
+   "family": "published",
+   "params": 8278400,
+   "bpb": 0.6756294214751487,
+   "compute": 4.72862208e+17,
+   "lo": 4.72862208e+17,
+   "hi": 4.72862208e+17,
+   "mid": false,
+   "ours_compute_to_match": null,
+   "compute_ratio": null,
+   "match_kind": null
+  },
+  {
+   "name": "roneneldan/TinyStories-8M",
+   "family": "published",
+   "params": 19702528,
+   "bpb": 0.5799132615459732,
+   "compute": 8.7597439488e+17,
+   "lo": 8.7597439488e+17,
+   "hi": 1.99547203584e+18,
+   "mid": false,
+   "ours_compute_to_match": null,
+   "compute_ratio": null,
+   "match_kind": null
+  },
+  {
+   "name": "roneneldan/TinyStories-28M",
+   "family": "published",
+   "params": 51987968,
+   "bpb": 0.5369116172650752,
+   "compute": 1.90587890688e+18,
+   "lo": 1.90587890688e+18,
+   "hi": 4.34515436544e+18,
+   "mid": false,
+   "ours_compute_to_match": null,
+   "compute_ratio": null,
+   "match_kind": null
+  },
+  {
+   "name": "stories15M",
+   "family": "published-llama2c",
+   "params": 15191712,
+   "bpb": 0.5758400912137005,
+   "compute": 3.56032962432e+18,
+   "lo": 3.56032962432e+18,
+   "hi": 3.56032962432e+18,
+   "mid": false,
+   "ours_compute_to_match": null,
+   "compute_ratio": null,
+   "match_kind": null
+  },
+  {
+   "name": "roneneldan/TinyStories-33M",
+   "family": "published",
+   "params": 68514048,
+   "bpb": 0.5407464274137266,
+   "compute": 3.91352242176e+18,
+   "lo": 3.91352242176e+18,
+   "hi": 3.91352242176e+18,
+   "mid": false,
+   "ours_compute_to_match": null,
+   "compute_ratio": null,
+   "match_kind": null
+  },
+  {
+   "name": "stories42M",
+   "family": "published-llama2c",
+   "params": 41689600,
+   "bpb": 0.514878152665238,
+   "compute": 5.3779584e+18,
+   "lo": 5.3779584e+18,
+   "hi": 5.3779584e+18,
+   "mid": false,
+   "ours_compute_to_match": null,
+   "compute_ratio": null,
+   "match_kind": null
+  }
+ ]
+}

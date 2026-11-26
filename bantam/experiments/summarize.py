@@ -7,9 +7,11 @@ results/summary.json (seed aggregates and compute-to-target, machine-readable).
 Only completed runs are tabulated: logs still marked in_progress, or with a status
 other than "finished" (e.g. "killed"), are listed as running or interrupted, diverged
 runs (status "diverged", or a NaN final loss from before 0.3) as diverged, and JSON
-files that are not run logs (derived tables) are skipped. Weather tables add the
-validation-split MSE of --val_year runs (valsplit_mse: select LRs on it, not on the
-test-year val_mse) and the z500 72 h anomaly correlation.
+files that are not run logs (derived tables) are skipped. Completed runs whose log
+says needs_rerun (needs_rerun_reason) are marked * in the tables, with the reason
+underneath and in summary.json. Weather tables add the validation-split MSE of
+--val_year runs (valsplit_mse: select LRs on it, not on the test-year val_mse) and
+the z500 72 h anomaly correlation.
 
 Seed aggregates: runs with the same recipe (args minus seed, name, paths, threads,
 eval cadence) and budget are pooled into n, mean and sample sd over distinct seeds
@@ -229,8 +231,22 @@ def llm_rows(runs):
                      "epochs": _f(r.get("data_epochs", 0), ".3f"),
                      "train_s": _f(r.get("train_time"), ".0f"),
                      "bits": a.get("state_bits", 32), "dtype": a.get("param_dtype", "fp32"),
-                     "val_loss": _f(r["final_val_loss"], ".4f")})
+                     "val_loss": _f(r["final_val_loss"], ".4f") + (" *" if r.get("needs_rerun") else "")})
     return rows
+
+
+def needs_rerun(runs):
+    """{name: reason} of runs whose log says needs_rerun (e.g. pre-0.3 bf16 eval arithmetic)."""
+    return {n: r.get("needs_rerun_reason", "") for n, r in runs.items() if r.get("needs_rerun")}
+
+
+def rerun_notes(runs):
+    """Footnote for the runs marked * in a table ("" when there are none)."""
+    flagged = needs_rerun(runs)
+    if not flagged:
+        return ""
+    return "\n\n\\* needs a rerun: " + "; ".join(f"{n}: {why}" if why else n
+                                                 for n, why in sorted(flagged.items()))
 
 
 def weather_rows(runs):
@@ -279,6 +295,8 @@ def main(argv=None):
             summary["diverged"][sub] = diverged
         if skipped:
             summary["skipped"][sub] = skipped
+        if needs_rerun(runs):
+            summary.setdefault("needs_rerun", {})[sub] = needs_rerun(runs)
         return runs
 
     sweep = scan_("llm_sweep")
@@ -299,6 +317,7 @@ def main(argv=None):
         cols = ["run", "optim", "zoom", "out", "gated", "rope", "lr", "seed", "budget", "steps",
                 "tokens(M)", "epochs", "train_s", "val_loss"]
         parts.append(md_table(llm_rows(main_runs), cols))
+        parts += [n for n in [rerun_notes(main_runs)] if n]
         groups = seed_groups(main_runs, lambda r: r["final_val_loss"])
         summary["llm_seed_groups"] = groups
         if groups:
@@ -322,6 +341,7 @@ def main(argv=None):
         parts.append("\n\n## LLM low-memory runs\n")
         parts.append(md_table(llm_rows(lowmem), ["run", "optim", "bits", "dtype", "lr", "budget",
                                                  "steps", "train_s", "val_loss"]))
+        parts += [n for n in [rerun_notes(lowmem)] if n]
 
     wx = scan_("weather")
     if wx:

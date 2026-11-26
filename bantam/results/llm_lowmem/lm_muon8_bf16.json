@@ -102,5 +102,13 @@
  "train_time": 717.6832337209999,
  "tokens": 409600,
  "steps": 100,
- "data_epochs": 0.0035078872652730122
+ "data_epochs": 0.0035078872652730122,
+ "needs_rerun": true,
+ "eval_arithmetic": "bf16",
+ "needs_rerun_reason": "scored with 0.2 bf16 arithmetic (cross-entropy on bf16 logits); no checkpoint was saved, so it cannot be re-scored in fp32; estimated error +-0.004 (results/llm_lowmem/bf16_eval_bias.json)",
+ "bf16_eval_error_estimate": {
+  "abs": 0.004,
+  "eval_seqs": 1024,
+  "source": "results/llm_lowmem/bf16_eval_bias.json"
+ }
 }

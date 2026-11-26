@@ -1,0 +1,251 @@
+{
+ "_eval": {
+  "stories": 1000,
+  "bytes": 756822,
+  "source": "/root/.cache/bantamtrain_hf/datasets--roneneldan--TinyStories/snapshots/f54c09fd23315a6f9c86f9dc80f725de7d8f9c64/data/validation-00000-of-00001-869c898b519ad725.parquet",
+  "clean_subset": true,
+  "end_of_story_scored": false,
+  "denominator": "UTF-8 bytes of the original V1 validation text",
+  "l2c_lossy_stories": 38,
+  "signature": {
+   "version": 3,
+   "stories": 1000,
+   "bytes": 756822,
+   "text_sha256": "1eb0a0dc8649a42160dc970970724cb5d12f555b1b3695145dd7f55125fe000b",
+   "clean_subset": true,
+   "end_of_story_scored": false,
+   "ctx_cap": 512,
+   "boundary_policy": "native: each family in its training format, prefix unscored",
+   "boundary_overrides": []
+  },
+  "signature_id": "0882099116c17f70",
+  "derived": {
+   "from": "compare_clean1000.json",
+   "how": "nll_nats - nll_end_nats per row (the end-of-story tokens' NLL)",
+   "checked_against_no_end_run": [
+    "save_muon_base_repro",
+    "stories260K"
+   ],
+   "max_abs_bpb_diff": 9.237208553614096e-09
+  },
+  "not_rescored": {
+   "stories110M": {
+    "bpb_0.2": 0.47984366673863216,
+    "reason": "not re-scored (a 438 MB download over this rerun's budget). Its convention ([BOS] story [BOS]) and code path are unchanged, and the re-scored stories260K/15M/42M reproduce their 0.2 NLL bit for bit, so its 0.2 value should still hold; it is far above Bantam's compute range and enters no ratio."
+   },
+   "long_muon_10x_f0.10/f0.20/f0.30": {
+    "bpb_0.2": [
+     1.1512897290097441,
+     1.074625610228285,
+     1.038735400093908
+    ],
+    "reason": "dropped: mid-schedule checkpoints of an unfinished run (results/published/long_muon_10x.json, status killed at 30%), and the checkpoints are gone."
+   },
+   "save_muon_base": {
+    "bpb_0.2": 1.0291095475547996,
+    "reason": "its weights are gone; replaced by save_muon_base_repro, the same recorded command retrained with 0.3 (results/published/save_muon_base_repro.json: final_val_loss 2.7352 vs 2.7365)."
+   }
+  }
+ },
+ "roneneldan/TinyStories-1M": {
+  "name": "roneneldan/TinyStories-1M",
+  "family": "published",
+  "params": 3745984,
+  "params_non_embedding": 529536,
+  "vocab": 50257,
+  "context": 512,
+  "nll_nats": 430689.9860200882,
+  "tokens": 178579,
+  "nll_end_nats": 0.0,
+  "end_tokens": 0,
+  "boundary_format": "eos_nl",
+  "weights": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/audit/experiments/dl/ts1m",
+  "weights_sha256": {
+   "pytorch_model.bin": "07f9609ea882b8163ff3b23d40e2b82cb715d409631beb15c84b164f3877dae7"
+  },
+  "eval_seconds": 119.8559217453003,
+  "signature_id": "0882099116c17f70",
+  "bpb": 0.8210045519180444,
+  "nats_per_token": 2.411761663017982,
+  "bytes_per_token": 4.238023507803269,
+  "bpb_no_end": 0.8210045519180444
+ },
+ "roneneldan/TinyStories-3M": {
+  "name": "roneneldan/TinyStories-3M",
+  "family": "published",
+  "params": 8278400,
+  "params_non_embedding": 1845504,
+  "vocab": 50257,
+  "context": 512,
+  "nll_nats": 354427.786557436,
+  "tokens": 178579,
+  "nll_end_nats": 0.0,
+  "end_tokens": 0,
+  "boundary_format": "eos_nl",
+  "weights": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/dl/ts3m",
+  "weights_sha256": {
+   "pytorch_model.bin": "0e4f93a86407a3f685520e48481a236c7b5e3a4f8e4fc8d1e58f3a748d97a37c"
+  },
+  "eval_seconds": 120.74556565284729,
+  "signature_id": "0882099116c17f70",
+  "bpb": 0.6756294214751487,
+  "nats_per_token": 1.9847114529560361,
+  "bytes_per_token": 4.238023507803269,
+  "bpb_no_end": 0.6756294214751487
+ },
+ "roneneldan/TinyStories-8M": {
+  "name": "roneneldan/TinyStories-8M",
+  "family": "published",
+  "params": 19702528,
+  "params_non_embedding": 6836736,
+  "vocab": 50257,
+  "context": 512,
+  "nll_nats": 304216.1385397911,
+  "tokens": 178579,
+  "nll_end_nats": 0.0,
+  "end_tokens": 0,
+  "boundary_format": "eos_nl",
+  "weights": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/audit/experiments/dl/ts8m",
+  "weights_sha256": {
+   "pytorch_model.bin": "22c355bfabebc1f6c861b3f5d7a801e96c7f6da4af4bb0f7780096ab82ea6716"
+  },
+  "eval_seconds": 155.22866463661194,
+  "signature_id": "0882099116c17f70",
+  "bpb": 0.5799132615459732,
+  "nats_per_token": 1.7035381458054482,
+  "bytes_per_token": 4.238023507803269,
+  "bpb_no_end": 0.5799132615459732
+ },
+ "roneneldan/TinyStories-28M": {
+  "name": "roneneldan/TinyStories-28M",
+  "family": "published",
+  "params": 51987968,
+  "params_non_embedding": 26256384,
+  "vocab": 50257,
+  "context": 512,
+  "nll_nats": 281657.94744217396,
+  "tokens": 178579,
+  "nll_end_nats": 0.0,
+  "end_tokens": 0,
+  "boundary_format": "eos_nl",
+  "weights": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/pub/dl/ts28m",
+  "weights_sha256": {
+   "pytorch_model.bin": "8ddd260f51b439744c8cc785b5516327d4bf32e31ccbfa9009bfadf12557fcf5"
+  },
+  "eval_seconds": 298.64315962791443,
+  "signature_id": "0882099116c17f70",
+  "bpb": 0.5369116172650752,
+  "nats_per_token": 1.5772176316485922,
+  "bytes_per_token": 4.238023507803269,
+  "bpb_no_end": 0.5369116172650752
+ },
+ "roneneldan/TinyStories-33M": {
+  "name": "roneneldan/TinyStories-33M",
+  "family": "published",
+  "params": 68514048,
+  "params_non_embedding": 29916672,
+  "vocab": 50257,
+  "context": 512,
+  "nll_nats": 283669.64679932594,
+  "tokens": 178579,
+  "nll_end_nats": 0.0,
+  "end_tokens": 0,
+  "boundary_format": "eos_nl",
+  "weights": "/tmp/claude-0/-home-user-AboxRebuildcode/27e46d45-6483-5f05-a173-7a74a0f00ad2/scratchpad/audit/experiments/dl/ts33m",
+  "weights_sha256": {
+   "pytorch_model.bin": "41316d3bad3cf7766cbc36443a71c5ef05321a1c4fa14855df537998c6dad302"
+  },
+  "eval_seconds": 296.2914147377014,
+  "signature_id": "0882099116c17f70",
+  "bpb": 0.5407464274137266,
+  "nats_per_token": 1.5884826704109998,
+  "bytes_per_token": 4.238023507803269,
+  "bpb_no_end": 0.5407464274137266
+ },
+ "save_muon_base_repro": {
+  "name": "save_muon_base_repro",
+  "family": "ours",
+  "params": 5770496,
+  "params_non_embedding": 4721920,
+  "vocab": 4096,
+  "context": 256,
+  "nll_nats": 538689.5664987564,
+  "tokens": 185357,
+  "nll_end_nats": 0.0,
+  "end_tokens": 0,
+  "boundary_format": "eos",
+  "train_flops": 68000000000000.0,
+  "train_tokens": 1843200,
+  "train_seconds_cpu": 1016.2951991630034,
+  "run": "results/published/save_muon_base_repro.json",
+  "eval_seconds": 33.456400632858276,
+  "signature_id": "0882099116c17f70",
+  "bpb": 1.0268791950635439,
+  "nats_per_token": 2.9062272614401206,
+  "bytes_per_token": 4.0830505457036965,
+  "bpb_no_end": 1.0268791950635439
+ },
+ "stories260K": {
+  "name": "stories260K",
+  "family": "published-llama2c",
+  "params": 260032,
+  "params_non_embedding": 227264,
+  "vocab": 512,
+  "context": 512,
+  "nll_nats": 574188.821786046,
+  "tokens": 372714,
+  "nll_end_nats": 0.0,
+  "end_tokens": 0,
+  "boundary_format": "bos",
+  "iter_num": 98000,
+  "train_tokens": 6422528000,
+  "eval_seconds": 12.797903537750244,
+  "signature_id": "0882099116c17f70",
+  "bpb": 1.0945497960215287,
+  "nats_per_token": 1.5405614540533654,
+  "bytes_per_token": 2.0305703568956357,
+  "bpb_no_end": 1.0945497960215287
+ },
+ "stories15M": {
+  "name": "stories15M",
+  "family": "published-llama2c",
+  "params": 15191712,
+  "params_non_embedding": 5975712,
+  "vocab": 32000,
+  "context": 256,
+  "nll_nats": 302079.39804381505,
+  "tokens": 190667,
+  "nll_end_nats": 0.0,
+  "end_tokens": 0,
+  "boundary_format": "bos",
+  "iter_num": 298000,
+  "train_tokens": 39059456000,
+  "eval_seconds": 84.35406732559204,
+  "signature_id": "0882099116c17f70",
+  "bpb": 0.5758400912137005,
+  "nats_per_token": 1.584329737415573,
+  "bytes_per_token": 3.969339214441933,
+  "bpb_no_end": 0.5758400912137005
+ },
+ "stories42M": {
+  "name": "stories42M",
+  "family": "published-llama2c",
+  "params": 41689600,
+  "params_non_embedding": 25305600,
+  "vocab": 32000,
+  "context": 1024,
+  "nll_nats": 270099.43349933624,
+  "tokens": 190667,
+  "nll_end_nats": 0.0,
+  "end_tokens": 0,
+  "boundary_format": "bos",
+  "iter_num": 164000,
+  "train_tokens": 21495808000,
+  "eval_seconds": 191.39049339294434,
+  "signature_id": "0882099116c17f70",
+  "bpb": 0.514878152665238,
+  "nats_per_token": 1.416602943872491,
+  "bytes_per_token": 3.969339214441933,
+  "bpb_no_end": 0.514878152665238
+ }
+}

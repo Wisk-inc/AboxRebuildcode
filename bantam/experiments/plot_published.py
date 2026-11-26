@@ -156,8 +156,8 @@ def main(argv=None):
         else:
             ax.errorbar(xs, ys, xerr=err, fmt="o", color=COL[fam], markersize=7, capsize=3,
                         linewidth=1.2, label=LABEL[fam], zorder=3)
-        offsets = {"stories15M": (-8, -14), "roneneldan/TinyStories-33M": (8, 4),
-                   "roneneldan/TinyStories-28M": (-34, 6)}
+        offsets = {"stories15M": (-22, 8), "roneneldan/TinyStories-33M": (7, -2),
+                   "roneneldan/TinyStories-28M": (-16, -14)}
         for p in pts:
             if fam != "ours" or p is pts[-1]:
                 short = p["name"].split("/")[-1].replace("TinyStories-", "TS-")
