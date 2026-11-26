@@ -188,10 +188,45 @@ bit-identical to the code before the audit.
 - With `--quant` and no `--grad_ckpt 1`, a note recommends checkpointing. `--duty <= 0`
   exits with status 2 before loading.
 - `--resume` (new in 0.3) also refuses a changed `--wd`, `--ns` or `--lora_dropout`.
-- transformers is imported before `--out` is created, so a missing extra leaves no empty
-  directory.
+- `--out` is created only once the model and the data are loaded: a missing extra
+  (transformers, or `datasets` for `--dataset`), a missing `--dataset`/`--jsonl` (now a
+  usage error, exit 2), an unreadable model or unusable data leave no empty directory.
+- **Protocol change: an epoch trains on every window once.** `--epochs` used to plan
+  `windows // (batch x accum)` full steps per epoch, which skipped up to
+  `batch x accum - 1` windows (3 of 235 in the race). Now the last step of an epoch may
+  hold fewer micro-batches (its loss is the mean over its own supervised tokens), so
+  epoch-based runs take up to one more step per epoch and their LR schedules stretch
+  accordingly. `--max_steps` keeps its step count, but a run that reaches the end of a
+  pass now also takes that pass's short last step (it used to reshuffle early), so its
+  windows from then on differ. `--drop_last 1` restores the old schedule exactly, and a
+  checkpoint written before this change resumes with it (with a note).
+- Packed or padded windows on models with sliding-window attention give those layers a
+  block-diagonal mask cut to their window: one windowed mask for Mistral, Mixtral,
+  Phi-3 and Starcoder2 when `sliding_window` is set, and transformers' per-layer-type
+  mapping (`{"full_attention": ..., "sliding_attention": ...}`) for Gemma-2/3, Cohere2
+  and Qwen2/3 with `use_sliding_window`. Their losses change at `--seq` above the
+  window and are now correct; models without a window are unchanged.
+- Flush-to-zero is set by `main()` behind the new `--ftz` (default 1, logged as
+  `args.ftz`) instead of at import, so importing `bantamtrain.finetune` (as `bantam chat`
+  does) no longer changes the process. Runs of the command are unchanged.
+- `--low_ram 1` on a checkpoint without `.safetensors` weights falls back to
+  `from_pretrained` + `quantize_model` with a warning (it raised FileNotFoundError);
+  `report.quant` says `low_ram: false` and why. The `--low_ram` report is now
+  `qweights.load_quantized`'s full `quant_report`.
+- New `log.json` fields: `steps_per_epoch`, `windows_used`, `examples_per_window`,
+  `examples_per_step`; `adapter_meta.json` gains `embed_quant`. A note is printed when
+  packing makes an optimizer step see more than twice `batch x accum` examples.
+- `--resume` also compares `--drop_last` and `--examples_per_step`.
 - Weight decay (only when `--wd` > 0): HF `gate_proj` layers and their adapters are now
   decayed.
+
+**`bantam chat`**
+
+- `--quant` defaults to the adapter's training run (`adapter_meta.json` or `log.json`;
+  `0` when unknown), and the new `--embed_quant` (default: the run's, else `8`) replaces
+  the fixed int8 embeddings. An adapter trained with `--quant nf4` now chats over an NF4
+  base by default (it used the float base); `--quant 0` restores that. New `--ftz`
+  (default 1, as before through the finetune import).
 
 **`bantam weather`**
 
@@ -345,6 +380,9 @@ bit-identical to the code before the audit.
   int4 blocks run over the flattened tensor with absmax/127 scales: identical blocks when
   the last dimension is a multiple of 256 (64 for int4), smaller files otherwise. New
   files are format v2; v1 files still load.
+- `weightpack.save` keeps a qweights-quantized state_dict's scales (`<module>.s` next to
+  integer codes `<module>.q`) exactly at every `bits`; `bits=8`/`4` used to re-quantize
+  those with >= 4096 elements. New helper `weightpack.qweights_scales`.
 - `lora.load_peft_adapter` leaves the loaded adapters trainable (`freeze_rest` freezes
   the base).
 
@@ -430,6 +468,11 @@ bit-identical to the code before the audit.
   and counts of skipped rows by reason in `log.json`.
 - `losses.chunked_cross_entropy` gains `scale`, `softcap`, `bias`, `ignore_index`,
   `token_weights`, and quantized head modules (dequantized per chunk).
+- `--examples_per_step N`: after packing, `--accum` is set so that an optimizer step sees
+  about N examples (`max(1, round(N / (batch x processes x mean examples per window)))`);
+  the chosen value is printed and logged in `args.accum`. Also `--drop_last` and `--ftz`
+  (above), `finetune.window_layout` / `packed_attention`, `steps_per_epoch` and
+  `step_windows`, and `qweights.load_quantized(..., fallback=True)`.
 
 **Pretraining, weather and the runtime**
 
@@ -467,7 +510,9 @@ bit-identical to the code before the audit.
   `--bits_per_token`, `--lora_dropout`, `--global_batch_tokens`, `--ns_steps`.
 - `experiments/race_finetune.py`: a fine-tuning race of Hugging Face Trainer + PEFT
   against `bantam finetune` on SmolLM2-135M and Dolly (protocol in
-  [docs/GUIDE.md](docs/GUIDE.md)). Its results are not in this file.
+  [docs/GUIDE.md](docs/GUIDE.md)). Its results are not in this file. Its replay of
+  bantam's data plan follows an arm's `--drop_last` flag (`--drop_last 1` reproduces the
+  published runs).
 - `compare_published.py` reports the end-of-story cost apart (`nll_end_nats`,
   `bpb_no_end`) and scores a verified local copy of a Hub model (`--hf repo=dir`).
   `run_queue.py --dry_run`.
@@ -532,6 +577,15 @@ bit-identical to the code before the audit.
   without that (2d4e6f6).
 - The only data-pipeline test passed without checking anything when offline (OPT-3/ft,
   PKG-6).
+- With packing (or padding), sliding-window layers attended to the whole example: one
+  block-diagonal mask went to every layer (Mistral, Phi-3, Starcoder2 at `--seq` above
+  their window; Gemma-2/3 and Qwen2/3 local layers). Logits of a packed example were
+  off by up to about 4 on tiny test models.
+- "1 epoch" skipped the windows that did not fill a last optimizer step.
+- Importing `bantamtrain.finetune` turned on flush-to-zero for the whole process.
+- `--low_ram 1` crashed on checkpoints with only `pytorch_model.bin` weights.
+- `bantam chat --quant` always used int8 embeddings, whatever the run's `--embed_quant`.
+- A missing `datasets`, data source or model left an empty `--out` directory.
 
 **Quantization, LoRA and WeightPack**
 
@@ -556,7 +610,8 @@ bit-identical to the code before the audit.
   bf16 (WP-2); small tensors were rounded to bf16 at `bits=8`/`4` (WP-3); files had no
   integrity check or byte-order marker (WP-4); fp16 scales overflowed above 65504 and
   lost precision for small blocks (WP-5); narrow last axes were padded (an int8 file
-  larger than bf16) and tied tensors stored twice (WP-6).
+  larger than bf16) and tied tensors stored twice (WP-6). `bits=8`/`4` re-quantized the
+  scale matrices of a qweights-quantized state_dict.
 - `experiments/weightpack_eval.py` rebuilt the wrong architecture (EXP-1/quant).
 
 **Optimizers and low-memory state**
@@ -810,25 +865,17 @@ bit-identical to the code before the audit.
   backend (GAP-2/gpu), no FP8 path (GAP-5/gpu), and no FSDP or ZeRO sharding
   (GAP-1/gpu); multi-GPU is DDP only, and `bantam weather` has no DDP.
 - `bantam pretrain` has no `--ce_chunk` flag and always builds the full logits.
-- Fine-tuning with packing: sliding-window layers lose their window (Gemma-3 at `--seq`
-  above 512 or 1024; Phi-3, Mistral and Starcoder2 above their window; Gemma-2 above
-  4096; the default `--seq 512` is unaffected). `flash_attention_*` implementations
-  cannot take the 4-D mask (the CLI never selects them). The dense mask loses
-  FlashAttention's speed.
-- `bantam finetune`'s "1 epoch" skips the last packed windows that do not fill an
-  optimizer step (up to `batch x accum - 1` windows).
-- Importing `bantamtrain.finetune` (and the pretrain and weather modules) turns on
-  flush-to-zero for the whole process.
-- `--low_ram 1` needs `.safetensors` weights; a checkpoint with only `.bin` files raises
-  FileNotFoundError instead of falling back.
-- `bantam chat --quant` always uses int8 embeddings, whatever the training run's
-  `--embed_quant`.
+- Fine-tuning with packing: `flash_attention_*` implementations cannot take the 4-D mask
+  (the CLI never selects them), and the dense mask loses FlashAttention's speed. A
+  decoder that mixes sliding-window and full layers but takes only one mask gets a note
+  and no window in packed windows (none of the tested families).
+- Importing the pretrain and weather command modules turns on flush-to-zero for the
+  whole process.
 - `bantam generate` encodes the prompt with the tokenizer's special tokens, so a reused
   tokenizer that adds BOS (Llama style) gives a prompt that differs from the training
   documents, which have no BOS.
-- `weightpack.save(bits=8 or 4)` re-quantizes the scale matrices of an already quantized
-  state_dict; use `bits=32` for those. `torch.save` of a whole quantized model fails for
-  quantized subclasses; state_dicts work.
+- `torch.save` of a whole quantized model fails for quantized subclasses; state_dicts
+  work.
 - `--save_every_eval` without `--save` is silently ignored; `--auto_batch` does not probe
   the eval batch; optimizer FLOPs charge parameters with no gradient in the current zoom
   stage (under 0.1%).

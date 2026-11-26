@@ -281,7 +281,19 @@ section 7).
 Packing puts several examples in one window. Each window gets a block-diagonal causal
 mask with positions restarting per example, so packed examples never see each other.
 In 0.2 they did; 0.3 fixed it, also for models that use eager attention, such as
-Gemma-2.
+Gemma-2. Sliding-window layers keep their window inside the mask: one windowed mask for
+uniform-window models (Mistral, Phi-3, Starcoder2), and one mask per layer type for
+models that alternate local and global layers (Gemma-2/3, Qwen2/3 with
+`use_sliding_window`).
+
+An epoch trains on every window once; the last optimizer step of an epoch may hold
+fewer micro-batches, and its loss is the mean over its own supervised tokens
+(`--drop_last 1` gives the 0.2 schedule of full steps only). Because a window holds
+several examples, an optimizer step sees more examples than `batch x accum`: `log.json`
+records `examples_per_step` and `steps_per_epoch`, and a note is printed when a step
+sees more than twice `batch x accum` examples. `--examples_per_step N` sets `--accum`
+after packing so that a step sees about N examples, for example to match a trainer that
+puts one example in each row.
 
 ### QLoRA: LoRA on a quantized base
 
@@ -294,8 +306,9 @@ bantam finetune --model HuggingFaceTB/SmolLM2-135M --dataset databricks/databric
   al. 2023) for the frozen linear layers. Embeddings and the output head are int8 by
   default (`--embed_quant 8`; `same` follows `--quant`, `none` keeps them in float).
 - `--low_ram 1` builds the model with its weights quantized one tensor at a time, so the
-  float model never sits in RAM. It needs `.safetensors` weights. In one end-to-end check
-  during the 0.3 review (SmolLM2-135M, `--quant nf4`, `--seq 256 --batch 2`, 20 steps,
+  float model never sits in RAM. It needs `.safetensors` weights; a checkpoint with only
+  `pytorch_model.bin` is loaded the default way instead, with a warning. In one end-to-end
+  check during the 0.3 review (SmolLM2-135M, `--quant nf4`, `--seq 256 --batch 2`, 20 steps,
   one run each; not a committed result), peak RSS was 2,339 MB with `--low_ram 1`,
   2,733 MB with the default `--quant` path (it loads the float model first) and 2,668 MB
   for float LoRA.
@@ -398,8 +411,9 @@ bantam chat --model HuggingFaceTB/SmolLM2-135M --adapter runs/dolly --prompt "Na
 bantam chat --model HuggingFaceTB/SmolLM2-135M --adapter runs/qlora --quant nf4    # interactive
 ```
 
-`/reset` clears the conversation and `/exit` quits. `--quant` always uses int8
-embeddings, whatever `--embed_quant` the run used.
+`/reset` clears the conversation and `/exit` quits. The base is quantized as the adapter
+was trained (`--quant` and `--embed_quant` from `adapter_meta.json` or `log.json`); the
+flags override that, and `--quant 0` loads the float base.
 
 ### Several processes or GPUs
 
@@ -414,12 +428,9 @@ no FSDP or ZeRO sharding, so the whole model must fit on each device.
 
 ### Known limits
 
-- With packing, sliding-window attention layers lose their window. This affects
-  Gemma-3 at `--seq` above 512 or 1024, Phi-3, Mistral and Starcoder2 at `--seq` above
-  their window, and Gemma-2 above 4096. The default `--seq 512` is unaffected.
-- "1 epoch" skips the last packed windows that do not fill a whole optimizer step (up to
-  `batch x accum - 1` windows).
-- Importing `bantamtrain.finetune` turns on flush-to-zero for the whole process.
+- A decoder that mixes sliding-window and full layers but takes only one mask cannot
+  give its sliding layers their window in packed or padded windows; a note is printed.
+  None of the families above is such a model.
 
 ---
 
@@ -779,7 +790,8 @@ Two differences are part of the design. Packing makes the Bantam arms take about
 fewer, larger optimizer steps at the same LR (58 against 200 in a full-protocol dry run).
 And Bantam's "1 epoch" leaves out the last packed windows that do not fill a step (3 of
 235 windows, about 1.2% of the supervised tokens); tokens per second counts only the
-tokens trained. A 32-example smoke run checked the harness (token parity, identical
+tokens trained. (Since then an epoch trains on every window; `--drop_last 1` keeps the
+schedule the race used.) A 32-example smoke run checked the harness (token parity, identical
 LoRA modules, judge agreement with Bantam's own eval to about 2e-7). Its numbers are not
 a comparison.
 

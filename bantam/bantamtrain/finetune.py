@@ -2,52 +2,54 @@
 
     python -m bantamtrain.finetune --model HuggingFaceTB/SmolLM2-135M \
         --dataset databricks/databricks-dolly-15k --max_examples 2000 \
-        --lora 16 --quant 4 --optim muon --state_bits 8 --epochs 1 --out runs/dolly
+        --lora 16 --quant nf4 --epochs 1 --examples_per_step 8 --out runs/dolly
 
 What it gives you
-  * LoRA / QLoRA: frozen base (optionally int8/int4 blockwise, bantamtrain.qweights)
+  * LoRA / QLoRA: frozen base (optionally int8 / int4 / NF4 blockwise, bantamtrain.qweights)
     + trainable low-rank adapters on every linear layer; or full fine-tuning (--lora 0).
-  * Muon (hidden matrices; the LoRA matrices when the base is frozen) + 8-bit optimizer
-    state + bf16 weights with stochastic rounding; chunked cross-entropy so a 32k-128k
+  * AdamW (default) or Muon (hidden matrices; the LoRA matrices when the base is frozen;
+    not better than AdamW for LoRA in the fine-tuning race) + 8-bit optimizer state +
+    bf16 weights with stochastic rounding; chunked cross-entropy so a 32k-128k
     vocabulary never materializes the full logits; activation checkpointing; grad
     accumulation with the loss averaged over every supervised token of the step.
   * SFT data from a HuggingFace dataset or a local JSONL: prompt/response
     columns, Dolly-style instruction/context/response, chat `messages` or ShareGPT
     `conversations`. Uses the tokenizer's chat template when it has one; the loss is
     computed on response tokens only; examples are packed into fixed windows with a
-    block-diagonal mask (packed examples never see each other).
+    block-diagonal mask (packed examples never see each other; sliding-window layers
+    keep their window). An epoch trains on every window once. Packing puts several
+    examples in a window, so --examples_per_step N picks --accum for ~N examples per
+    optimizer step.
   * Multi-GPU with torchrun (DistributedDataParallel), periodic resumable checkpoints
     (--save_every, --resume), adapter-only outputs (MBs, plus the tokenizer) and an
     optional merged save_pretrained().
 """
+import argparse
+import bisect
+import contextlib
+import heapq
+import inspect
+import json
+import math
+import os
+import random
+import re
+import time
+
 import torch
+import torch.distributed as dist
+import torch.nn as nn
+import torch.nn.functional as F
 
-torch.set_flush_denormal(True)
-
-import argparse  # noqa: E402
-import bisect  # noqa: E402
-import contextlib  # noqa: E402
-import heapq  # noqa: E402
-import inspect  # noqa: E402
-import json  # noqa: E402
-import os  # noqa: E402
-import random  # noqa: E402
-import re  # noqa: E402
-import time  # noqa: E402
-
-import torch.distributed as dist  # noqa: E402
-import torch.nn as nn  # noqa: E402
-import torch.nn.functional as F  # noqa: E402
-
-from . import lora as _lora  # noqa: E402
-from . import qweights as _qw  # noqa: E402
-from .device import DutyCycleLimiter, auto_precision, describe, setup_runtime  # noqa: E402
-from .lora import apply_lora, load_lora_state_dict, lora_state_dict, merge_lora, unwrap_lora  # noqa: E402
-from .losses import chunked_cross_entropy  # noqa: E402
-from .lowmem import state_bytes  # noqa: E402
-from .optim import build_optimizer  # noqa: E402
-from .qweights import dequantize_rows, model_bytes, quantize_model  # noqa: E402
-from .zoom import lr_at  # noqa: E402
+from . import lora as _lora
+from . import qweights as _qw
+from .device import DutyCycleLimiter, auto_precision, describe, setup_runtime
+from .lora import apply_lora, load_lora_state_dict, lora_state_dict, merge_lora, unwrap_lora
+from .losses import chunked_cross_entropy
+from .lowmem import state_bytes
+from .optim import build_optimizer
+from .qweights import dequantize_rows, model_bytes, quantize_model
+from .zoom import lr_at
 
 # The pre-0.3 default target list (exact leaf names). The default is now "all-linear".
 DEFAULT_TARGETS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
@@ -366,12 +368,49 @@ def padding_fraction(windows):
     return sum(w[3].count(-1) for w in windows) / max(1, sum(len(w[3]) for w in windows))
 
 
-def plan_steps(n_windows, world, batch, accum, epochs, max_steps):
+def steps_per_epoch(per, batch, accum, drop_last=False):
+    """Optimizer steps in one pass over `per` windows (per rank): every window once, the
+    last step possibly shorter; drop_last (the 0.2 schedule): full steps only."""
+    if drop_last:
+        return max(1, per // (batch * accum))
+    return max(1, math.ceil(math.ceil(per / batch) / accum))
+
+
+def plan_steps(n_windows, world, batch, accum, epochs, max_steps, drop_last=False):
     """-> (windows per rank, total optimizer steps), the same on every rank: the windows
-    are cut to a multiple of `world` (drop_last) before sharding."""
+    are cut to a multiple of `world` before sharding. An epoch covers every window
+    (see step_windows); --max_steps overrides the epochs."""
     per = n_windows // world
-    steps_per_epoch = max(1, per // (batch * accum))
-    return per, max_steps or max(1, int(steps_per_epoch * epochs))
+    return per, max_steps or max(1, int(steps_per_epoch(per, batch, accum, drop_last) * epochs))
+
+
+def step_windows(order, pos, rng, batch, accum, drop_last=False):
+    """-> (window indices of each micro-batch of the next optimizer step, new position in
+    `order`). Every window once per epoch: the epoch's last step may hold fewer micro-batches
+    and its last micro-batch fewer windows; `order` is reshuffled in place by `rng` when an
+    epoch starts. drop_last (the 0.2 schedule): a stream of full micro-batches, reshuffled
+    when the next one does not fit, which skips up to batch-1 windows per pass."""
+    idx = []
+    if drop_last:
+        for _ in range(accum):
+            if pos + batch > len(order):
+                rng.shuffle(order)
+                pos = 0
+            idx.append(order[pos:pos + batch])
+            pos += batch
+        return idx, pos
+    if pos >= len(order):
+        rng.shuffle(order)
+        pos = 0
+    while len(idx) < accum and pos < len(order):
+        idx.append(order[pos:pos + batch])
+        pos += batch
+    return idx, min(pos, len(order))
+
+
+def examples_per_window(windows):
+    """Mean number of examples (pieces of examples with --pack wrapped) in a window."""
+    return sum(max(w[3]) + 1 for w in windows) / max(1, len(windows))
 
 
 def segment_mask(seg):
@@ -399,6 +438,84 @@ def model_attention_mask(model, mask):
     dt = _qw.autocast_dtype(mask.device.type) or getattr(model, "dtype", torch.float32)   # the scores' dtype
     dt = dt if dt.is_floating_point else torch.float32
     return torch.zeros(mask.shape, dtype=dt, device=mask.device).masked_fill_(~mask, torch.finfo(dt).min)
+
+
+_MASK_DICT = re.compile(r"isinstance\(\s*(?:\w+\s*:=\s*)?attention_mask\s*,\s*dict\s*\)")
+
+
+def _forward_sources(model):
+    """Source of the forward methods the attention mask goes through: the model, its decoder
+    (.model / .base_model) and a multimodal model's .language_model ('' when unavailable)."""
+    todo, seen, src = [model], set(), []
+    while todo:
+        m = todo.pop()
+        if not isinstance(m, nn.Module) or id(m) in seen:
+            continue
+        seen.add(id(m))
+        try:
+            src.append(inspect.getsource(type(m).forward))
+        except (OSError, TypeError):
+            pass
+        todo += [getattr(m, k, None) for k in ("model", "base_model", "language_model")]
+    return "\n".join(src)
+
+
+def window_layout(model):
+    """(sliding window, mode) of the model's attention, from its config and decoder code, once
+    per model: (None, None) when no layer has a window the code is known to apply; mode "all"
+    when every layer has it (config.sliding_window without layer_types: Mistral, Mixtral,
+    Phi-3, Starcoder2; or layer_types all sliding_attention); "mapping" when layer_types mixes
+    sliding_attention and full_attention layers and the decoder takes transformers' prepared
+    {layer type: mask} mapping (Gemma-2/3, Cohere2, Qwen2/3 with use_sliding_window); "none"
+    for any other mix, which a single mask cannot express (noted once)."""
+    lay = model.__dict__.get("_bantam_window")
+    if lay is not None:
+        return lay
+    cfg = getattr(model, "config", None)
+    if cfg is not None and callable(getattr(cfg, "get_text_config", None)):
+        cfg = cfg.get_text_config()
+    w = getattr(cfg, "sliding_window", None)
+    if getattr(cfg, "use_sliding_window", True) is False or isinstance(w, bool) or not isinstance(w, int) or w <= 0:
+        w = None
+    types = getattr(cfg, "layer_types", None)
+    lay = (None, None)
+    if w is not None and isinstance(types, (list, tuple)) and types:
+        kinds = set(types)
+        if kinds == {"sliding_attention"}:
+            lay = (w, "all")
+        elif "sliding_attention" in kinds:
+            ok = kinds <= {"sliding_attention", "full_attention"} and _MASK_DICT.search(_forward_sources(model))
+            lay = (w, "mapping" if ok else "none")
+            if not ok:
+                print(f"[finetune] {type(model).__name__}: its sliding-window layers ({w} tokens) cannot get "
+                      "their own mask; in packed or padded windows longer than that they attend to the "
+                      "whole example", flush=True)
+    elif w is not None and types is None and "create_sliding_window_causal_mask" in _forward_sources(model):
+        lay = (w, "all")
+    model.__dict__["_bantam_window"] = lay
+    return lay
+
+
+def packed_attention(model, seg):
+    """(B, T) example ids (-1 = padding) -> the forward kwargs (attention_mask, position_ids)
+    that keep packed examples apart; {} when every row is one unpadded example. Layers with a
+    sliding window get the block-diagonal causal mask cut to their window as well: one
+    windowed mask when every layer has the window, else {"full_attention": mask,
+    "sliding_attention": windowed mask}, which the decoder uses as is (window_layout)."""
+    mask, pos = segment_mask(seg)
+    if mask is None:
+        return {}
+    w, mode = window_layout(model)
+    T = seg.shape[1]
+    if w is not None and w < T and mode in ("all", "mapping"):
+        i = torch.arange(T, device=seg.device)
+        local = mask & (i[:, None] - i[None, :] < w)           # kv > q - window, as transformers
+        if mode == "mapping":
+            return {"attention_mask": {"full_attention": model_attention_mask(model, mask),
+                                       "sliding_attention": model_attention_mask(model, local)},
+                    "position_ids": pos}
+        mask = local
+    return {"attention_mask": model_attention_mask(model, mask), "position_ids": pos}
 
 
 # ----------------------------------------------------------------------------- model
@@ -504,11 +621,7 @@ def lm_loss_sum(model, x, y, ce_chunk, w=None, seg=None):
     chunked head (never the full logits) when the model is decoder + linear head; the
     model's own logit transform (softcap / scale) is applied either way. `seg` (B, T)
     keeps packed examples apart. Targets that are all ignored give 0, never NaN."""
-    kw = {}
-    if seg is not None:
-        mask, pos = segment_mask(seg)
-        if mask is not None:
-            kw = {"attention_mask": model_attention_mask(model, mask), "position_ids": pos}
+    kw = packed_attention(model, seg) if seg is not None else {}
     tw, denom = _token_weights(y, w)
     base, head = _split_head(model) if ce_chunk else (None, None)
     if head is not None and (tw is None or "token_weights" in _CE_ARGS) and _chunk_ok(model, base, head):
@@ -720,7 +833,7 @@ _RESUME_KEYS = ("model", "dataset", "config", "split", "jsonl", "eval_jsonl", "m
                 "response_col", "messages_col", "lora", "lora_alpha", "rslora", "dora", "lora_plus", "quant",
                 "embed_quant", "param_dtype", "seq", "pack", "batch", "accum", "seed", "lr", "epochs",
                 "max_steps", "prompt_loss_weight", "optim", "muon_lora", "state_bits", "sched", "warmup",
-                "eval_frac", "wd", "ns", "lora_dropout")
+                "eval_frac", "wd", "ns", "lora_dropout", "drop_last", "examples_per_step")
 
 
 def _state_path(path):
@@ -772,10 +885,17 @@ def main(argv=None):
     ap.add_argument("--pack", default="bfd", choices=["bfd", "wrapped", "none"])
     ap.add_argument("--prompt_loss_weight", type=float, default=0.0,
                     help="0 = loss on response tokens only (default); 1 = train on everything")
-    ap.add_argument("--epochs", type=float, default=1.0)
-    ap.add_argument("--max_steps", type=int, default=0)
+    ap.add_argument("--epochs", type=float, default=1.0,
+                    help="passes over the training windows; each trains on every window once")
+    ap.add_argument("--max_steps", type=int, default=0, help="optimizer steps (overrides --epochs)")
+    ap.add_argument("--drop_last", type=int, default=0,
+                    help="1: the 0.2 schedule, full optimizer steps only (an epoch skips the windows "
+                         "that do not fill a last step)")
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--accum", type=int, default=1)
+    ap.add_argument("--examples_per_step", type=int, default=0,
+                    help="choose --accum after packing so that an optimizer step sees about N "
+                         "examples (packing puts several in a window); 0 = off")
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--warmup", type=float, default=0.03)
     ap.add_argument("--sched", default="wsd", choices=["cosine", "wsd"])
@@ -810,6 +930,8 @@ def main(argv=None):
     ap.add_argument("--device", default="auto")
     ap.add_argument("--precision", default="auto")
     ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--ftz", type=int, default=1,
+                    help="CPU flush-to-zero / denormals-are-zero for this process (0 = IEEE denormals)")
     ap.add_argument("--duty", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", required=True)
@@ -834,6 +956,8 @@ def main(argv=None):
         ap.error("--resume continues training; --eval_only does not train")
     if not args.duty > 0:
         ap.error(f"--duty must be in (0, 1], got {args.duty}")
+    if args.examples_per_step < 0:
+        ap.error(f"--examples_per_step must be >= 0, got {args.examples_per_step}")
 
     # ---- distributed (torchrun) ----
     world = int(os.environ.get("WORLD_SIZE", "1"))
@@ -845,10 +969,17 @@ def main(argv=None):
     is_main = rank == 0
     # the same seed on every rank: identical model init and stochastic rounding
     rt = setup_runtime(args.device, args.precision, False, args.threads, args.seed)
+    # --ftz (setup_runtime turns flush-to-zero on for CPU), still before the first parallel op
+    torch.set_flush_denormal(bool(args.ftz))
     if rt.device.type == "cpu":
         rt.amp_dtype = None
-    from transformers import AutoModelForCausalLM, AutoTokenizer   # before --out is created
-    os.makedirs(args.out, exist_ok=True)
+    # missing extras and bad options fail before anything is loaded; --out is created only
+    # once the model and the data are ready
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    if not (args.jsonl or args.dataset):
+        ap.error("pass --dataset (a Hugging Face dataset) or --jsonl (a local file)")
+    if not args.jsonl:
+        import datasets  # noqa: F401
 
     tok = AutoTokenizer.from_pretrained(args.model)
     template = resolve_template(tok)
@@ -864,8 +995,10 @@ def main(argv=None):
     load_quantized = getattr(_qw, "load_quantized", None)
     if quant and args.low_ram and load_quantized is not None:
         res = load_quantized(args.model, quant, embed_bits=eq, dtype=dtype)
-        model, rq = res if isinstance(res, tuple) else (res, None)
+        model, rq = res if isinstance(res, tuple) else (res, getattr(res, "quant_report", None))
         report["quant"] = rq or {"bits": quant, "low_ram": True, "bytes_after": model_bytes(model)}
+        if report["quant"].get("low_ram") is False and is_main:     # no .safetensors: loaded in float
+            print(f"[finetune] warning: --low_ram: {report['quant'].get('fallback')}", flush=True)
         base_bytes_fp = (model_bytes(model) - sum(m.q.numel() * m.q.element_size()
                                                   + m.s.numel() * m.s.element_size()
                                                   for m in _quantized_storage(model))
@@ -960,15 +1093,45 @@ def main(argv=None):
         raise SystemExit("[finetune] the evaluation set is empty")
     n_sup = sum(1 for w in train_w for t in w[1][1:] if t != -100)
     pad_frac = padding_fraction(train_w)
-    per_rank, total_steps = plan_steps(len(train_w), world, args.batch, args.accum, args.epochs,
-                                       args.max_steps)
+    n_train, per_ex = len(train_w), examples_per_window(train_w)
+    per_rank = n_train // world
     if per_rank == 0 and not args.eval_only:
-        raise SystemExit(f"[finetune] {len(train_w)} training window(s) for {world} ranks")
+        raise SystemExit(f"[finetune] {n_train} training window(s) for {world} ranks")
+    if args.examples_per_step and not args.eval_only:   # a step = batch x accum windows on each rank
+        args.accum = max(1, round(args.examples_per_step / (args.batch * world * per_ex)))
     train_w = train_w[:per_rank * world][rank::world]
+    st = None
+    if args.resume:
+        st = load_state(args.resume)
+        if "drop_last" not in st["args"] and not args.drop_last:      # written before full epochs
+            args.drop_last = 1
+            if is_main:
+                print("[finetune] --resume: the checkpoint predates full epochs; it continues with its "
+                      "own schedule (--drop_last 1)", flush=True)
+        old = {"drop_last": 1, "examples_per_step": 0}                 # options older checkpoints lack
+        bad = [k for k in _RESUME_KEYS if st["args"].get(k, old.get(k)) != getattr(args, k)]
+        if bad or len(st["data"]) != world:
+            raise SystemExit(f"[finetune] --resume: options differ from the checkpoint: {bad or 'world size'}")
+        if len(st["data"][rank]["order"]) != len(train_w):
+            raise SystemExit(f"[finetune] --resume: {len(train_w)} training windows per rank, the checkpoint "
+                             f"has {len(st['data'][rank]['order'])}: the data differ")
+    spe = steps_per_epoch(per_rank, args.batch, args.accum, args.drop_last)
+    total_steps = plan_steps(n_train, world, args.batch, args.accum, args.epochs, args.max_steps,
+                             args.drop_last)[1]
     if world > 1:            # belt and braces: a rank with fewer steps would hang the others
         t = torch.tensor(total_steps, device=rt.device)
         dist.all_reduce(t, op=dist.ReduceOp.MIN)
         total_steps = int(t)
+    # windows one epoch trains on (all ranks) and the examples an optimizer step sees on average
+    draws = spe * args.batch * args.accum if args.drop_last else per_rank      # per rank and epoch
+    used, ex_step = world * min(per_rank, draws), per_ex * world * draws / spe
+    if is_main and not args.eval_only:
+        if args.examples_per_step:
+            print(f"[finetune] --examples_per_step {args.examples_per_step}: {per_ex:.2f} examples per "
+                  f"window -> --accum {args.accum}, ~{ex_step:.1f} examples per optimizer step", flush=True)
+        elif ex_step > 2 * args.batch * args.accum * world:
+            print(f"[finetune] note: packing put {per_ex:.1f} examples per window; each optimizer step sees "
+                  f"~{ex_step:.0f} examples; consider --examples_per_step or a higher --lr", flush=True)
     limiter = DutyCycleLimiter(args.duty, rt.device)
 
     n_quant = _quantized_params(model)
@@ -980,9 +1143,12 @@ def main(argv=None):
            "optimizer_state_bytes": state_bytes(opt) if opt is not None else 0,
            "optimizers": optimizers, "train_windows": per_rank * world,
            "eval_windows": len(eval_w), "examples": len(items), "steps": total_steps,
+           "steps_per_epoch": spe, "windows_used": used, "examples_per_window": per_ex,
+           "examples_per_step": ex_step,
            "chat_template": template, "supervised_tokens": n_sup, "padding_fraction": pad_frac,
            "data": dstats, "logit_transform": {"scale": scale, "softcap": softcap},
            "world_size": world, "runtime": describe(rt), "evals": [], "train": []}
+    os.makedirs(args.out, exist_ok=True)
     log_path = os.path.join(args.out, "log.json")
 
     def write_log():
@@ -993,14 +1159,7 @@ def main(argv=None):
     order = list(range(len(train_w)))
     rng.shuffle(order)
     pos, t_train, cpu_train, start = 0, 0.0, 0.0, 0
-    if args.resume:
-        st = load_state(args.resume)
-        bad = [k for k in _RESUME_KEYS if st["args"].get(k) != getattr(args, k)]
-        if bad or len(st["data"]) != world:
-            raise SystemExit(f"[finetune] --resume: options differ from the checkpoint: {bad or 'world size'}")
-        if len(st["data"][rank]["order"]) != len(train_w):
-            raise SystemExit(f"[finetune] --resume: {len(train_w)} training windows per rank, the checkpoint "
-                             f"has {len(st['data'][rank]['order'])}: the data differ")
+    if st is not None:
         sd = st["trainable"]
         names = {n for n, p in model.named_parameters() if p.requires_grad}
         if set(sd) != names:
@@ -1019,12 +1178,12 @@ def main(argv=None):
         if own["cuda_rng"] is not None and torch.cuda.is_available():
             torch.cuda.set_rng_state(own["cuda_rng"])        # this rank's device
         start, (t_train, cpu_train) = st["step"], st["times"]
-        log = {**st["log"], "args": vars(args), "resumed_from": args.resume}
+        log = {**log, **st["log"], "args": vars(args), "resumed_from": args.resume}
     if is_main:
         print(f"[finetune] {args.model} trainable={trainable/1e6:.2f}M "
               f"model={log['model_bytes']/1e6:.0f}MB state={log['optimizer_state_bytes']/1e6:.0f}MB "
-              f"windows={per_rank * world} steps={total_steps} {describe(rt)}"
-              + (f" resumed at step {start}" if start else ""), flush=True)
+              f"windows={per_rank * world} steps={total_steps} ({spe}/epoch, ~{ex_step:.1f} examples "
+              f"each) {describe(rt)}" + (f" resumed at step {start}" if start else ""), flush=True)
     if not start:
         ev = evaluate(model, eval_w, rt, args.batch, args.ce_chunk, world, rank)
         log["evals"].append({"step": 0, "eval_loss": ev})
@@ -1055,13 +1214,8 @@ def main(argv=None):
             g["lr"] = lr * g.get("lr_scale", 1.0)
         t0, c0 = time.perf_counter(), time.process_time()
         opt.zero_grad(set_to_none=True)
-        mbs = []
-        for _ in range(args.accum):
-            if pos + args.batch > len(order):
-                rng.shuffle(order)
-                pos = 0
-            mbs.append(_batch(train_w, order[pos:pos + args.batch], rt.device))
-            pos += args.batch
+        idx, pos = step_windows(order, pos, rng, args.batch, args.accum, args.drop_last)
+        mbs = [_batch(train_w, i, rt.device) for i in idx]
         loss_v, n_tok = accumulate(fwd, mbs, rt, args.ce_chunk)
         rt.step(opt, params)
         dt = time.perf_counter() - t0
@@ -1114,7 +1268,8 @@ def main(argv=None):
             log["adapter_bytes"] = os.path.getsize(os.path.join(args.out, "adapter.pt"))
             meta = {"format": "bantam-lora", "base_model": args.model, "r": args.lora,
                     "alpha": args.lora_alpha, "rslora": rslora, "dora": bool(args.dora),
-                    "modules": lora_module_names(model), "quant": args.quant, "chat_template": template}
+                    "modules": lora_module_names(model), "quant": args.quant,
+                    "embed_quant": args.embed_quant, "chat_template": template}
             with open(os.path.join(args.out, "adapter_meta.json"), "w") as f:
                 json.dump(meta, f, indent=1)
             save_peft = getattr(_lora, "save_peft_adapter", None)

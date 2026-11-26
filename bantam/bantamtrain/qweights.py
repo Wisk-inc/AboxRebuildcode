@@ -574,7 +574,7 @@ def _resolve(model_id_or_path, kw):
 
 
 @torch.no_grad()
-def load_quantized(model_id_or_path, bits, embed_bits=8, dtype=torch.float32,
+def load_quantized(model_id_or_path, bits, embed_bits=8, dtype=torch.float32, fallback=True,
                    **from_pretrained_kwargs):
     """A Hugging Face causal LM with its weights quantized as quantize_model(model, bits,
     min_numel=1<<16, embed_bits=embed_bits) would, built without ever holding the float model:
@@ -582,14 +582,17 @@ def load_quantized(model_id_or_path, bits, embed_bits=8, dtype=torch.float32,
     tensor, and each weight is quantized as it arrives. Peak RAM is about the quantized size
     plus one float tensor. Extra keywords: block, min_numel, skip_names (as quantize_model);
     revision, token, cache_dir, trust_remote_code, attn_implementation; anything else
-    overrides config attributes. The report is in model.quant_report."""
+    overrides config attributes. The report is in model.quant_report (low_ram: True).
+    A checkpoint without .safetensors weights (pytorch_model.bin only) is loaded with
+    from_pretrained + quantize_model instead, which holds the float model once, with a
+    warning and low_ram: False, fallback: <reason> in the report; fallback=False raises
+    FileNotFoundError instead."""
     from transformers import AutoConfig, AutoModelForCausalLM
     kw = dict(from_pretrained_kwargs)
     qkw = {k: kw.pop(k) for k in ("block", "min_numel", "skip_names") if k in kw}
     qkw.setdefault("min_numel", 1 << 16)
     path = _resolve(model_id_or_path, kw)
-    for k in ("token", "cache_dir"):
-        kw.pop(k, None)
+    hub_kw = {k: kw.pop(k) for k in ("token", "cache_dir") if k in kw}
     mkw = {k: kw.pop(k) for k in ("attn_implementation",) if k in kw}
     if "trust_remote_code" in kw:
         mkw["trust_remote_code"] = kw["trust_remote_code"]
@@ -600,8 +603,19 @@ def load_quantized(model_id_or_path, bits, embed_bits=8, dtype=torch.float32,
     else:
         files = sorted(f for f in os.listdir(path) if f.endswith(".safetensors"))
     if not files:
-        raise FileNotFoundError(f"no .safetensors weights in {path}: use from_pretrained + "
-                                "quantize_model for other formats")
+        msg = (f"no .safetensors weights in {path}: loaded with from_pretrained + quantize_model, "
+               "which holds the float model once (peak RAM about the float size)")
+        if not fallback:
+            raise FileNotFoundError(f"no .safetensors weights in {path}: use from_pretrained + "
+                                    "quantize_model for other formats")
+        warnings.warn(msg)
+        # the original id: a hub snapshot above fetched no .bin files
+        model = AutoModelForCausalLM.from_pretrained(model_id_or_path, dtype=dtype, **hub_kw, **mkw,
+                                                     **{k: v for k, v in kw.items() if k != "trust_remote_code"})
+        report = quantize_model(model, bits, embed_bits=embed_bits, **qkw)
+        report.update(low_ram=False, fallback=msg)
+        model.quant_report = report
+        return model.eval()
     with _params_on_meta():
         model = AutoModelForCausalLM.from_config(config, dtype=dtype, **mkw)
     report = quantize_model(model, bits, embed_bits=embed_bits, **qkw)
@@ -652,6 +666,7 @@ def load_quantized(model_id_or_path, bits, embed_bits=8, dtype=torch.float32,
     if unexpected:
         warnings.warn(f"{len(unexpected)} checkpoint tensors not used, e.g. {unexpected[:4]}")
     report["bytes_after"] = model_bytes(model)
+    report["low_ram"] = True
     model.quant_report = report
     try:
         from transformers import GenerationConfig

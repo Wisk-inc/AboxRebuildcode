@@ -48,8 +48,8 @@ def test_split_is_deterministic_disjoint_and_stripped():
 
 
 def test_hf_side_does_not_import_bantam_finetune(model_dir):
-    """bantamtrain.finetune turns on flush-to-zero when imported; the HF arm's process must
-    not get it by accident (race_tokenizer keeps its own copy of the ChatML template)."""
+    """The HF arm's process loads none of bantam (0.3.0.dev's bantamtrain.finetune turned on
+    flush-to-zero at import); race_tokenizer keeps its own copy of the ChatML template."""
     import subprocess
 
     from bantamtrain.finetune import CHATML
@@ -137,7 +137,7 @@ def test_bantam_plan_replays_the_finetune_run(model_dir, tmp_path):
     tok = race.race_tokenizer(model_dir)
     plan = race.bantam_plan(tok, data, p)
     assert race.check_plan(plan, log)
-    assert plan["windows_used"] == log["steps"] * 4 <= plan["windows"]
+    assert plan["windows_used"] == plan["windows"] == log["windows_used"]       # one epoch: every window
     assert plan["supervised_tokens"] <= plan["supervised_tokens_all"] == log["supervised_tokens"]
     assert sum(plan["step_targets"]) == plan["supervised_tokens"]
     assert not race.check_plan(race.bantam_plan(tok, data, {**p, "seed": 8}), log)

@@ -225,7 +225,8 @@ Fine-tunes any Hugging Face causal language model on instruction or chat data: L
 QLoRA (LoRA on a quantized frozen base), DoRA, or full fine-tuning. It needs
 `pip install 'bantamtrain[finetune]'`.
 
-Required: `--model`, `--out`, and one of `--dataset` or `--jsonl`.
+Required: `--model`, `--out`, and one of `--dataset` or `--jsonl`. A missing extra, a missing
+data source, or a model or dataset that cannot be loaded fails before `--out` is created.
 
 **Model and data**
 
@@ -241,7 +242,7 @@ Required: `--model`, `--out`, and one of `--dataset` or `--jsonl`.
 | `--eval_frac` | 0.05 | fraction held out for evaluation |
 | `--eval_jsonl FILE` | `''` | separate held-out JSONL; overrides `--eval_frac` |
 | `--seq` | 512 | window length in tokens |
-| `--pack` | `bfd` | `bfd`: best-fit-decreasing packing; `wrapped`: concatenate and cut; `none`: one example per row. Packed examples get a block-diagonal mask, so they never see each other |
+| `--pack` | `bfd` | `bfd`: best-fit-decreasing packing; `wrapped`: concatenate and cut; `none`: one example per row. Packed examples get a block-diagonal mask, so they never see each other; sliding-window layers (Mistral, Phi-3, Starcoder2, Gemma-2/3, Qwen2/3 with `use_sliding_window`) also keep their window |
 | `--prompt_loss_weight` | 0 | 0: loss on response tokens only; 1: train on everything. Eval always scores response tokens only |
 
 The tokenizer's chat template is used when it has one. A base model without one gets
@@ -267,7 +268,7 @@ lines for chat data.
 |---|---|---|
 | `--quant` | `0` | quantize the frozen base: `8` (int8), `4` (linear int4) or `nf4` (QLoRA codebook). Needs `--lora` > 0 |
 | `--embed_quant` | `8` | embeddings and output head: `8` (int8), `same` as `--quant`, or `none` (float) |
-| `--low_ram` | 0 | 1 (with `--quant`): load and quantize tensor by tensor, never holding the float model. Needs `.safetensors` weights |
+| `--low_ram` | 0 | 1 (with `--quant`): load and quantize tensor by tensor, never holding the float model. Needs `.safetensors` weights: with `pytorch_model.bin` only, it warns and loads the float model first (`report.quant.low_ram` is `false` in `log.json`) |
 | `--grad_ckpt` | 0 | 1: activation checkpointing. Recommended with `--quant` (a note is printed otherwise) |
 | `--ce_chunk` | 2048 | chunked cross-entropy: tokens per chunk, so the full logits are never built |
 
@@ -284,10 +285,12 @@ lines for chat data.
 | `--sched` | `wsd` | `wsd` or `cosine` |
 | `--wd` | 0 | weight decay |
 | `--ns` | `quintic` | Muon orthogonalizer |
-| `--epochs` | 1.0 | passes over the data |
-| `--max_steps` | 0 | stop after this many optimizer steps (0 = use `--epochs`) |
+| `--epochs` | 1.0 | passes over the training windows. An epoch trains on every window once; its last optimizer step may hold fewer micro-batches (its loss is the mean over its own supervised tokens) |
+| `--max_steps` | 0 | stop after this many optimizer steps (0 = use `--epochs`). Each pass over the windows still ends as an epoch does, possibly with a shorter step |
+| `--drop_last` | 0 | 1: the 0.2 schedule, full optimizer steps only, so an epoch skips the windows that do not fill a last step. A checkpoint written before 0.3's full epochs resumes with it |
 | `--batch` | 4 | rows per micro-batch |
 | `--accum` | 1 | gradient accumulation; the loss is averaged over every supervised token of the step |
+| `--examples_per_step N` | 0 | after packing, set `--accum` to `max(1, round(N / (batch x processes x mean examples per window)))`, so an optimizer step sees about N examples (0 = off; it overrides `--accum`) |
 
 **Evaluation, runtime, output**
 
@@ -297,6 +300,7 @@ lines for chat data.
 | `--eval_only` | 0 | 1: print the held-out loss and exit |
 | `--device`, `--precision` | `auto`, `auto` | as in `pretrain` |
 | `--threads`, `--duty`, `--seed` | 4, 1.0, 0 | as in `pretrain` |
+| `--ftz` | 1 | CPU flush-to-zero for this process (0 = keep denormals). Set in `main()`; importing `bantamtrain.finetune` changes nothing |
 | `--out DIR` | required | output directory |
 | `--save_peft` | -1 | also write a PEFT adapter (`adapter_config.json` + `adapter_model.safetensors`); -1 = on |
 | `--save_merged` | 0 | 1: also `save_pretrained()` the merged model to `<out>/merged`. With `--quant`, the adapters are merged into a freshly loaded float base |
@@ -305,9 +309,16 @@ lines for chat data.
 | `--stop_step N` | 0 | stop after N steps (for tests) |
 
 Outputs in `--out`: `log.json` (arguments, data counts, train and eval curves, memory),
-`adapter.pt` and `adapter_meta.json` (LoRA runs), the PEFT adapter files, the tokenizer
+`adapter.pt` and `adapter_meta.json` (LoRA runs; it records `--quant` and `--embed_quant`
+for `bantam chat`), the PEFT adapter files, the tokenizer
 with the chat template it was trained with, `model/` (full fine-tuning) and `merged/`
 (with `--save_merged 1`).
+
+`log.json` also gives `steps_per_epoch`, `windows_used` (windows one epoch trains on, all
+processes), `examples_per_window` and `examples_per_step` (mean examples per optimizer
+step). Packing puts several examples in a window, so a step sees more examples than
+`batch x accum`; when it is more than twice that, a note suggests `--examples_per_step`
+or a higher `--lr`.
 
 **Examples**
 
@@ -613,7 +624,8 @@ tokenizer and chat template when there is one). Needs
 |---|---|---|
 | `--model` | required | base model (Hugging Face id or local dir) |
 | `--adapter` | `''` | a `bantam finetune` output dir, an `adapter.pt`, or a PEFT adapter dir |
-| `--quant` | `0` | quantize the base: `8`, `4`, `nf4` (embeddings always int8) |
+| `--quant` | as in training | quantize the base: `0`, `8`, `4`, `nf4`. Default: the adapter's training run (`adapter_meta.json` or `log.json`), else `0` |
+| `--embed_quant` | as in training | embeddings and output head with `--quant`: `8`, `same`, `none`. Default: the training run's, else `8` |
 | `--prompt` | `''` | answer this and exit |
 | `--system` | `''` | system message |
 | `--max_new` | 256 | new tokens |
@@ -624,6 +636,7 @@ tokenizer and chat template when there is one). Needs
 | `--rslora` | -1 | override the adapter's rsLoRA setting |
 | `--dtype` | `auto` | `auto`, `fp32`, `bf16` |
 | `--device`, `--seed` | `auto`, 0 | device and sampling seed |
+| `--ftz` | 1 | CPU flush-to-zero (0 = keep denormals) |
 
 ```bash
 bantam chat --model HuggingFaceTB/SmolLM2-135M --adapter runs/dolly --prompt "Name three colours"
