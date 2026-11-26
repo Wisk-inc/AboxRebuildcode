@@ -47,6 +47,17 @@ def test_packed_window_equals_examples_alone_for_every_attention(name, attn):
                                   torch.tensor(e[1:]), reduction="sum") for e in (a, b, c))
     assert int(n) == 8 + 5 + 3
     assert abs(s.item() - ref.item()) < 1e-4 and abs(s_chunked.item() - ref.item()) < 1e-4
+    # token weights (--prompt_loss_weight): chunked == full == the weighted per-example sum
+    wt = [[0.5 if i % 3 else 1.0 for i in range(len(e))] for e in (a, b, c)]
+    (x, y, w, g), = ft.pack([(e, e, v) for e, v in zip((a, b, c), wt)], 20, 0, "bfd")
+    x, y, w, g = (torch.tensor([v]) for v in (x, y, w, g))
+    with torch.no_grad():
+        full = ft.lm_loss_sum(m, x[:, :-1], y[:, 1:], 0, w[:, 1:], g[:, :-1])
+        chunked = ft.lm_loss_sum(m, x[:, :-1], y[:, 1:], 8, w[:, 1:], g[:, :-1])
+        ref = sum((F.cross_entropy(m(input_ids=torch.tensor([e])).logits[0, :-1].float(), torch.tensor(e[1:]),
+                                   reduction="none") * torch.tensor(v[1:])).sum() for e, v in zip((a, b, c), wt))
+    assert abs(full[1].item() - sum(sum(v[1:]) for v in wt)) < 1e-5 and abs(chunked[1] - full[1]) < 1e-5
+    assert abs(full[0].item() - ref.item()) < 1e-4 and abs(chunked[0].item() - ref.item()) < 1e-4
 
 
 def test_model_attention_mask_forms():
@@ -120,3 +131,25 @@ def test_lora_targets_list_with_spaces_wraps_every_named_layer():
     args = argparse.Namespace(lora=4, lora_alpha=8, lora_dropout=0.0, lora_targets="q_proj, v_proj ", dora=0)
     rep = ft._apply_lora(m, args, False)
     assert rep["targets"] == ["q_proj", "v_proj"] and rep["wrapped"] == 4
+
+
+def test_lora_plus_ratio_survives_the_lr_schedule(tmp_path, monkeypatch):
+    """The schedule rewrites every group's lr each step: the B groups must keep lr x ratio (the
+    existing test only checked the lr_scale tags build_optimizer sets)."""
+    import functools
+    import json
+    import os
+    import sys
+    sys.path.insert(0, os.path.dirname(__file__))
+    from test_finetune_fixtures import rows, run_args, save_model_dir, write_jsonl
+    d = save_model_dir(tmp_path / "m", "chatml")
+    seen, real = [], ft.build_optimizer
+    monkeypatch.setattr(ft, "build_optimizer",
+                        functools.wraps(real)(lambda *a, **k: seen.append(real(*a, **k)) or seen[-1]))
+    ft.main(run_args(d, write_jsonl(tmp_path / "d.jsonl", rows(24)), tmp_path / "o", "--lora_plus", 16,
+                     "--max_steps", 3, "--lr", 1e-3))
+    last = json.load(open(tmp_path / "o" / "log.json"))["train"][-1]["lr"]
+    groups = [g for g in seen[0].param_groups if g["params"]]
+    assert {g["lr_scale"] for g in groups} == {1.0, 16.0}
+    for g in groups:
+        assert abs(g["lr"] - last * g["lr_scale"]) < 1e-12
