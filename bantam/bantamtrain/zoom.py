@@ -120,14 +120,16 @@ class ZoomSchedule:
         return self.stage_at(frac)[0]
 
     def stage_at(self, frac):
-        """(k, stage_start, stage_end) in budget fractions for the stage holding frac."""
-        acc = 0.0
+        """(k, stage_start, stage_end) in budget fractions for the stage holding frac; at or
+        past the end (and for nan) the last stage with a non-zero share."""
+        acc, last = 0.0, None
         for k, f in self.stages:
             if frac < acc + f - 1e-12:
                 return k, acc, acc + f
+            if f > 0:
+                last = (k, acc, acc + f)
             acc += f
-        k, f = self.stages[-1]
-        return k, acc - f, acc
+        return last
 
     @property
     def ks(self):
