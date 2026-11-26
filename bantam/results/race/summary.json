@@ -99,6 +99,7 @@
    "bantam_adamw_steps": 61972,
    "bantam_muon_steps": 61972,
    "bantam_muon_steps_lr1e-3": 61972,
+   "bantam_adamw_steps_lr1e-3": 61972,
    "bantam_nf4_adamw_steps": 61972
   },
   "bantam_plan_matches_log": {
@@ -109,6 +110,7 @@
    "bantam_adamw_steps": true,
    "bantam_muon_steps": true,
    "bantam_muon_steps_lr1e-3": true,
+   "bantam_adamw_steps_lr1e-3": true,
    "bantam_nf4_adamw_steps": true
   },
   "bantam_step0_eval_minus_base_judge_subset": {
@@ -116,7 +118,8 @@
    "bantam": -8.559529973695135e-09,
    "bantam_adamw_steps": -1.141270677962325e-08,
    "bantam_muon_steps": -1.141270677962325e-08,
-   "bantam_muon_steps_lr1e-3": -1.141270677962325e-08
+   "bantam_muon_steps_lr1e-3": -1.141270677962325e-08,
+   "bantam_adamw_steps_lr1e-3": -1.141270677962325e-08
   }
  },
  "versions": {
@@ -131,7 +134,7 @@
   "psutil": "7.2.2",
   "bantamtrain": "0.3.0.dev0",
   "python": "3.13.18",
-  "bantam_git": "33cb0cda9faaf47bf4d8f2cccf29bba08f70a327-dirty"
+  "bantam_git": "9623232ecb9d56a90591db330e9f76d0a7ba6112-dirty"
  },
  "machine": {
   "platform": "Linux-6.18.44-fc-v880-x86_64-with-glibc2.39",
@@ -140,9 +143,9 @@
   "usable_cpus": 4,
   "mem_total_gb": 15.71017837524414,
   "loadavg": [
-   4.0048828125,
-   3.91455078125,
-   3.8798828125
+   3.8720703125,
+   3.83544921875,
+   3.82373046875
   ]
  },
  "smoke": false,
@@ -787,6 +790,96 @@
    "command": "/usr/local/bin/python3 -m bantamtrain finetune --model HuggingFaceTB/SmolLM2-135M --jsonl /home/user/AboxRebuildcode/bantam/results/race/data/train.jsonl --eval_jsonl /home/user/AboxRebuildcode/bantam/results/race/data/bantam_eval.jsonl --seq 512 --batch 1 --accum 1 --epochs 1.0 --lr 0.001 --sched cosine --warmup 0.03 --wd 0 --lora 16 --lora_alpha 32 --lora_dropout 0.05 --lora_targets q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj --seed 1234 --threads 4 --eval_every 0 --save_peft 1 --optim muon --pack bfd --out /home/user/AboxRebuildcode/bantam/results/race/runs/bantam_muon_steps_lr1e-3",
    "bantam_eval_minus_judge_subset": 1.854564901648814e-08
   },
+  "bantam_adamw_steps_lr1e-3": {
+   "desc": "torch AdamW with 1 window per step, LR 1e-3 (control for bantam_muon_steps_lr1e-3)",
+   "judge_loss": 2.228293341388096,
+   "judge_ci95": [
+    2.0641242988531943,
+    2.386746687588375
+   ],
+   "judge_ppl": 9.284007919031682,
+   "judge_examples": 200,
+   "judge_tokens": 15278,
+   "judge_vs_base": -0.4164169849034205,
+   "generations": [
+    "The capital of France is Paris. It is the largest city in France and the capital of the country. It is also the largest city in Europe. It is the largest city in Europe and the second largest city in the world. It is also the largest city in Europe and the second largest city in the world. It",
+    "1. Eat a balanced diet.\n2. Get enough sleep.\n3. Exercise.\n4. Avoid smoking.\n5. Avoid alcohol.\n6. Avoid caffeine.\n7. Avoid stress.\n8. Avoid poor eating habits.\n9. Avoid poor sleeping habits.\n10. Avoid",
+    "The Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Steppe.\n\nThe Great Wall of China is a series of fortifications built across the historical northern borders of ancient Chinese states to protect them against nomadic groups from the Eurasian Ste"
+   ],
+   "judge_s": 50.181202441002824,
+   "judge_peak_rss_mb": 1250.43359375,
+   "judge_vs_hf_peft": -0.031307441961360816,
+   "judge_vs_hf_peft_ci95": [
+    -0.039814791598469235,
+    -0.024724502742890397
+   ],
+   "steps": 235,
+   "examples": 800,
+   "real_tokens": 119981,
+   "supervised_tokens": 61972,
+   "tokens_per_s": 225.76717710469492,
+   "supervised_tokens_per_s": 116.612159421343,
+   "train_wall_s": 531.4368613660845,
+   "train_cpu_s": 2036.2220768240002,
+   "padding_fraction": 0.004761312264111816,
+   "final_train_loss": 2.441582360035369,
+   "train_loss_tail": 2.220371893548456,
+   "trainable_params": 4884480,
+   "lora_modules": 210,
+   "settings": {
+    "optimizers": [
+     [
+      "AdamW",
+      4884480
+     ]
+    ],
+    "optim": "adamw",
+    "muon_lora": 0,
+    "state_bits": 32,
+    "pack": "bfd",
+    "chunked_ce": true,
+    "ce_chunk": 2048,
+    "quant": "0",
+    "embed_quant": null,
+    "low_ram": 0,
+    "sched": "cosine",
+    "warmup": 0.03,
+    "param_dtype": "auto",
+    "precision": "auto",
+    "model_bytes": 557598208,
+    "optimizer_state_bytes": 39077520,
+    "data": {
+     "rows": 800,
+     "usable": 800,
+     "skipped": {},
+     "examples": 800,
+     "kept": 800,
+     "no_assistant_turn": 0,
+     "truncated": 24,
+     "no_target_after_truncation": 0,
+     "boundary_fallback": 0
+    },
+    "flush_denormal": true,
+    "betas": [
+     0.9,
+     0.95
+    ]
+   },
+   "windows": 235,
+   "windows_used": 235,
+   "plan_matches_log": true,
+   "peak_rss_mb": 2656.95703125,
+   "maxrss_mb": 2659.390625,
+   "process_wall_s": 550.7638850540025,
+   "process_cpu_s": 2096.646631,
+   "loadavg_before": [
+    2.177734375,
+    3.45361328125,
+    3.724609375
+   ],
+   "command": "/usr/local/bin/python3 -m bantamtrain finetune --model HuggingFaceTB/SmolLM2-135M --jsonl /home/user/AboxRebuildcode/bantam/results/race/data/train.jsonl --eval_jsonl /home/user/AboxRebuildcode/bantam/results/race/data/bantam_eval.jsonl --seq 512 --batch 1 --accum 1 --epochs 1.0 --lr 0.001 --sched cosine --warmup 0.03 --wd 0 --lora 16 --lora_alpha 32 --lora_dropout 0.05 --lora_targets q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj --seed 1234 --threads 4 --eval_every 0 --save_peft 1 --optim adamw --state_bits 32 --pack bfd --out /home/user/AboxRebuildcode/bantam/results/race/runs/bantam_adamw_steps_lr1e-3",
+   "bantam_eval_minus_judge_subset": -8.559530417784345e-09
+  },
   "bantam_nf4_adamw_steps": {
    "desc": "QLoRA NF4 base, torch AdamW, 1 window per step",
    "judge_loss": 2.3682316360805715,
@@ -879,5 +972,5 @@
    "bantam_eval_minus_judge_subset": -1.3017618538668785e-08
   }
  },
- "harness_command": "/usr/local/bin/python3 experiments/race_finetune.py --threads 4 --quiet --arms base,hf_peft,bantam_adamw,bantam,bantam_nf4,bantam_adamw_steps,bantam_muon_steps,bantam_muon_steps_lr1e-3,bantam_nf4_adamw_steps"
+ "harness_command": "/usr/local/bin/python3 experiments/race_finetune.py --threads 4 --quiet --arms base,hf_peft,bantam_adamw,bantam,bantam_nf4,bantam_adamw_steps,bantam_muon_steps,bantam_muon_steps_lr1e-3,bantam_adamw_steps_lr1e-3,bantam_nf4_adamw_steps"
 }

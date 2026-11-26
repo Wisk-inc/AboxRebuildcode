@@ -11,3 +11,9 @@ Found the latest cached dataset configuration 'default' at /root/.cache/huggingf
 [race] bantam_muon_steps_lr1e-3: done, skipped (--force bantam_muon_steps_lr1e-3 reruns it)
 [race] bantam_adamw_steps_lr1e-3: training
   $ /usr/local/bin/python3 -m bantamtrain finetune --model HuggingFaceTB/SmolLM2-135M --jsonl /home/user/AboxRebuildcode/bantam/results/race/data/train.jsonl --eval_jsonl /home/user/AboxRebuildcode/bantam/results/race/data/bantam_eval.jsonl --seq 512 --batch 1 --accum 1 --epochs 1.0 --lr 0.001 --sched cosine --warmup 0.03 --wd 0 --lora 16 --lora_alpha 32 --lora_dropout 0.05 --lora_targets q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj --seed 1234 --threads 4 --eval_every 0 --save_peft 1 --optim adamw --state_bits 32 --pack bfd --out /home/user/AboxRebuildcode/bantam/results/race/runs/bantam_adamw_steps_lr1e-3
+[race] bantam_adamw_steps_lr1e-3: judging
+  $ /usr/local/bin/python3 /home/user/AboxRebuildcode/bantam/experiments/race_finetune.py _judge --out /home/user/AboxRebuildcode/bantam/results/race --arm bantam_adamw_steps_lr1e-3
+[race] bantam_adamw_steps_lr1e-3: judge loss 2.2283, 531 s training, 226 tok/s, peak RSS 2657 MB
+[race] bantam_nf4_adamw_steps: done, skipped (--force bantam_nf4_adamw_steps reruns it)
+[race] wrote /home/user/AboxRebuildcode/bantam/results/race/summary.md
+exit 0
