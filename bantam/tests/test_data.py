@@ -25,7 +25,7 @@ def test_tokpack_roundtrip_exact_and_random_access(tmp_path):
     assert np.array_equal(tp.read(299_000, 1000), toks[299_000:])
     assert nbytes < toks.nbytes * 0.8                                 # Zipf data compresses
     windows = list(tp.stream(seq=1000, seed=1))
-    assert sum(len(w) for w in windows) >= 0.9 * len(toks)
+    assert sum(len(w) for w in windows) == len(toks) // 1000 * 1000    # every full window
     assert all(len(w) == 1000 for w in windows)
 
 
@@ -89,9 +89,9 @@ def test_gridpack_error_bound_and_roundtrip(tmp_path):
     gp = gridpack.GridPack(path)
     y = gp.read_all()
     assert y.shape == x.shape
-    bound = 0.05 * dstd.reshape(1, C, 1, 1)
-    assert (np.abs(y - x) <= bound + 1e-3).all()
-    assert (max_err <= 0.05 * dstd + 1e-3).all()
+    bound = 0.05 * dstd.astype(np.float64).reshape(1, C, 1, 1)
+    assert (np.abs(y.astype(np.float64) - x) <= bound).all()            # exact, no tolerance
+    assert (max_err <= 0.05 * dstd.astype(np.float64)).all()
     assert np.array_equal(gp.read(15, 3), y[15:18])
     assert nbytes < x.nbytes / 2
     # float16 would NOT meet this bound for geopotential / pressure
