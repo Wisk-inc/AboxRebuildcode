@@ -38,3 +38,23 @@ def test_pack_stats_report_the_raw_dtype(tmp_path):
     for s in ("train", "val"):
         assert st[s]["raw_bytes"] == 4 * st[s]["tokens"] == os.path.getsize(out / f"{s}.bin")
         assert st[s]["ratio_vs_raw"] == pytest.approx(2 * st[s]["ratio_vs_uint16"])
+
+
+def test_readers_pickle_after_chdir(tmp_path, monkeypatch):
+    """__getstate__ resolved the path against the cwd at pickling time: a reader opened by a
+    relative path and pickled (DataLoader workers) after a chdir pointed at another file."""
+    import pickle
+
+    import numpy as np
+
+    from bantamtrain.data import gridpack, tokpack
+    toks = np.arange(5000, dtype=np.uint16) % 300
+    tokpack.write(tmp_path / "t.tokpack", toks, 300, chunk=512)
+    x = np.random.default_rng(0).standard_normal((20, 2, 4, 8)).astype(np.float32)
+    gridpack.write(tmp_path / "f.gridpack", x, np.ones(2), chunk=8)
+    monkeypatch.chdir(tmp_path)
+    tp, gp = tokpack.TokPack("t.tokpack"), gridpack.GridPack("f.gridpack")
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    assert np.array_equal(pickle.loads(pickle.dumps(tp))[:], toks)
+    assert pickle.loads(pickle.dumps(gp)).T == 20
