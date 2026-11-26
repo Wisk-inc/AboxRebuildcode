@@ -77,3 +77,37 @@ def test_split_head_does_not_dequantize_a_quantized_head(tied, monkeypatch):
     monkeypatch.setattr(qweights.QBase, "dequantize", lambda self, *a: calls.append(1) or real(self, *a))
     base, head = ft._split_head(m)
     assert head is m.lm_head and base is m.model and not calls
+
+
+def test_max_examples_picks_the_same_rows_without_loading_the_whole_dataset(tmp_path, monkeypatch):
+    """--dataset with --max_examples materialized every row as a dict before keeping a few
+    (GBs for a 1M-row SFT set); the selection itself must not change."""
+    import argparse
+    import json
+    import sys
+    import types
+    rs = [{"prompt": f"p{i}", "response": f"r{i}"} for i in range(500)]
+    with open(tmp_path / "d.jsonl", "w") as f:
+        f.writelines(json.dumps(r) + "\n" for r in rs)
+    seen = []
+
+    class DS:                                   # the parts of datasets.Dataset load_examples uses
+        def __init__(self, rows):
+            self.rows = rows
+
+        def __len__(self):
+            return len(self.rows)
+
+        def __iter__(self):
+            for r in self.rows:
+                seen.append(r)
+                yield r
+
+        def select(self, idx):
+            return DS([self.rows[i] for i in idx])
+    monkeypatch.setitem(sys.modules, "datasets", types.SimpleNamespace(load_dataset=lambda *a, **k: DS(rs)))
+    kw = dict(config="", split="train", max_examples=7, seed=3, messages_col="messages",
+              prompt_col="prompt", response_col="response")
+    hub = ft.load_examples(argparse.Namespace(jsonl="", dataset="x", **kw))
+    assert len(seen) == 7
+    assert hub == ft.load_examples(argparse.Namespace(jsonl=str(tmp_path / "d.jsonl"), dataset="", **kw))

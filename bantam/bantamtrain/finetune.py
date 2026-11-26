@@ -89,13 +89,17 @@ def load_examples(args, stats=None):
     if args.jsonl:
         with open(args.jsonl) as f:
             rows = [json.loads(l) for l in f if l.strip()]
+        if args.max_examples:
+            random.Random(args.seed).shuffle(rows)
+            rows = rows[:args.max_examples]
     else:
         from datasets import load_dataset
         ds = load_dataset(args.dataset, args.config or None, split=args.split)
+        if args.max_examples:      # the rows shuffling them all would pick, without loading every row
+            idx = list(range(len(ds)))
+            random.Random(args.seed).shuffle(idx)
+            ds = ds.select(idx[:args.max_examples])
         rows = [dict(r) for r in ds]
-    if args.max_examples:
-        random.Random(args.seed).shuffle(rows)
-        rows = rows[:args.max_examples]
     out, skipped = [], {}
     for r in rows:
         msgs = r.get(args.messages_col) or r.get("conversations")
