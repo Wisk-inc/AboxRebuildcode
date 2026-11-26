@@ -47,6 +47,15 @@ def test_final_eval_runs_with_eval_every_0(chatml_dir, data, tmp_path):
         assert k in log                                  # old result fields are still there
 
 
+def test_eval_loss_ignores_the_prompt_loss_weight_even_at_1(chatml_dir, data, tmp_path):
+    # at weight 1 prompt targets look like response targets, so eval must not see them at all
+    ev = [run(chatml_dir, data, tmp_path / str(w), "--prompt_loss_weight", w, "--eval_only", 1)["final_eval_loss"]
+          for w in (0, 0.3, 1)]
+    assert ev[0] == ev[1] == ev[2]
+    log = run(chatml_dir, data, tmp_path / "t", "--prompt_loss_weight", 1, "--max_steps", 1)
+    assert log["supervised_tokens"] > run(chatml_dir, data, tmp_path / "u", "--max_steps", 1)["supervised_tokens"]
+
+
 def test_full_finetune_with_quant_is_refused(chatml_dir, data, tmp_path):
     with pytest.raises(SystemExit):
         ft.main(run_args(chatml_dir, data, tmp_path, "--lora", 0, "--quant", 8, "--max_steps", 1))
@@ -168,10 +177,26 @@ def test_resume_matches_an_uninterrupted_run(chatml_dir, data, tmp_path):
             assert all(torch.equal(sa[k], sc[k]) for k in sa)
 
 
-def test_resume_refuses_different_options(chatml_dir, data, tmp_path):
-    run(chatml_dir, data, tmp_path, "--max_steps", 4, "--save_every", 2, "--stop_step", 2)
-    with pytest.raises(SystemExit):
-        run(chatml_dir, data, tmp_path, "--max_steps", 4, "--seq", 32, "--resume", tmp_path)
+def test_resume_refuses_different_options(chatml_dir, tmp_path):
+    d = write_jsonl(tmp_path / "d.jsonl", rows(24))
+    run(chatml_dir, d, tmp_path, "--pack", "none", "--max_steps", 4, "--save_every", 2, "--stop_step", 2)
+
+    def resume(data, *extra):
+        run(chatml_dir, data, tmp_path, "--pack", "none", "--max_steps", 4, *extra, "--resume", tmp_path)
+    with pytest.raises(SystemExit, match="seq"):
+        resume(d, "--seq", 32)
+    with pytest.raises(SystemExit, match="state_bits"):
+        resume(d, "--state_bits", 32)
+    with pytest.raises(SystemExit, match="jsonl"):
+        resume(write_jsonl(tmp_path / "e.jsonl", rows(24, seed=9)))
+    with pytest.raises(SystemExit, match="data differ"):                 # same path, new content
+        resume(write_jsonl(tmp_path / "d.jsonl", rows(40)))
+
+
+def test_load_state_without_safe_globals(tmp_path, monkeypatch):
+    torch.save({"step": 3, "trainable": {"a": torch.ones(2)}}, tmp_path / "state.pt")
+    monkeypatch.delattr(torch.serialization, "safe_globals")      # torch < 2.5
+    assert ft.load_state(str(tmp_path))["step"] == 3
 
 
 # ---- wave-2 flags: each needs a function another group adds; skip until it exists
@@ -266,6 +291,25 @@ def test_ddp_uneven_shards_finish_in_sync(chatml_dir, tmp_path):
     a, b = log["replica_checksums"]
     assert a == b                     # bf16 stochastic rounding identical on both ranks
     assert os.path.exists(out / "model" / "config.json")
+
+
+def test_ddp_resume_matches_an_uninterrupted_run(chatml_dir, data, tmp_path):
+    # 2 ranks x 4 windows at batch 2 = 2 steps per epoch: step 3 reshuffles each rank's order
+    common = ("--lora_dropout", 0.1, "--max_steps", 4, "--eval_every", 2, "--lr", 1e-2)
+    logs = []
+    for out, extra in ((tmp_path / "a", ()), (tmp_path / "b", ("--save_every", 2, "--stop_step", 2)),
+                       (tmp_path / "b", ("--resume", tmp_path / "b"))):
+        r = _torchrun(run_args(chatml_dir, data, out, *common, *extra))
+        assert r.returncode == 0, r.stderr[-3000:]
+        with open(out / "log.json") as f:
+            logs.append(json.load(f))
+    a, b, c = logs
+    st = ft.load_state(str(tmp_path / "b"))
+    assert b["in_progress"] and len(st["data"]) == 2 and all("torch_rng" in d for d in st["data"])
+    assert [t["loss"] for t in a["train"]] == [t["loss"] for t in c["train"]]
+    assert [e["eval_loss"] for e in a["evals"]] == [e["eval_loss"] for e in c["evals"]]
+    sa, sc = (torch.load(p / "adapter.pt", weights_only=True) for p in (tmp_path / "a", tmp_path / "b"))
+    assert all(torch.equal(sa[k], sc[k]) for k in sa)
 
 
 def test_ddp_eval_only_exits_cleanly_on_every_rank(chatml_dir, data, tmp_path):

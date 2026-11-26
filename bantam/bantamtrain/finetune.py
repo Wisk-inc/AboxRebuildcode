@@ -54,7 +54,7 @@ DEFAULT_TARGETS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj
                    "c_attn", "c_proj", "c_fc", "query_key_value", "dense", "dense_h_to_4h",
                    "dense_4h_to_h", "qkv", "proj", "fc", "fc_out", "wq", "wk", "wv", "wo",
                    "w1", "w2", "w3")
-_CE_ARGS = inspect.signature(chunked_cross_entropy).parameters     # C5: scale, token_weights
+_CE_ARGS = inspect.signature(chunked_cross_entropy).parameters     # newer builds: scale, token_weights
 
 
 # ----------------------------------------------------------------------------- data
@@ -286,6 +286,14 @@ def tokenize_examples(tok, examples, seq, prompt_loss_weight=0.0, truncate=True,
     return items
 
 
+def with_prompt_loss(items, weight):
+    """Response-only items (tokenize_examples with prompt_loss_weight=0) -> the same items
+    with every prompt token supervised at `weight`, as tokenize_examples(..., weight) gives."""
+    if not weight:
+        return items
+    return [(ids, list(ids), [1.0 if l != -100 else weight for l in labels]) for ids, labels, _ in items]
+
+
 def _pad(x, y, w, g, n, pad_id):
     k = n - len(x)
     return x + [pad_id] * k, y + [-100] * k, w + [0.0] * k, g + [-1] * k
@@ -404,8 +412,15 @@ def _split_head(model):
 
 
 def _compute_dtype(h):
+    """The dtype a linear layer on `h` computes in: the autocast dtype when autocast is on."""
     t = h.device.type
-    return torch.get_autocast_dtype(t) if torch.is_autocast_enabled(t) else h.dtype
+    if hasattr(torch, "get_autocast_dtype"):                       # torch >= 2.4
+        on, dt = torch.is_autocast_enabled(t), torch.get_autocast_dtype(t)
+    elif t == "cpu":
+        on, dt = torch.is_autocast_cpu_enabled(), torch.get_autocast_cpu_dtype()
+    else:
+        on, dt = torch.is_autocast_enabled(), torch.get_autocast_gpu_dtype()
+    return dt if on else h.dtype
 
 
 def _head_weight(head, dtype):
@@ -550,9 +565,10 @@ def accumulate(fwd, mbs, rt, ce_chunk):
 
 @torch.no_grad()
 def evaluate(model, windows, rt, batch, ce_chunk, world=1, rank=0):
-    """Mean CE over response tokens only (targets of weight 1: prompt tokens supervised by
-    --prompt_loss_weight are excluded). With world > 1 every rank must call it: each
-    scores windows[rank::world] and the sums are all-reduced. NaN for an empty set."""
+    """Mean CE over response tokens only: targets of weight != 1 (prompt tokens under
+    0 < --prompt_loss_weight < 1) are excluded, and main() builds its eval windows
+    response-only for any weight. With world > 1 every rank must call it: each scores
+    windows[rank::world] and the sums are all-reduced. NaN for an empty set."""
     was = model.training
     model.eval()
     tot = torch.zeros(2, dtype=torch.float64, device=rt.device)
@@ -585,7 +601,7 @@ def lora_module_names(model):
 
 def _apply_lora(model, args, rslora):
     """apply_lora with the CLI options; "all-linear" goes to apply_lora when it knows it
-    (C4: it then also takes `exclude`), else every linear layer is listed by name."""
+    (it then also takes `exclude`), else every linear layer is listed by name."""
     params = inspect.signature(apply_lora).parameters
     kw = {"rslora": rslora}
     if args.dora:
@@ -650,9 +666,11 @@ def _save_merged_from_float(model_id, dtype, sd, meta, tok, template, out_dir):
 
 
 # ----------------------------------------------------------------------------- checkpoints
-_RESUME_KEYS = ("model", "lora", "lora_alpha", "rslora", "dora", "lora_plus", "quant", "embed_quant",
-                "param_dtype", "seq", "pack", "batch", "accum", "seed", "lr", "epochs", "max_steps",
-                "prompt_loss_weight", "optim", "sched", "warmup", "eval_frac")
+_RESUME_KEYS = ("model", "dataset", "config", "split", "jsonl", "eval_jsonl", "max_examples", "prompt_col",
+                "response_col", "messages_col", "lora", "lora_alpha", "rslora", "dora", "lora_plus", "quant",
+                "embed_quant", "param_dtype", "seq", "pack", "batch", "accum", "seed", "lr", "epochs",
+                "max_steps", "prompt_loss_weight", "optim", "muon_lora", "state_bits", "sched", "warmup",
+                "eval_frac")
 
 
 def _state_path(path):
@@ -664,14 +682,13 @@ def _state_path(path):
 
 def save_state(out, model, opt, rt, step, data, log, times, args):
     """Atomically write <out>/checkpoint/state.pt: trainable params (adapters, or the whole
-    model for --lora 0), optimizer state, step, every rank's data order / position /
-    shuffle RNG, the torch RNG and the log so far."""
+    model for --lora 0), optimizer state, step, every rank's data order / position and
+    shuffle / torch / CUDA RNG states (`data`), and the log so far."""
     d = os.path.join(out, "checkpoint")
     os.makedirs(d, exist_ok=True)
     state = {"version": 1, "step": step, "args": vars(args), "log": log, "times": list(times),
              "trainable": {n: p.detach().cpu() for n, p in model.named_parameters() if p.requires_grad},
-             "opt": opt.state_dict(), "data": data, "torch_rng": torch.get_rng_state(),
-             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+             "opt": opt.state_dict(), "data": data,
              "scaler": rt.scaler.state_dict() if rt.scaler is not None else None}
     tmp = os.path.join(d, "state.pt.tmp")
     torch.save(state, tmp)
@@ -683,7 +700,8 @@ def load_state(path):
     allowlisted for optimizers whose state_dict still holds them."""
     from . import lowmem
     safe = [c for c in (getattr(lowmem, "QState", None),) if c is not None]
-    with torch.serialization.safe_globals(safe):
+    allow = getattr(torch.serialization, "safe_globals", None)       # torch >= 2.5
+    with allow(safe) if allow is not None else contextlib.nullcontext():
         return torch.load(_state_path(path), map_location="cpu", weights_only=True)
 
 
@@ -773,7 +791,7 @@ def main(argv=None):
         if torch.cuda.is_available():
             torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
     is_main = rank == 0
-    # the same seed on every rank: identical model init and stochastic rounding (C6)
+    # the same seed on every rank: identical model init and stochastic rounding
     rt = setup_runtime(args.device, args.precision, False, args.threads, args.seed)
     if rt.device.type == "cpu":
         rt.amp_dtype = None
@@ -860,7 +878,9 @@ def main(argv=None):
                          "(or instruction/output, question/completion), chat `messages` or ShareGPT "
                          "`conversations` columns")
     trunc = args.pack != "wrapped"
-    items = tokenize_examples(tok, examples, args.seq, args.prompt_loss_weight, trunc, dstats)
+    # response-only labels; --prompt_loss_weight is applied to the training split below, so the
+    # eval windows score response tokens only (at weight 1 prompt and response look the same)
+    items = tokenize_examples(tok, examples, args.seq, 0.0, trunc, dstats)
     if not items:
         raise SystemExit(f"[finetune] no example has a supervised token after tokenization: {dstats}")
     dropped = dstats["examples"] - dstats["kept"]
@@ -880,7 +900,8 @@ def main(argv=None):
             raise SystemExit(f"[finetune] {len(items)} usable example(s): too few to hold out "
                              f"{n_eval} for evaluation and train on the rest (add data or pass --eval_jsonl)")
     eval_w = pack(eval_items, args.seq, tok.pad_token_id, args.pack)
-    train_w = pack(items[n_eval:], args.seq, tok.pad_token_id, args.pack)
+    train_w = pack(with_prompt_loss(items[n_eval:], args.prompt_loss_weight), args.seq, tok.pad_token_id,
+                   args.pack)
     if not eval_w:
         raise SystemExit("[finetune] the evaluation set is empty")
     n_sup = sum(1 for w in train_w for t in w[1][1:] if t != -100)
@@ -923,6 +944,9 @@ def main(argv=None):
         bad = [k for k in _RESUME_KEYS if st["args"].get(k) != getattr(args, k)]
         if bad or len(st["data"]) != world:
             raise SystemExit(f"[finetune] --resume: options differ from the checkpoint: {bad or 'world size'}")
+        if len(st["data"][rank]["order"]) != len(train_w):
+            raise SystemExit(f"[finetune] --resume: {len(train_w)} training windows per rank, the checkpoint "
+                             f"has {len(st['data'][rank]['order'])}: the data differ")
         sd = st["trainable"]
         names = {n for n, p in model.named_parameters() if p.requires_grad}
         if set(sd) != names:
@@ -934,11 +958,12 @@ def main(argv=None):
         opt.load_state_dict(st["opt"])
         if rt.scaler is not None and st["scaler"] is not None:
             rt.scaler.load_state_dict(st["scaler"])
-        order, pos, rs = st["data"][rank]["order"], st["data"][rank]["pos"], st["data"][rank]["rng"]
+        own = st["data"][rank]
+        order, pos, rs = own["order"], own["pos"], own["rng"]
         rng.setstate((rs[0], tuple(rs[1]), rs[2]))
-        torch.set_rng_state(st["torch_rng"])
-        if st["cuda_rng"] and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(st["cuda_rng"])
+        torch.set_rng_state(own["torch_rng"])
+        if own["cuda_rng"] is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state(own["cuda_rng"])        # this rank's device
         start, (t_train, cpu_train) = st["step"], st["times"]
         log = {**st["log"], "args": vars(args), "resumed_from": args.resume}
     if is_main:
@@ -962,7 +987,8 @@ def main(argv=None):
         return
 
     def data_state():
-        mine = {"order": order, "pos": pos, "rng": rng.getstate()}
+        mine = {"order": order, "pos": pos, "rng": rng.getstate(), "torch_rng": torch.get_rng_state(),
+                "cuda_rng": torch.cuda.get_rng_state() if torch.cuda.is_available() else None}
         if world == 1:
             return [mine]
         allst = [None] * world

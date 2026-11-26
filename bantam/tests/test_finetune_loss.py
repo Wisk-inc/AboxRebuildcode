@@ -202,6 +202,20 @@ def test_quantized_head_is_dequantized_in_the_compute_dtype(monkeypatch):
     assert abs(loss.item() - ref) < 5e-2
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_compute_dtype_without_the_torch_2_4_autocast_api(monkeypatch):
+    h = torch.zeros(2, 3)
+
+    def dtype(legacy, autocast):
+        with torch.autocast("cpu", dtype=torch.bfloat16, enabled=autocast):
+            with monkeypatch.context() as mp:          # autocast's own enter/exit uses the new API
+                if legacy:                             # torch 2.2 / 2.3 (pyproject: torch>=2.2)
+                    mp.delattr(torch, "get_autocast_dtype")
+                return ft._compute_dtype(h)
+    assert [dtype(legacy, a) for legacy in (False, True) for a in (False, True)] == \
+        [torch.float32, torch.bfloat16] * 2
+
+
 def _gloo(tmp_path):
     import torch.distributed as dist
     dist.init_process_group("gloo", init_method=f"file://{tmp_path}/pg", rank=0, world_size=1)

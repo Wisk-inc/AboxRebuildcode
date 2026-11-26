@@ -96,6 +96,16 @@ def test_unusable_datasets_fail_with_a_clear_message(tmp_path, data):
     assert "usable" in str(e.value)
 
 
+def test_prompt_loss_weight_applied_after_tokenizing_matches_tokenize_examples():
+    tok = make_tokenizer("chatml")
+    ft.resolve_template(tok)
+    ex = rows(6) + rows(3, kind="msg")
+    base = ft.tokenize_examples(tok, ex, 64)
+    assert ft.with_prompt_loss(base, 0.0) is base
+    for w in (0.3, 1.0):
+        assert ft.with_prompt_loss(base, w) == ft.tokenize_examples(tok, ex, 64, w)
+
+
 def test_wrapped_mode_keeps_long_examples_whole():
     tok = make_tokenizer("chatml")
     ft.resolve_template(tok)
