@@ -82,7 +82,7 @@ def attach_adapter(model, path, lora_alpha=None, rslora=None):
     if rslora is not None:
         meta["rslora"] = bool(rslora)
     kw = {"rslora": meta["rslora"]}
-    if meta.get("dora"):
+    if meta.get("dora") or any(k.endswith(".lora_magnitude_vector") for k in sd):   # also with --lora_alpha
         kw["dora"] = True
     lora.apply_lora(model, meta["r"], meta["alpha"], 0.0, tuple(meta["modules"]), **kw)
     lora.load_lora_state_dict(model, sd)

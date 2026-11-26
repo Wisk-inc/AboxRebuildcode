@@ -89,13 +89,17 @@ def load_examples(args, stats=None):
     if args.jsonl:
         with open(args.jsonl) as f:
             rows = [json.loads(l) for l in f if l.strip()]
+        if args.max_examples:
+            random.Random(args.seed).shuffle(rows)
+            rows = rows[:args.max_examples]
     else:
         from datasets import load_dataset
         ds = load_dataset(args.dataset, args.config or None, split=args.split)
+        if args.max_examples:      # the rows shuffling them all would pick, without loading every row
+            idx = list(range(len(ds)))
+            random.Random(args.seed).shuffle(idx)
+            ds = ds.select(idx[:args.max_examples])
         rows = [dict(r) for r in ds]
-    if args.max_examples:
-        random.Random(args.seed).shuffle(rows)
-        rows = rows[:args.max_examples]
     out, skipped = [], {}
     for r in rows:
         msgs = r.get(args.messages_col) or r.get("conversations")
@@ -385,6 +389,18 @@ def segment_mask(seg):
     return ((seg[:, :, None] == seg[:, None, :]) & causal)[:, None], pos
 
 
+def model_attention_mask(model, mask):
+    """segment_mask's bool mask in the form the model's attention takes a prepared 4-D mask:
+    bool for SDPA; additive float (0 / -max) for eager and flex attention, which add the mask
+    to the scores (a bool mask there adds 0/1 and masks nothing, not even the future)."""
+    impl = getattr(getattr(model, "config", None), "_attn_implementation", None)
+    if not isinstance(impl, str) or impl == "sdpa":
+        return mask
+    dt = _qw.autocast_dtype(mask.device.type) or getattr(model, "dtype", torch.float32)   # the scores' dtype
+    dt = dt if dt.is_floating_point else torch.float32
+    return torch.zeros(mask.shape, dtype=dt, device=mask.device).masked_fill_(~mask, torch.finfo(dt).min)
+
+
 # ----------------------------------------------------------------------------- model
 def head_transform(model):
     """(scale, softcap) the model's own forward applies to the output head's logits:
@@ -412,8 +428,10 @@ def _split_head(model):
     """(decoder, output head) when the logits are head(decoder(x).last_hidden_state)."""
     base = getattr(model, "model", None) or getattr(model, "base_model", None)
     head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
-    if base is None or base is model or head is None or not (
-            _is_quantized_head(head) or hasattr(head, "weight")):
+    # a quantized head's .weight is a property that dequantizes the table: look on the class first
+    has_w = head is not None and (_is_quantized_head(head) or hasattr(type(head), "weight")
+                                  or hasattr(head, "weight"))
+    if base is None or base is model or not has_w:
         return None, None
     return base, head
 
@@ -490,7 +508,7 @@ def lm_loss_sum(model, x, y, ce_chunk, w=None, seg=None):
     if seg is not None:
         mask, pos = segment_mask(seg)
         if mask is not None:
-            kw = {"attention_mask": mask, "position_ids": pos}
+            kw = {"attention_mask": model_attention_mask(model, mask), "position_ids": pos}
     tw, denom = _token_weights(y, w)
     base, head = _split_head(model) if ce_chunk else (None, None)
     if head is not None and (tw is None or "token_weights" in _CE_ARGS) and _chunk_ok(model, base, head):
@@ -622,7 +640,7 @@ def _apply_lora(model, args, rslora):
     if spec in ("", "all-linear"):
         targets = "all-linear" if "exclude" in params else linear_targets(model)
     else:
-        targets = tuple(t for t in spec.split(",") if t)
+        targets = tuple(t.strip() for t in spec.split(",") if t.strip())     # "q_proj, v_proj" too
     rep = apply_lora(model, args.lora, args.lora_alpha, args.lora_dropout, targets, **kw)
     rep["targets"] = sorted({n.split(".")[-1] for n in lora_module_names(model)})
     return rep
@@ -702,7 +720,7 @@ _RESUME_KEYS = ("model", "dataset", "config", "split", "jsonl", "eval_jsonl", "m
                 "response_col", "messages_col", "lora", "lora_alpha", "rslora", "dora", "lora_plus", "quant",
                 "embed_quant", "param_dtype", "seq", "pack", "batch", "accum", "seed", "lr", "epochs",
                 "max_steps", "prompt_loss_weight", "optim", "muon_lora", "state_bits", "sched", "warmup",
-                "eval_frac")
+                "eval_frac", "wd", "ns", "lora_dropout")
 
 
 def _state_path(path):
