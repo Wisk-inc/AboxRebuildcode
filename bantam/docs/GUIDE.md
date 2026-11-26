@@ -41,7 +41,7 @@ cd bantam
 python -m pytest tests -q -m "not slow and not network and not gpu"   # what CI runs
 ```
 
-The full suite on the sandbox: 654 passed, 7 skipped (CUDA-only or slow tests).
+The full suite on the sandbox: 658 passed, 7 skipped (CUDA-only or slow tests).
 
 ---
 
@@ -298,7 +298,7 @@ several examples, an optimizer step sees more examples than `batch x accum`: `lo
 records `examples_per_step` and `steps_per_epoch`, and a note is printed when a step
 sees more than twice `batch x accum` examples. `--examples_per_step N` sets `--accum`
 after packing so that a step sees about N examples, for example to match a trainer that
-puts one example in each row. It can only raise `--accum` (the minimum is 1), so to see
+puts one example in each row. It replaces `--accum` and never sets it below 1, so to see
 fewer examples per step lower `--batch` too: with about 3.4 Dolly examples per window,
 `--batch 1 --examples_per_step 4` gives `--accum 1`.
 

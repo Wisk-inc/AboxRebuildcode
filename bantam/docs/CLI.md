@@ -290,7 +290,7 @@ lines for chat data.
 |---|---|---|
 | `--quant` | `0` | quantize the frozen base: `8` (int8), `4` (linear int4) or `nf4` (QLoRA codebook). Needs `--lora` > 0 |
 | `--embed_quant` | `8` | embeddings and output head: `8` (int8), `same` as `--quant`, or `none` (float) |
-| `--low_ram` | 0 | 1 (with `--quant`): load and quantize tensor by tensor, never holding the float model. Needs `.safetensors` weights: with `pytorch_model.bin` only, it warns and loads the float model first (`report.quant.low_ram` is `false` in `log.json`) |
+| `--low_ram` | 0 | 1 (with `--quant`): load and quantize tensor by tensor, never holding the float model. Needs `.safetensors` weights: with `pytorch_model.bin` only, it warns and loads the float model first (`report.quant.low_ram` is `false` in `log.json`; transformers loads `.bin` weights only on torch >= 2.6) |
 | `--grad_ckpt` | 0 | 1: activation checkpointing. Recommended with `--quant` (a note is printed otherwise) |
 | `--ce_chunk` | 2048 | chunked cross-entropy: tokens per chunk, so the full logits are never built |
 

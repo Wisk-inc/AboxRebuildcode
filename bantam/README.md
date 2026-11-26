@@ -283,7 +283,7 @@ From a source checkout (for development):
 ```bash
 cd bantam
 pip install -e '.[data,finetune,weather,test]'
-python -m pytest tests -q    # 654 passed, 7 skipped (CUDA / slow) on the CPU sandbox
+python -m pytest tests -q    # 658 passed, 7 skipped (CUDA / slow) on the CPU sandbox
 ```
 
 ## Quickstart: pretrain a small language model
@@ -405,8 +405,8 @@ Dolly examples for SmolLM2), so an optimizer step sees more examples than
 `--batch x --accum`, and an epoch has fewer steps than a trainer with one example per
 row. `log.json` records `examples_per_step` and `steps_per_epoch`, and a note is printed
 when a step sees more than twice `batch x accum` examples. `--examples_per_step N` sets
-`--accum` after packing so that a step sees about N examples. It can only raise
-`--accum` (the minimum is 1), so for fewer examples per step lower `--batch` too. In the
+`--accum` after packing so that a step sees about N examples. It replaces `--accum`
+and never sets it below 1, so for fewer examples per step lower `--batch` too. In the
 race, one window per step (`--batch 1 --accum 1`, about 3.4 examples) matched Hugging
 Face's held-out loss, and 2 x 2 windows per step lost 0.056.
 

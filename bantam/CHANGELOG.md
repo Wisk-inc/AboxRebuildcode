@@ -72,7 +72,7 @@ PyTorch 2.15 for CPU) with small models. Nothing has been run on a GPU.
   packed windows per step Bantam took 58 steps instead of 200 and lost 0.056. Muon on
   the LoRA matrices did not beat AdamW. The race ran on the code before full epochs
   and before flush-to-zero moved to `--ftz` (`--drop_last 1` reproduces its epochs).
-- **Quality checks.** 654 tests pass and 7 are skipped (CUDA-only or slow) on CPU. A
+- **Quality checks.** 658 tests pass and 7 are skipped (CUDA-only or slow) on CPU. A
   GitHub Actions workflow runs the suite and a packaging check.
 
 ### Breaking and behaviour changes
@@ -99,6 +99,12 @@ bit-identical to the code before the audit.
 - `bantam <command> --help` works without the optional extras. A command whose extra is
   missing prints the `pip install 'bantamtrain[...]'` to run and exits 1 instead of a
   traceback. `bantam` returns the command's exit status; an unknown command returns 2.
+- `import bantamtrain` no longer imports torch: `bantamtrain.ZoomSchedule`, `lr_at`,
+  `SlotMerge` and `SlotUnmerge` are imported on first use. `bantam --help` and
+  `bantam --version` took 0.04 s instead of 1.7 s on the 4-core sandbox. The sdist no
+  longer holds `tests/` (setuptools added the test files without `conftest.py` or the
+  `experiments/` and `results/` they read), and `packaging/release.sh` now checks that
+  the wheel holds only `bantamtrain/`.
 - An unknown `--precision` value is now an error. `pretrain` checks it with argparse
   choices (`auto`, `fp32`, `bf16`, `fp16`; exit 2); `weather` and `finetune` raise a
   ValueError. Before, any typo silently trained in fp32 on a GPU.

@@ -57,7 +57,8 @@ jobs:
           "$PY" -m pip install "$RUNNER_TEMP"/rel/dist/*.whl
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/core/bin/bantam" --version
-          for c in pretrain finetune weather pack-text pack-era5 memory doctor; do
+          for c in pretrain finetune weather prepare-text pack-text prepare-era5 pack-era5 \
+                   memory generate chat doctor; do
             "$RUNNER_TEMP/core/bin/bantam" "$c" --help > /dev/null
           done
           "$RUNNER_TEMP/core/bin/bantam" doctor

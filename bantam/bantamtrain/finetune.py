@@ -2,7 +2,7 @@
 
     python -m bantamtrain.finetune --model HuggingFaceTB/SmolLM2-135M \
         --dataset databricks/databricks-dolly-15k --max_examples 2000 \
-        --lora 16 --quant nf4 --epochs 1 --examples_per_step 8 --out runs/dolly
+        --lora 16 --quant nf4 --epochs 1 --batch 1 --examples_per_step 8 --out runs/dolly
 
 What it gives you
   * LoRA / QLoRA: frozen base (optionally int8 / int4 / NF4 blockwise, bantamtrain.qweights)
