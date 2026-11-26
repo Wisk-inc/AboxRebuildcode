@@ -23,9 +23,22 @@ mode="linear" replaces the per-channel gates with per-slot d x d maps
 per level, i.e. a learned patch embedding / un-embedding over the slots.
 """
 import math
+import numbers
+import warnings
 
 import torch
 import torch.nn as nn
+
+MODES = ("gate", "mean", "linear")
+
+
+def _resolve_mode(k, gated, mode):
+    if not isinstance(k, numbers.Integral) or isinstance(k, bool) or k < 1:
+        raise ValueError(f"zoom level k must be an int >= 1, got {k!r}")
+    mode = mode or ("gate" if gated else "mean")
+    if mode not in MODES:
+        raise ValueError(f"merge mode must be one of {MODES}, got {mode!r}")
+    return mode
 
 
 class SlotMerge(nn.Module):
@@ -38,7 +51,7 @@ class SlotMerge(nn.Module):
     def __init__(self, k, d, gated=True, mode=None):
         super().__init__()
         self.k = k
-        self.mode = mode or ("gate" if gated else "mean")
+        self.mode = _resolve_mode(k, gated, mode)
         if self.mode == "linear":
             w = torch.eye(d).unsqueeze(0).repeat(k, 1, 1) / k
             self.weight = nn.Parameter(w)
@@ -61,7 +74,7 @@ class SlotUnmerge(nn.Module):
     def __init__(self, k, d, gated=True, mode=None):
         super().__init__()
         self.k = k
-        self.mode = mode or ("gate" if gated else "mean")
+        self.mode = _resolve_mode(k, gated, mode)
         if self.mode == "linear":
             self.weight = nn.Parameter(torch.eye(d).unsqueeze(0).repeat(k, 1, 1))
         else:
@@ -80,13 +93,27 @@ class SlotUnmerge(nn.Module):
 class ZoomSchedule:
     """Piecewise-constant zoom level as a function of compute spent.
 
-    stages: list of (k, fraction_of_budget); fractions must sum to 1.
-    Example: [(4, .35), (2, .25), (1, .40)].
+    stages: list of (k, fraction_of_budget); every k is an int >= 1, fractions
+    are >= 0 and sum to 1. Example: [(4, .35), (2, .25), (1, .40)].
     """
 
     def __init__(self, stages):
+        stages = [tuple(s) for s in stages]
+        if not stages:
+            raise ValueError("zoom schedule has no stages")
+        for k, f in stages:
+            if not isinstance(k, numbers.Integral) or isinstance(k, bool) or k < 1:
+                raise ValueError(f"zoom schedule: k must be an int >= 1, got {k!r}")
+            if not (isinstance(f, numbers.Real) and math.isfinite(f) and f >= 0):
+                raise ValueError(f"zoom schedule: fraction for k={k} must be >= 0, got {f!r}")
         total = sum(f for _, f in stages)
-        assert abs(total - 1.0) < 1e-6, f"stage fractions sum to {total}"
+        if abs(total - 1.0) >= 1e-6:
+            raise ValueError(f"zoom schedule: stage fractions sum to {total}, not 1")
+        last = [k for k, f in stages if f > 0][-1]
+        if last != 1:
+            warnings.warn(f"zoom schedule {self._fmt(stages)} ends at k={last}, not k=1: the "
+                          "model is never trained at the resolution it is evaluated at",
+                          stacklevel=2)
         self.stages = stages
 
     def k_at(self, frac):
@@ -108,17 +135,36 @@ class ZoomSchedule:
 
     @staticmethod
     def parse(spec):
-        """'4:0.35,2:0.25,1:0.4' -> ZoomSchedule; '1' -> baseline."""
-        if spec in ("1", "baseline", "", None):
+        """'4:0.35,2:0.25,1:0.4' -> ZoomSchedule; '1' -> baseline; a bare 'k' is 'k:1'."""
+        spec = "" if spec is None else str(spec).strip()
+        if spec in ("1", "baseline", ""):
             return ZoomSchedule([(1, 1.0)])
         stages = []
         for part in spec.split(","):
-            k, f = part.split(":")
-            stages.append((int(k), float(f)))
+            part = part.strip()
+            if not part:
+                continue
+            k, colon, f = part.partition(":")
+            try:
+                kf = float(k)
+                if not kf.is_integer():
+                    raise ValueError
+                stages.append((int(kf), float(f) if colon else 1.0))
+            except ValueError:
+                raise ValueError(f"zoom schedule {spec!r}: bad stage {part!r} "
+                                 "(expected k:fraction, e.g. 4:0.35)") from None
         return ZoomSchedule(stages)
 
+    @staticmethod
+    def _fmt(stages):
+        out = []
+        for k, f in stages:
+            s = f"{f:g}"
+            out.append(f"{k}:{s if float(s) == f else repr(float(f))}")  # exact round trip
+        return ",".join(out)
+
     def __repr__(self):
-        return ",".join(f"{k}:{f:g}" for k, f in self.stages)
+        return self._fmt(self.stages)
 
 
 def lr_at(frac, peak, warmup=0.05, final=0.1, stage=None, sched="cosine", decay_frac=0.45):
@@ -141,5 +187,5 @@ def lr_at(frac, peak, warmup=0.05, final=0.1, stage=None, sched="cosine", decay_
             return peak
         p = min(1.0, (frac - d0) / max(1.0 - d0, 1e-12))
         return peak * (1 - (1 - final) * p)
-    p = min(1.0, (frac - warmup) / (1 - warmup))
+    p = min(1.0, (frac - warmup) / max(1 - warmup, 1e-12))
     return peak * (final + (1 - final) * 0.5 * (1 + math.cos(math.pi * p)))
