@@ -15,7 +15,7 @@ result with its conditions, and the limitations.
 pip install bantamtrain
 ```
 
-## Three key results
+## Four key results
 
 All measured in a CPU-only sandbox (4 cores, 16 GB RAM), on small models.
 
@@ -33,6 +33,12 @@ All measured in a CPU-only sandbox (4 cores, 16 GB RAM), on small models.
    TinyStories-1M (0.822, trained with about 3,350x more compute). It beats llama2.c
    stories260K with at least 157x less compute, partly because Bantam's model is 22x
    larger.
+4. **Fine-tuning race.** SmolLM2-135M with LoRA on 800 Dolly examples, against
+   Hugging Face Trainer + PEFT with the same optimizer and a comparable number of
+   optimizer steps: the same held-out loss (2.259 vs 2.260), **1.36x faster** and
+   **38 % less peak RAM** (2.57 vs 4.17 GB), one run per arm. Most of it comes from
+   packing (no padding tokens computed). Muon on the LoRA matrices did not beat
+   AdamW.
 
 The code, experiments, tests, result logs and documentation are all in
 [`bantam/`](bantam/).

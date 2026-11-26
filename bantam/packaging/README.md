@@ -105,7 +105,19 @@ SmolLM2-135M, fp32 on the same 4-core CPU: one epoch over 800 Dolly examples wit
 the same LoRA modules, learning rate and schedule in every arm; speed, peak memory,
 and held-out loss on 200 examples judged the same way for every arm):
 
-<!-- RACE_RESULTS -->
+| arm | train min | real tok/s | peak RSS GB | held-out loss |
+|---|---:|---:|---:|---:|
+| Hugging Face Trainer + PEFT (AdamW) | 13.2 | 151 | 4.17 | 2.260 |
+| Bantam, the same AdamW, one packed window per step | 9.7 | 206 | 2.57 | 2.259 |
+| Bantam, QLoRA NF4 base, AdamW | 9.4 | 212 | 2.12 | 2.368 |
+
+With the same optimizer and a comparable number of optimizer steps, Bantam matched
+the held-out loss 1.36x faster with 38 % less peak RAM, mainly because packing
+computes no padding. Packing also means fewer, larger optimizer steps at a given
+batch setting: at 2 x 2 packed windows per step Bantam took 58 steps instead of 200
+and lost 0.056. Muon on the LoRA matrices did not beat AdamW. One run per arm (wall
+time varies by about 9 %), fp32 on a 4-core CPU; GPU tools with fused kernels are not
+in this comparison.
 
 ## Quickstart
 

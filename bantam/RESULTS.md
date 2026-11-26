@@ -821,7 +821,7 @@ Measurements:
   Plus one greedy answer to each of three fixed prompts.
 
 Fairness checks built into the harness (the values in brackets are from the
-32-example smoke run; the full race reports its own):
+32-example smoke run; the full run's values are in 15.2):
 - Token parity: both sides must tokenize the training examples identically
   (smoke: 32 of 32, 0 mismatches).
 - The same LoRA modules and parameter count in every arm.
@@ -856,7 +856,56 @@ numbers are not a comparison.
 
 ### 15.2 Results
 
-<!-- RACE_RESULTS -->
+Follow-up arms (same protocol, overrides in brackets): `bantam_adamw_steps`,
+`bantam_muon_steps` and `bantam_nf4_adamw_steps` [micro-batch 1 x accumulation 1,
+so one packed window (about 3.4 examples) per optimizer step: 235 steps, close to
+`hf_peft`'s 200 steps of 4 examples], `bantam_muon_steps_lr1e-3` and
+`bantam_adamw_steps_lr1e-3` [the same, LR 1e-3].
+
+Full run, 4 threads, nothing else running on the machine (`results/race/summary.json`, `results/race_hf_ftz/` for the flush-to-zero control):
+
+| arm | optimizer steps | train min | real tok/s | peak RSS GB | judge loss | vs `hf_peft` (paired 95 % CI) |
+|---|---:|---:|---:|---:|---:|---|
+| `base` (no training) | - | - | - | - | 2.645 | +0.385 (+0.326 to +0.466) |
+| `hf_peft` | 200 | 13.2 | 151 | 4.17 | 2.260 | reference |
+| `bantam_adamw` (2 x 2 windows per step) | 58 | 9.9 | 199 | 5.16 | 2.316 | +0.056 (+0.046 to +0.068) |
+| `bantam` (Muon LoRA, 2 x 2) | 58 | 9.3 | 213 | 5.28 | 2.535 | +0.275 (+0.231 to +0.338) |
+| `bantam_nf4` (Muon LoRA, NF4 base, 2 x 2) | 58 | 9.2 | 216 | 4.61 | 2.694 | +0.434 (+0.390 to +0.492) |
+| `bantam_adamw_steps` (1 window per step) | 235 | 9.7 | 206 | 2.57 | **2.259** | **-0.001 (-0.005 to +0.003)** |
+| `bantam_muon_steps` | 235 | 9.3 | 216 | 2.56 | 2.303 | +0.044 (+0.035 to +0.054) |
+| `bantam_muon_steps_lr1e-3` | 235 | 9.0 | 223 | 2.57 | 2.241 | -0.019 (-0.027 to -0.012) |
+| `bantam_adamw_steps_lr1e-3` | 235 | 8.9 | 226 | 2.59 | 2.228 | -0.031 (-0.040 to -0.025) |
+| `bantam_nf4_adamw_steps` (NF4 base, AdamW) | 235 | 9.4 | 212 | 2.12 | 2.368 | +0.109 (+0.100 to +0.119) |
+
+What it shows:
+- **Same optimizer, comparable steps** (`bantam_adamw_steps` vs `hf_peft`): the same
+  held-out loss (2.259 vs 2.260; the paired interval straddles 0), **1.36x faster**
+  (9.7 vs 13.2 min of training; 206 vs 151 real tokens/s) and **38 % lower peak
+  RSS** (2.57 vs 4.17 GB). The speed comes from packing (no padding tokens are
+  computed) and Bantam's loop. Flush-to-zero is not the reason: `hf_peft` with
+  flush-to-zero on ran at 147 tokens/s (`results/race_hf_ftz/`).
+- **Packing changes the optimizer.** At the protocol's 2 x 2 windows per step a
+  packed window holds about 3.4 examples, so Bantam made 58 optimizer steps instead
+  of 200 and lost 0.056; its two full 512-token rows per micro-batch also peaked at
+  5.16 GB, more than `hf_peft`. Match the number of optimizer steps (here one window
+  per step) or raise the learning rate.
+- **Muon on LoRA did not beat AdamW.** At LR 2e-4: Muon 2.303 vs AdamW 2.259. At
+  LR 1e-3: Muon 2.241 vs AdamW 2.228. The best loss (2.228) came from the higher
+  learning rate, not from Muon, and `hf_peft` was not run at 1e-3, so that gap is
+  not a Bantam advantage.
+- **QLoRA (NF4 base)** cut peak RSS to 2.12 GB (49 % below `hf_peft`) and cost
+  0.109 in held-out loss; the same adapters on the float base score 2.302. 4-bit
+  costs real quality on a 135M model.
+
+Limits: one run per arm (two AdamW runs that differ only in LR took 9.7 and 8.9
+min, so wall time varies by about 9 %), fp32 on a 4-core CPU, a 135M model. GPU
+tools with fused kernels (FlashAttention varlen packing, Liger, Unsloth) are not in
+this race. Fairness checks of the full run: token parity 800 of 800; the same 210
+LoRA modules (4,884,480 trainable parameters) in every arm; the one-window-per-step
+arms train all 61,972 supervised tokens, like `hf_peft` (the 2 x 2 arms 61,257);
+Bantam's own final eval matches the judge to about 1e-7 and its step-0 eval matches
+the `base` judge to about 1e-8. Full table, commands and greedy answers:
+`results/race/summary.md`.
 
 ## 16. What changed since 0.2
 

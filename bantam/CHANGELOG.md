@@ -842,7 +842,7 @@ bit-identical to the code before the audit.
   8-bit and rounding changes; the weather sweeps have not been rerun on a validation
   year; there is no linear-merge run; the long published-comparison run was stopped at
   30%; llama2.c stories110M was not re-scored. The fine-tuning race against Hugging Face
-  Trainer + PEFT was still running when this file was written.
+  Trainer + PEFT is one run per arm on a CPU (see RESULTS.md section 15.2).
 
 ## [0.2.0] - 2026-10-25
 

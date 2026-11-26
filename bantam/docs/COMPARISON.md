@@ -244,7 +244,14 @@ The harness is `experiments/race_finetune.py`
 - The machine is shared; timing varied by about 10% between identical smoke
   runs, while quality was bit-identical.
 
-<!-- RACE_RESULTS -->
+**Result.** With the same optimizer and a comparable number of optimizer steps,
+Bantam matched Hugging Face Trainer + PEFT's held-out loss (2.259 vs 2.260) 1.36x
+faster with 38 % less peak RSS (2.57 vs 4.17 GB), on a 4-core CPU in fp32, one run
+per arm. Most of the gain is packing: Hugging Face's dynamic padding computes padding
+tokens, and Bantam's packed windows do not. TRL and Axolotl also pack (with
+FlashAttention varlen on GPUs), so against them this advantage would shrink or
+vanish; Unsloth and Liger add fused kernels that Bantam does not have. Muon on LoRA
+did not beat AdamW. Full numbers: `RESULTS.md` section 15.2.
 
 ---
 

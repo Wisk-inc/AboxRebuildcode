@@ -783,7 +783,16 @@ tokens trained. A 32-example smoke run checked the harness (token parity, identi
 LoRA modules, judge agreement with Bantam's own eval to about 2e-7). Its numbers are not
 a comparison.
 
-<!-- RACE_RESULTS -->
+Results of the full run (details in `RESULTS.md` section 15.2 and
+`results/race/summary.md`): with the same optimizer and one packed window per
+optimizer step (235 steps, close to Hugging Face's 200), Bantam reached the same
+held-out loss as Hugging Face Trainer + PEFT (2.259 vs 2.260) 1.36x faster with 38 %
+less peak RSS (2.57 vs 4.17 GB). At 2 x 2 packed windows per step it took only 58
+steps and lost 0.056. Muon on LoRA did not beat AdamW (2.241 vs 2.228 at LR 1e-3).
+
+Practical advice from it: when you pack, keep an eye on the number of optimizer steps
+(an epoch of packed windows has about 3.4x fewer micro-batches here); lower
+`--accum` or raise `--lr` to compensate, and use AdamW for LoRA.
 
 ### Tests
 
