@@ -111,3 +111,12 @@ def test_max_examples_picks_the_same_rows_without_loading_the_whole_dataset(tmp_
     hub = ft.load_examples(argparse.Namespace(jsonl="", dataset="x", **kw))
     assert len(seen) == 7
     assert hub == ft.load_examples(argparse.Namespace(jsonl=str(tmp_path / "d.jsonl"), dataset="", **kw))
+
+
+def test_lora_targets_list_with_spaces_wraps_every_named_layer():
+    """--lora_targets "q_proj, v_proj" silently adapted q_proj only (" v_proj" matched nothing)."""
+    import argparse
+    m = _tiny("llama")
+    args = argparse.Namespace(lora=4, lora_alpha=8, lora_dropout=0.0, lora_targets="q_proj, v_proj ", dora=0)
+    rep = ft._apply_lora(m, args, False)
+    assert rep["targets"] == ["q_proj", "v_proj"] and rep["wrapped"] == 4

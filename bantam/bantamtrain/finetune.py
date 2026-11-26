@@ -631,7 +631,7 @@ def _apply_lora(model, args, rslora):
     if spec in ("", "all-linear"):
         targets = "all-linear" if "exclude" in params else linear_targets(model)
     else:
-        targets = tuple(t for t in spec.split(",") if t)
+        targets = tuple(t.strip() for t in spec.split(",") if t.strip())     # "q_proj, v_proj" too
     rep = apply_lora(model, args.lora, args.lora_alpha, args.lora_dropout, targets, **kw)
     rep["targets"] = sorted({n.split(".")[-1] for n in lora_module_names(model)})
     return rep
