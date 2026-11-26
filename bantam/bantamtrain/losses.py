@@ -18,6 +18,8 @@ import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
+from .qweights import autocast_dtype
+
 
 def _chunk_loss(h, weight, bias, targets, tw, softcap, ignore_index, scale):
     if isinstance(weight, torch.Tensor):
@@ -50,9 +52,9 @@ def chunked_cross_entropy(h, weight, targets, chunk=2048, bias=None, softcap=0.0
         tw = torch.where(valid, token_weights.reshape(-1).float(), 0.0)
         den = tw.sum()
     den = torch.where(den > 0, den, torch.ones_like(den)).float()
-    if isinstance(weight, torch.Tensor) and weight.dtype != h.dtype \
-            and not torch.is_autocast_enabled(h.device.type):
-        weight = weight.to(h.dtype)
+    if isinstance(weight, torch.Tensor) and autocast_dtype(h.device.type) is None:
+        weight = weight.to(h.dtype)                    # (no-ops when the dtypes match)
+        bias = None if bias is None else bias.to(h.dtype)
     grad = torch.is_grad_enabled()
     total = h.new_zeros((), dtype=torch.float32)
     for i in range(0, h.shape[0], chunk):

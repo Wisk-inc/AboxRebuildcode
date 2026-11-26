@@ -66,6 +66,22 @@ def test_quantized_model_state_dict_round_trips(tmp_path):
     assert torch.equal(m(x[:, :32], x[:, 1:]), m2(x[:, :32], x[:, 1:]))
 
 
+def test_imports_without_wide_unsigned_dtypes(monkeypatch, tmp_path):
+    """torch < 2.3 has no uint16/32/64 (pyproject allows torch 2.2): weightpack still imports."""
+    import importlib
+    for name in ("uint16", "uint32", "uint64"):
+        monkeypatch.delattr(torch, name)
+    try:
+        wp = importlib.reload(weightpack)
+        assert "uint16" not in wp._DTYPES
+        wp.save(tmp_path / "w.zwpk", {"w": torch.randn(64, 64)}, 8)
+        assert wp.load(tmp_path / "w.zwpk")["w"].shape == (64, 64)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(weightpack)
+    assert "uint16" in weightpack._DTYPES
+
+
 def test_corruption_raises(tmp_path):
     """WP-4: payload, header and magic damage raise ValueError instead of loading."""
     sd = {"w": torch.randn(256, 64), "b": torch.randn(64)}

@@ -75,3 +75,7 @@ def test_quantized_head_module_is_used_per_chunk():
     # a bf16 table with fp32 hidden states (no autocast) is cast, not an error
     out16 = chunked_cross_entropy(h, emb.weight.bfloat16(), y, chunk=7)
     assert torch.isfinite(out16)
+    # so is the bias: bf16 hidden states with an fp32 head weight and bias
+    w, b, hb = torch.randn(300, 32), torch.randn(300), h.detach().bfloat16()
+    ref = F.cross_entropy(F.linear(hb, w.bfloat16(), b.bfloat16()).float().reshape(-1, 300), y.reshape(-1))
+    assert abs(chunked_cross_entropy(hb, w, y, chunk=7, bias=b).item() - ref.item()) < 1e-4

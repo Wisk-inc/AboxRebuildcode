@@ -162,13 +162,23 @@ def _pick_block(C, block, bits):
     return block
 
 
-def _compute_dtype(x):
+def autocast_dtype(device_type):
+    """The autocast dtype on `device_type`, or None when autocast is off there."""
     try:
-        if torch.is_autocast_enabled(x.device.type):
-            return torch.get_autocast_dtype(x.device.type)
+        on = torch.is_autocast_enabled(device_type)
     except RuntimeError:                       # device types without autocast (meta)
-        pass
-    return x.dtype
+        return None
+    except TypeError:                          # torch < 2.4: per-device functions
+        if device_type == "cpu":
+            return torch.get_autocast_cpu_dtype() if torch.is_autocast_cpu_enabled() else None
+        if device_type == "cuda" and torch.is_autocast_enabled():
+            return torch.get_autocast_gpu_dtype()
+        return None
+    return torch.get_autocast_dtype(device_type) if on else None
+
+
+def _compute_dtype(x):
+    return autocast_dtype(x.device.type) or x.dtype
 
 
 def _dq_chunks(q, s, cb, pad, bits, block, dtype, n_in):
@@ -244,6 +254,12 @@ class QBase:
         self.q, self.s = q, s
         if self.bits != 8:
             self.cb = codebook(self.bits, q.device)
+
+    def _load_from_state_dict(self, state_dict, prefix, *args):
+        s = state_dict.get(prefix + "s")       # keep the checkpoint's scale dtype (fp16 or fp32)
+        if isinstance(s, torch.Tensor) and self._buffers.get("s") is not None and s.dtype != self.s.dtype:
+            self.s = torch.empty_like(self.s, dtype=s.dtype)
+        super()._load_from_state_dict(state_dict, prefix, *args)
 
     def dequantize(self, dtype=None):
         """The full float weight (out, in) in `dtype` (default: the compute dtype)."""
@@ -550,10 +566,11 @@ def _resolve(model_id_or_path, kw):
     if os.path.isdir(model_id_or_path):
         return model_id_or_path
     from huggingface_hub import snapshot_download
+    patterns = ["*.json", "*.safetensors", "*.model", "*.txt", "tokenizer*"]
+    if kw.get("trust_remote_code"):
+        patterns.append("*.py")                # the repository's own modeling code
     return snapshot_download(model_id_or_path, revision=kw.get("revision"), token=kw.get("token"),
-                             cache_dir=kw.get("cache_dir"),
-                             allow_patterns=["*.json", "*.safetensors", "*.model", "*.txt",
-                                             "tokenizer*"])
+                             cache_dir=kw.get("cache_dir"), allow_patterns=patterns)
 
 
 @torch.no_grad()
@@ -616,6 +633,8 @@ def load_quantized(model_id_or_path, bits, embed_bits=8, dtype=torch.float32,
                 continue
             kind, obj, ident = tgt
             if kind == "q":
+                if t.dtype.itemsize >= obj.dtype.itemsize:     # round to dtype first, as
+                    t = t.to(obj.dtype)                         # from_pretrained(dtype) does
                 obj.load_float_weight(t.t() if getattr(obj, "_from_conv1d", False) else t)
             elif kind == "p":
                 new = t.to(dtype) if t.is_floating_point() else t

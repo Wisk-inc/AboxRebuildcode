@@ -275,9 +275,9 @@ def save_peft_adapter(model, out_dir, base_model_name_or_path=None):
                 m.lora_magnitude_vector.detach().cpu().contiguous()
     names = [n for n, _ in mods]
     leaves = {n.split(".")[-1] for n in names}
-    # leaf names when they select exactly the wrapped modules, else full module names
-    same = {n for n, c in model.named_modules() if n.split(".")[-1] in leaves
-            and (_linear_like(c) or isinstance(c, LoRALinear))
+    # leaf names when they select exactly the wrapped modules (PEFT matches any module type by
+    # name), else full module names
+    same = {n for n, _ in model.named_modules() if n.split(".")[-1] in leaves
             and not any(n.startswith(w + ".") for w in names)}
     target_modules = sorted(leaves) if same == set(names) else names
     p = {m.dropout.p for _, m in mods if isinstance(m.dropout, nn.Dropout)}

@@ -147,6 +147,36 @@ def test_load_peft_adapter_reads_peft_output(tmp_path, arch, targets, dora):
     assert torch.allclose(m(input_ids=X).logits, ref, atol=1e-5)
 
 
+def test_peft_targets_avoid_other_modules_with_the_same_leaf_name(tmp_path):
+    """PEFT matches target_modules by name whatever the module type: a LayerNorm also named
+    'proj' forces full module names (leaf names made PEFT try to wrap the LayerNorm)."""
+    from peft import LoraConfig, inject_adapter_in_model, set_peft_model_state_dict
+    from safetensors.torch import load_file
+
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.a, self.b = nn.Sequential(), nn.Sequential()
+            self.a.proj, self.b.proj = nn.Linear(16, 16), nn.LayerNorm(16)
+
+        def forward(self, x):
+            return self.b.proj(self.a.proj(x))
+
+    torch.manual_seed(0)
+    n = Net()
+    lora.apply_lora(n, 2, 4, targets=("proj",))
+    _perturb(n)
+    cfg = lora.save_peft_adapter(n, tmp_path)
+    assert cfg["target_modules"] == ["a.proj"]
+    keys = ("r", "lora_alpha", "target_modules", "use_rslora", "use_dora", "fan_in_fan_out")
+    torch.manual_seed(0)
+    pm = inject_adapter_in_model(LoraConfig(**{k: cfg[k] for k in keys}), Net())
+    sd = load_file(tmp_path / "adapter_model.safetensors")
+    set_peft_model_state_dict(pm, {k[len(lora.PEFT_PREFIX):]: v for k, v in sd.items()})
+    x = torch.randn(3, 16)
+    assert torch.allclose(pm(x), n(x), atol=1e-6)
+
+
 def test_qlora_dora_trains_and_exports(tmp_path):
     m = _llama()
     qweights.quantize_model(m, "nf4", min_numel=1, embed_bits=8)

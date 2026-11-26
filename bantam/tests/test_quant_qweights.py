@@ -171,7 +171,7 @@ def test_nf4_codes_are_nearest_and_quantization_ram_is_small():
     n = w.view(256, 16, 64) / s.float()[..., None]
     dist = (n[..., None] - qweights.NF4).abs()
     assert torch.allclose(dist.gather(-1, codes[..., None])[..., 0], dist.min(-1).values, atol=1e-6)
-    code = _PROC + textwrap.dedent(f"""
+    code = _PROC + textwrap.dedent("""
         from bantamtrain.qweights import quantize_rows
         w = torch.randn(1024, 4096)
         quantize_rows(w[:8], "nf4", 64)
@@ -218,6 +218,45 @@ def test_scales_fall_back_to_fp32_and_keep_dtype_through_to():
     assert m[0].s.dtype == torch.float16 and torch.equal(m[0].dequantize(torch.float32), w0)
     assert m[0].dtype == torch.bfloat16
     assert m(torch.randn(2, 576, dtype=torch.bfloat16)).dtype == torch.bfloat16
+
+
+def test_load_state_dict_keeps_checkpoint_scale_dtype():
+    """fp32 fallback scales survive load_state_dict into a module quantized with fp16 scales."""
+    torch.manual_seed(0)
+    tiny = nn.Linear(256, 64)
+    nn.init.normal_(tiny.weight, std=1e-5)
+    src, dst = QLinear(tiny, 8), QLinear(nn.Linear(256, 64), 8)
+    assert src.s.dtype == torch.float32 and dst.s.dtype == torch.float16
+    dst.load_state_dict(src.state_dict())
+    assert dst.s.dtype == torch.float32
+    assert torch.equal(dst.dequantize(torch.float32), src.dequantize(torch.float32))
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_autocast_query_works_on_torch_before_2_4(monkeypatch):
+    """torch < 2.4: is_autocast_enabled() takes no device type (pyproject allows torch 2.2)."""
+    from bantamtrain import losses
+
+    class OldTorch:
+        def __getattr__(self, name):
+            return getattr(torch, name)
+
+        @staticmethod
+        def is_autocast_enabled(*device_type):
+            if device_type:
+                raise TypeError("is_autocast_enabled() takes 0 positional arguments but 1 was given")
+            return torch.is_autocast_enabled("cuda")
+
+    for mod in (qweights, losses):
+        monkeypatch.setattr(mod, "torch", OldTorch())
+    ql = QLinear(nn.Linear(64, 32), "nf4")
+    x = torch.randn(2, 64)
+    assert qweights.autocast_dtype("cpu") is None and qweights.autocast_dtype("meta") is None
+    assert ql(x).dtype == torch.float32
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        assert qweights.autocast_dtype("cpu") == torch.bfloat16 and ql(x).dtype == torch.bfloat16
+    y = torch.randint(0, 10, (2,))
+    assert torch.isfinite(losses.chunked_cross_entropy(x, torch.randn(10, 64), y))
 
 
 def test_block_divides_common_widths():
@@ -340,6 +379,36 @@ def test_load_quantized_equals_quantize_model(tmp_path, arch):
         assert not any(t.is_meta for t in list(m.parameters()) + list(m.buffers()))
         assert m.quant_report["bytes_after"] == rep["bytes_after"]
         assert torch.equal(m(input_ids=x).logits, ref(input_ids=x).logits)
+
+
+def test_load_quantized_bf16_rounds_like_from_pretrained(tmp_path):
+    """dtype=bf16 from an fp32 checkpoint: each weight is rounded to bf16 before it is quantized,
+    as from_pretrained(dtype=bf16) + quantize_model does (same codes, same logits)."""
+    import transformers as T
+    torch.manual_seed(0)
+    T.LlamaForCausalLM(T.LlamaConfig(vocab_size=256, hidden_size=64, intermediate_size=128,
+                                     num_hidden_layers=1, num_attention_heads=2,
+                                     num_key_value_heads=1)).save_pretrained(tmp_path)
+    x = torch.randint(0, 256, (2, 12))
+    for bits in (8, "nf4"):
+        ref = T.AutoModelForCausalLM.from_pretrained(tmp_path, dtype=torch.bfloat16).eval()
+        qweights.quantize_model(ref, bits, min_numel=1, embed_bits=8)
+        m = qweights.load_quantized(str(tmp_path), bits, embed_bits=8, dtype=torch.bfloat16, min_numel=1)
+        assert all(torch.equal(a, b) for a, b in zip(m.buffers(), ref.buffers()))
+        assert torch.equal(m(input_ids=x).logits, ref(input_ids=x).logits)
+
+
+def test_load_quantized_downloads_remote_code_when_trusted(tmp_path, monkeypatch):
+    """A hub id is fetched with snapshot_download; trust_remote_code also fetches the *.py files."""
+    import huggingface_hub
+    _llama(layers=1).save_pretrained(tmp_path)
+    seen = []
+    monkeypatch.setattr(huggingface_hub, "snapshot_download",
+                        lambda repo, **kw: seen.append((repo, kw["allow_patterns"])) or str(tmp_path))
+    qweights.load_quantized("org/tiny", 8, min_numel=1)
+    qweights.load_quantized("org/tiny", 8, min_numel=1, trust_remote_code=True)
+    assert [r for r, _ in seen] == ["org/tiny"] * 2
+    assert "*.py" not in seen[0][1] and "*.py" in seen[1][1] and "*.safetensors" in seen[1][1]
 
 
 def test_load_quantized_peak_ram_stays_near_quantized_size(tmp_path):

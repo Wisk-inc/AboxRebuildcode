@@ -42,10 +42,10 @@ MAGIC = b"ZWPK2\0"
 VERSION = 2
 BLOCK = 256        # int8 block (elements)
 BLOCK4 = 64        # int4 block
-_DTYPES = {str(d).split(".")[-1]: d for d in (
-    torch.float64, torch.float32, torch.float16, torch.bfloat16, torch.complex64, torch.complex128,
-    torch.int64, torch.int32, torch.int16, torch.int8, torch.uint8, torch.bool,
-    torch.uint16, torch.uint32, torch.uint64, torch.float8_e4m3fn, torch.float8_e5m2)}
+_DTYPES = {n: getattr(torch, n) for n in (      # uint16/32/64 need torch >= 2.3
+    "float64", "float32", "float16", "bfloat16", "complex64", "complex128", "int64", "int32",
+    "int16", "int8", "uint8", "bool", "uint16", "uint32", "uint64", "float8_e4m3fn",
+    "float8_e5m2") if hasattr(torch, n)}
 _SCALES = {"float16": torch.float16, "float32": torch.float32}
 
 
