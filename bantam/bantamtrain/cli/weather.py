@@ -10,7 +10,8 @@ Splits come from meta.json: by default train on the years before the test year
 (meta n_train; 2018 for the default prepare-era5 range) and evaluate on the test
 year. With --val_year Y, train on the years before Y, run the periodic evals on
 the validation years [Y, test year) and touch the test year only in the final
-evaluation. Metrics: one-step loss and latitude-weighted 6/24/72 h rollout RMSE
+evaluation; data prepared with prepare-era5 --val_year (meta n_val / splits) uses
+its validation split that way by default. Metrics: one-step loss and latitude-weighted 6/24/72 h rollout RMSE
 and ACC, next to persistence and a train-years climatology.
 
 --save PATH keeps the trained model; roll it out with
@@ -24,15 +25,16 @@ import argparse  # noqa: E402
 import json  # noqa: E402
 import math  # noqa: E402
 import os  # noqa: E402
-import pickle  # noqa: E402
 import time  # noqa: E402
 
 import numpy as np  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
+from ..data import gridpack  # noqa: E402
 from ..data.gridpack import GridPack  # noqa: E402
 from ..device import (DutyCycleLimiter, describe, maybe_compile,  # noqa: E402
                               setup_runtime)
+from ..lowmem import load_checkpoint  # noqa: E402
 from ..models import ZoomViT  # noqa: E402
 from ..optim import build_optimizer  # noqa: E402
 from ..zoom import ZoomSchedule, lr_at  # noqa: E402
@@ -66,14 +68,17 @@ def forcings(static, hour, doy, lon):
 def field_source(path, meta):
     """("gridpack" | "npy", file) holding the fields, checked against meta.json.
 
-    A GridPack older than fields.npy is stale (prepare-era5 rerun after pack-era5)
-    and is skipped; data whose shape disagrees with meta.json is an error."""
+    A GridPack older than fields.npy, or packed from another prepare-era5 run
+    (gridpack.StalePackError), is skipped for fields.npy; data whose shape
+    disagrees with meta.json is an error."""
     gp, npy = os.path.join(path, "fields.gridpack"), os.path.join(path, "fields.npy")
     kind, f = ("gridpack", gp) if os.path.exists(gp) else ("npy", npy)
-    if kind == "gridpack" and os.path.exists(npy) and os.path.getmtime(npy) > os.path.getmtime(gp):
-        print(f"warning: {gp} is older than fields.npy (stale pack?); reading fields.npy",
-              flush=True)
-        kind, f = "npy", npy
+    if kind == "gridpack" and os.path.exists(npy):
+        why = (f"{gp} is older than fields.npy (stale pack?)"
+               if os.path.getmtime(npy) > os.path.getmtime(gp) else gridpack.stale_reason(gp))
+        if why:
+            print(f"warning: {why}; reading fields.npy", flush=True)
+            kind, f = "npy", npy
     shape = GridPack(f).h["shape"] if kind == "gridpack" else np.load(f, mmap_mode="r").shape
     want = (len(meta["times"]), len(meta["channels"]), len(meta["lat"]), len(meta["lon"]))
     if tuple(shape) != want:
@@ -222,6 +227,8 @@ def lat_acc(f, o, w):
 
 @torch.no_grad()
 def quick_eval(model, ds, idx, rt):
+    if len(idx) == 0:
+        raise ValueError("quick_eval: no evaluation times (empty split)")
     model.eval()
     tot = 0.0
     for i in range(0, len(idx), 64):
@@ -239,6 +246,8 @@ def full_eval(model, ds, one_step_idx, ic_idx, rt, steps=(1, 4, 12), clim=None):
 
     With a climatology clim(t) (ERA5.climatology) also the climatology RMSE (clim_*) and
     the latitude-weighted ACC of the model (acc_*) and of persistence (acc_persist_*)."""
+    if len(ic_idx) == 0:
+        raise ValueError("full_eval: no rollout initial conditions (empty split)")
     model.eval()
     ci = [ds.channels.index(c) for c in REPORT]
     phys = ds.std[0, ci].view(1, -1, 1, 1)
@@ -332,6 +341,13 @@ def optimizer_step_flops(opt):
     return float(tot)
 
 
+def first_test_row(meta):
+    """First test row: meta splits/n_val (prepare-era5 --val_year) put a validation split
+    between train and test; older meta.json files end the train years at the test year."""
+    sp = meta.get("splits") or {}
+    return int(sp["test"][0]) if "test" in sp else int(meta["n_train"] + meta.get("n_val", 0))
+
+
 def year_start(times, year):
     """Index of the first of the (sorted) times in `year` or later."""
     years = times.astype("datetime64[Y]").astype(int) + 1970
@@ -356,14 +372,9 @@ def save_ckpt(path, state):
 
 
 def load_ckpt(path):
-    """torch.load(weights_only=True), or a full unpickle for optimizer state that is not
-    plain tensors yet (8-bit QState)."""
-    try:
-        return torch.load(path, map_location="cpu", weights_only=True)
-    except pickle.UnpicklingError:
-        print(f"note: {path} is not weights_only-loadable (8-bit optimizer state); "
-              "loading it with weights_only=False", flush=True)
-        return torch.load(path, map_location="cpu", weights_only=False)
+    """torch.load(weights_only=True); pickled 8-bit QState optimizer state (bantamtrain <= 0.2)
+    is allow-listed, anything else that is not plain data is refused."""
+    return load_checkpoint(path)[0]
 
 
 def save_model(path, model, ds, args=None):
@@ -413,13 +424,15 @@ def forecast(load, data, init, steps=12, out=None, device="cpu"):
         raise ValueError(f"init time {init} is not in {data}/meta.json "
                          f"({times[0]} .. {times[-1]})")
     kind, f = field_source(data, meta)
+    valid = t0 + np.arange(steps + 1) * np.timedelta64(int(ck.get("step_hours", 6)), "h")
     n_truth = min(steps + 1, len(times) - i0)
+    hit = times[i0:i0 + n_truth] == valid[:n_truth]   # truth only up to a gap in the data
+    n_truth = n_truth if hit.all() else int(np.argmin(hit))
     truth = read_fields(kind, f, i0, n_truth)
     mean, std, dstd = (torch.tensor(ck["norm"][k], device=dev).view(1, -1, 1, 1)
                        for k in ("mean", "std", "diff_std"))
     static = torch.from_numpy(np.load(os.path.join(data, "static.npy"))).to(dev)
     lon = torch.tensor(meta["lon"], dtype=torch.float32, device=dev)
-    valid = t0 + np.arange(steps + 1) * np.timedelta64(int(ck.get("step_hours", 6)), "h")
     hours, doy = (torch.tensor(a, dtype=torch.float32, device=dev) for a in time_features(valid))
     xn = (torch.from_numpy(truth[:1]).to(dev) - mean) / std
     states = [xn]
@@ -476,7 +489,8 @@ def build_parser():
                     help="in coarse stages, run a k=1 step with this probability")
     ap.add_argument("--wd", type=float, default=0.05)
     ap.add_argument("--gated", type=int, default=1)
-    ap.add_argument("--merge_mode", default="", help="gate|mean|linear (overrides --gated)")
+    ap.add_argument("--merge_mode", default="", choices=["", "gate", "mean", "linear"],
+                    help="gate|mean|linear (overrides --gated)")
     ap.add_argument("--val_year", type=int, default=None,
                     help="train on years before this one, run the periodic evals on it (up to "
                          "the test year) and evaluate the test year only at the end")
@@ -527,6 +541,8 @@ def main(argv=None):
         ap.error("the following arguments are required to train: --data, --budget, --name")
     if args.evals < 0 or args.ic_stride < 1 or args.max_ics < 0:
         ap.error("--evals and --max_ics must be >= 0, --ic_stride >= 1")
+    if not args.duty > 0:
+        ap.error(f"--duty must be in (0, 1], got {args.duty}")
     args.ckpt = args.ckpt or os.path.join(args.out, f"{args.name}.ckpt")
 
     os.makedirs(args.out, exist_ok=True)
@@ -535,11 +551,12 @@ def main(argv=None):
         rt.amp_dtype = None
     meta = json.load(open(os.path.join(args.data, "meta.json")))
     times = np.array(meta["times"], dtype="datetime64[h]")
-    test_start, n_total = meta["n_train"], meta["n_total"]
+    test_start, n_total = first_test_row(meta), meta["n_total"]
     if n_total - 13 <= test_start:
         ap.error(f"{args.data}: fewer than 14 time steps after the train years, nothing to test on")
-    val = args.val_year is not None
-    train_end = year_start(times, args.val_year) if val else test_start
+    # validation years: --val_year, else the val split prepare-era5 --val_year wrote (n_val)
+    val = args.val_year is not None or test_start > meta["n_train"]
+    train_end = year_start(times, args.val_year) if args.val_year is not None else meta["n_train"]
     if val and not 1 < train_end < test_start - 13:
         ap.error(f"--val_year {args.val_year}: needs train data before it and at least 14 steps "
                  f"of it before the test period ({times[test_start]} onwards); "
@@ -578,7 +595,9 @@ def main(argv=None):
     quick_idx = eval_all[::11][:128]
     ics = lambda a: a[::args.ic_stride][:args.max_ics or None]  # noqa: E731
     one_step_idx, ic_idx = test_all[::3], ics(test_all)
-    split = {"eval": "val" if val else "test", "train": span(times, np.arange(train_end)),
+    split = {"eval": "val" if val else "test", "val_from": ("--val_year" if args.val_year is not None
+                                                             else "meta.json" if val else None),
+             "train": span(times, np.arange(train_end)),
              "test": span(times, np.arange(test_start, n_total)), "test_ics": span(times, ic_idx),
              "norm_stats_rows": ds.stats_rows}
     if val:

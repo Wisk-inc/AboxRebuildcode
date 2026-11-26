@@ -8,7 +8,10 @@ Validation is always plain next-token loss at k=1 (the deployable model) in the
 arithmetic of an fp32-weight run (a bf16-weight model is scored as an fp32
 copy). Periodic evals use the first --eval_seqs val windows, the final eval the
 first --final_eval_seqs; the final model is also scored on the periodic subset
-(final_val_loss_eval_seqs) so curves and finals can be compared.
+(final_val_loss_eval_seqs) so curves and finals can be compared. The budget counts
+model_flops (ZoomGPT.flops_per_step: causal-half attention, the FLOP convention of
+every recorded run; plus opt_flops with --flops_mode total); model_flops_exact, the
+matmuls the kernels execute (flops_per_step(exact=True)), is logged beside it.
 
     python llm/train.py --data DIR --budget 6.8e13 --zoom 4:0.35,2:0.25,1:0.4 \
         --optim muon --name my_run [--device cuda --precision bf16 --compile]
@@ -31,11 +34,12 @@ import time  # noqa: E402
 
 import numpy as np  # noqa: E402
 
+from ..data import open_tokens as open_tokens_any  # noqa: E402
 from ..data.tokpack import TokPack  # noqa: E402
 from ..device import (DutyCycleLimiter, describe, find_batch_size,  # noqa: E402
                       maybe_compile, setup_runtime)
 from ..models import ZoomGPT  # noqa: E402
-from ..lowmem import QState, state_bytes  # noqa: E402
+from ..lowmem import QState, load_checkpoint, state_bytes  # noqa: E402
 from ..optim import build_optimizer  # noqa: E402
 from ..zoom import ZoomSchedule, lr_at  # noqa: E402
 
@@ -44,14 +48,15 @@ EXIT_DIVERGED = 3
 
 
 def open_token_source(data_dir, split, fmt="auto"):
-    """(tokens, info): <split>.tokpack if present (fmt auto) else the raw uint16 <split>.bin.
+    """(tokens, info): <split>.tokpack if present (fmt auto) else the raw <split>.bin (of
+    meta.json's dtype, uint16 by default). fmt auto skips a pack left over from an earlier
+    prepare run (bantamtrain.data.open_tokens); fmt tokpack raises StalePackError on one.
     info = {"format": "tokpack"|"bin", "file", "tokens"} for the run log."""
-    pack = os.path.join(data_dir, f"{split}.tokpack")
-    if fmt == "tokpack" or (fmt == "auto" and os.path.exists(pack)):
-        path, kind, tokens = pack, "tokpack", TokPack(pack)
+    if fmt == "tokpack":
+        kind, tokens = "tokpack", TokPack(os.path.join(data_dir, f"{split}.tokpack"))
     else:
-        path, kind = os.path.join(data_dir, f"{split}.bin"), "bin"
-        tokens = np.memmap(path, dtype=np.uint16, mode="r")
+        tokens, kind = open_tokens_any(data_dir, split, prefer_pack=fmt == "auto")
+    path = os.path.join(data_dir, f"{split}.{kind}")
     return tokens, {"format": kind, "file": os.path.abspath(path), "tokens": int(len(tokens))}
 
 
@@ -136,14 +141,15 @@ RESUME_IGNORE = ("resume", "stop_step", "ckpt_every", "ckpt", "threads", "allow_
 
 
 def build_model(a, vocab, grad_ckpt=False):
-    """ZoomGPT from an argparse namespace / run-log args (shared with the eval scripts)."""
+    """ZoomGPT from an argparse namespace / run-log args (shared with the eval scripts).
+    block_size = --seq: generate()'s default window is the trained context (not a weight)."""
     g = lambda k, default: getattr(a, k, default) if not isinstance(a, dict) else a.get(k, default)  # noqa: E731
     return ZoomGPT(vocab, g("d", 256), g("layers", 6), g("heads", 4),
                    zoom_ks=ZoomSchedule.parse(g("zoom", "1")).ks, gated=bool(g("gated", 1)),
                    out_mode=g("out_mode", "slot"), rope_pos=g("rope_pos", "token"),
                    qk_norm=bool(g("qk_norm", 0)), merge_mode=g("merge_mode", "") or None,
                    grad_ckpt=grad_ckpt, mlp=g("mlp", "gelu"), softcap=float(g("softcap", 0.0)),
-                   zero_init_proj=bool(g("zero_init_proj", 0)))
+                   zero_init_proj=bool(g("zero_init_proj", 0)), block_size=int(g("seq", 256)))
 
 
 def stage_batch(batch, k, batch_scale=0.0, batch_scale_k=0):
@@ -238,17 +244,11 @@ def save_ckpt(path, model, opt, stream, progress, log, mix_rng, rt=None):
 def load_ckpt(path):
     """torch.load(weights_only=True). Checkpoints written before 0.3 pickled QState objects:
     those load with QState allow-listed (still no arbitrary code), with a warning."""
-    try:
-        return torch.load(path, map_location="cpu", weights_only=True)
-    except Exception as e:  # noqa: BLE001 - UnpicklingError or RuntimeError, by torch version
-        try:
-            with torch.serialization.safe_globals([QState]):
-                ck = torch.load(path, map_location="cpu", weights_only=True)
-        except Exception:  # noqa: BLE001
-            raise e
+    ck, legacy = load_checkpoint(path)
+    if legacy:
         print(f"warning: {path}: old checkpoint format (pickled 8-bit optimizer state), "
               "loaded with QState allow-listed", file=sys.stderr, flush=True)
-        return ck
+    return ck
 
 
 def resume_arg_changes(old, new, default):
@@ -392,7 +392,8 @@ def main(argv=None):
                     help="in coarse stages, run a k=1 step with this probability")
     ap.add_argument("--wd", type=float, default=0.1)
     ap.add_argument("--gated", type=int, default=1)
-    ap.add_argument("--merge_mode", default="", help="gate|mean|linear (overrides --gated)")
+    ap.add_argument("--merge_mode", default="", choices=["", "gate", "mean", "linear"],
+                    help="gate|mean|linear (overrides --gated)")
     ap.add_argument("--out_mode", default="slot", choices=["slot", "bag"])
     ap.add_argument("--rope_pos", default="token", choices=["token", "patch"])
     ap.add_argument("--qk_norm", type=int, default=0)
@@ -418,7 +419,8 @@ def main(argv=None):
     ap.add_argument("--out", default=os.path.join("results", "llm"))
     ap.add_argument("--save", default="",
                     help="final weights (state_dict), plus <root>_pretrained/ via "
-                         "model.save_pretrained when the model has it")
+                         "model.save_pretrained (with the --data tokenizer.json and eos_id, "
+                         "ready for `bantam generate`)")
     ap.add_argument("--save_every_eval", type=int, default=0,
                     help="also save <save root>_f<frac><ext> at every evaluation (compute curve)")
     ap.add_argument("--ckpt_every", type=int, default=0,
@@ -550,6 +552,7 @@ def main(argv=None):
               f"budget={args.budget:.3e} world={world} {describe(rt)}", flush=True)
 
     model_flops, opt_flops, tokens, step, train_time = 0.0, 0.0, 0, 0, 0.0
+    exact_flops = 0.0     # flops_per_step(exact=True): the matmuls the kernels run (logged only)
     next_eval = 0.0
     mix_rng = np.random.default_rng(args.seed + 1)
     if resume is not None:
@@ -561,6 +564,7 @@ def main(argv=None):
                                                pr["next_eval"])
         model_flops = pr.get("model_flops", pr["flops"])    # before 0.3: model FLOPs only
         opt_flops = pr.get("opt_flops", step * opt_step_flops)
+        exact_flops = pr.get("model_flops_exact")          # None: checkpoint predates it
         log = resume["log"]
         log.setdefault("resume_history", []).append({"step": step, "args": log["args"]})
         log.update(run_info, args=vars(args), resumed_from=args.resume)
@@ -576,7 +580,8 @@ def main(argv=None):
 
     def progress():
         return {"flops": budget_flops(), "model_flops": model_flops, "opt_flops": opt_flops,
-                "tokens": tokens, "step": step, "train_time": train_time, "next_eval": next_eval}
+                "model_flops_exact": exact_flops, "tokens": tokens, "step": step,
+                "train_time": train_time, "next_eval": next_eval}
 
     if resume is not None and is_main:
         print(f"  resumed at step {step} (frac={budget_flops()/args.budget:.3f})", flush=True)
@@ -592,7 +597,8 @@ def main(argv=None):
                 vl = evaluate(model, val, args, rt, args.eval_seqs)
                 log["evals"].append({"frac": frac, "flops": flops, "tokens": tokens, "step": step,
                                      "train_time": train_time, "val_loss": vl,
-                                     "opt_flops": opt_flops, "total_flops": model_flops + opt_flops})
+                                     "opt_flops": opt_flops, "total_flops": model_flops + opt_flops,
+                                     "model_flops_exact": exact_flops})
                 print(f"  frac={frac:.3f} step={step} tok={tokens/1e6:.2f}M "
                       f"t={train_time:.0f}s val={vl:.4f}", flush=True)
                 if args.save and args.save_every_eval and step > 0:
@@ -636,6 +642,8 @@ def main(argv=None):
         train_time += dt
         limiter(dt)
         model_flops += model.flops_per_step(batch, args.seq, k) * args.accum * world
+        if exact_flops is not None:
+            exact_flops += model.flops_per_step(batch, args.seq, k, exact=True) * args.accum * world
         opt_flops += opt_step_flops
         tokens += batch * args.seq * args.accum * world
         step += 1
@@ -671,7 +679,8 @@ def main(argv=None):
     log["tokens"] = tokens
     log["steps"] = step
     log["data_epochs"] = stream.data_epochs
-    log.update(model_flops=model_flops, opt_flops=opt_flops, total_flops=model_flops + opt_flops)
+    log.update(model_flops=model_flops, opt_flops=opt_flops, total_flops=model_flops + opt_flops,
+               model_flops_exact=exact_flops)
     if diverged:
         log.update(status="diverged", diverged=True, diverged_at_step=step)
         write_json(json_path, log)
@@ -686,8 +695,10 @@ def main(argv=None):
         log["saved"] = {"state_dict": args.save}
         if callable(getattr(model, "save_pretrained", None)):
             d = os.path.splitext(args.save)[0] + "_pretrained"
+            tok = os.path.join(args.data, "tokenizer.json")   # + eos_id from meta.json
             try:
-                model.save_pretrained(d)
+                model.save_pretrained(d, **({"tokenizer_path": args.data} if os.path.exists(tok)
+                                            else {}))
                 log["saved"]["pretrained"] = d
             except Exception as e:  # noqa: BLE001 - the state_dict is saved already
                 print(f"warning: save_pretrained({d}) failed: {e}", file=sys.stderr, flush=True)

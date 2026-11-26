@@ -73,6 +73,9 @@ class ZoomViT(nn.Module):
         return f
 
     def muon_params(self):
+        """Hidden weight matrices (Muon); patch embed/decode, norms and gates stay on AdamW."""
+        for b in self.blocks:   # re-tag: deepcopy / load_state_dict(assign=True) drop it
+            b.qkv.weight.muon_split = 3
         return [p for b in self.blocks for p in
                 (b.qkv.weight, b.proj.weight, b.fc.weight, b.fc_out.weight)]
 
