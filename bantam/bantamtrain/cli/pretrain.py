@@ -361,7 +361,8 @@ def auto_micro_batch(args, vocab, sched, rt):
 RECIPE_HELP = (
     "best: the best settings measured so far, for each of these options that the command line "
     "does not give: --optim muon --lr 1.6e-2 --qk_norm 1 --zoom 2:0.33,1:0.67 --batch_scale 2 "
-    "(the LR only with --optim muon). Measured at small scale on CPU only (TinyStories, "
+    "(the LR only with --optim muon; --batch_scale, which overrides --batch_scale_k, not with "
+    "a --batch_scale_k 1). Measured at small scale on CPU only (TinyStories, "
     "5.8M-param ZoomGPT, d=256, 6.8e13 FLOPs): final val loss 2.589 (2 seeds) vs 2.737 for "
     "the Muon baseline (3 seeds), which needs 1.41x the compute to match; not tested on "
     "larger models or GPUs. none (default): no change. The log records args.recipe, the "

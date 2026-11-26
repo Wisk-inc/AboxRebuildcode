@@ -456,7 +456,7 @@ bit-identical to the code before the audit.
 - `--recipe {none,best}` for `pretrain` and `weather` (default `none`: no change).
   `best` sets the best settings measured so far, at small scale on CPU, for every one of
   its options the command line does not give (explicit flags win; the LR only with
-  Muon). `pretrain`: `--optim muon --lr 1.6e-2 --qk_norm 1 --zoom 2:0.33,1:0.67
+  Muon; `--batch_scale` not with `--batch_scale_k 1`). `pretrain`: `--optim muon --lr 1.6e-2 --qk_norm 1 --zoom 2:0.33,1:0.67
   --batch_scale 2` (TinyStories, 5.8M parameters: 2.589 against 2.737, the baseline
   needing 1.41x the compute; 2 seeds). `weather`: `--optim muon --lr 1.6e-2
   --coarse_mode lowres --zoom 4:0.6,1:0.4` (one-step MSE 0.112 against 0.124; 1 seed).

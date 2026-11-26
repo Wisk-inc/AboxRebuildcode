@@ -9,7 +9,7 @@ the result back to one prediction per original element. Over training K is
 lowered stage by stage to 1, ending with an ordinary model. The schedule that
 measured best on text is k=2 for the first third of the FLOPs, then k=1
 (--zoom 2:0.33,1:0.67 with --batch_scale 2); the original 4 -> 2 -> 1 schedule lost
-to the baseline.
+to the baseline (about equal with batch x k).
 
 Two small modules make the merge reversible enough to transfer:
 

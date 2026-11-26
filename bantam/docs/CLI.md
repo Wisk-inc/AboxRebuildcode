@@ -91,7 +91,9 @@ was 2.589 (2 seeds) against 2.737 for the Muon baseline (3 seeds), so the baseli
 about 1.41x the compute to match. It has not been tested on larger models or on GPUs.
 Options you pass explicitly always win, also at their default value (`--zoom 1` keeps
 the baseline schedule). The LR is tied to the optimizer it was measured with: with an
-explicit `--optim adamw`, `--lr` keeps its default and the run prints a note. The run
+explicit `--optim adamw`, `--lr` keeps its default and the run prints a note. Likewise
+`--batch_scale`, which overrides `--batch_scale_k`, is not set when you pass
+`--batch_scale_k 1`. The run
 log records `args.recipe`, the resolved values of every option and
 `args.recipe_applied` (the options the recipe set). To resume such a run, repeat the
 same command line with `--resume`.

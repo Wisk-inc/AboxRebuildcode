@@ -17,6 +17,8 @@ RECIPES = {
 NAMES = ("none", "best")
 # measured together: the recipe's --lr is applied only with the recipe's --optim
 TIED = {"lr": "optim"}
+# not set when the command line turns this option on: --batch_scale > 0 overrides --batch_scale_k
+OVERRIDES = {"batch_scale": "batch_scale_k"}
 
 
 def given_options(parser, argv):
@@ -44,6 +46,10 @@ def apply_recipe(args, make_parser, argv, command):
         dep = TIED.get(k)
         if dep in given and getattr(args, dep) != rec[dep]:
             skipped.append(f"--{k} (measured with --{dep} {rec[dep]})")
+            continue
+        over = OVERRIDES.get(k)
+        if over in given and getattr(args, over):
+            skipped.append(f"--{k} (it would override --{over} {getattr(args, over)})")
             continue
         setattr(args, k, v)
         args.recipe_applied.append(k)

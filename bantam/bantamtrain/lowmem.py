@@ -230,6 +230,8 @@ def load_checkpoint(path, map_location="cpu"):
     it such a checkpoint raises a RuntimeError naming the torch version."""
     try:
         return torch.load(path, map_location=map_location, weights_only=True), False
+    except OSError:                            # missing or unreadable: no allow-list helps
+        raise
     except Exception as e:  # noqa: BLE001 - UnpicklingError or RuntimeError, by torch version
         err = e
     ser = torch.serialization
