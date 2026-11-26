@@ -234,7 +234,8 @@ def test_binfile_reads_like_memmap(tmp_path):
     a.tofile(tmp_path / "t.bin")
     b = tokpack.BinFile(tmp_path / "t.bin", np.uint32)
     assert len(b) == len(a) and b.nbytes == a.nbytes
-    for sl in (slice(0, 10), slice(99_990, 100_100), slice(500, 400), slice(None, None, 7)):
-        assert np.array_equal(b[sl], a[sl])
+    for sl in (slice(0, 10), slice(99_990, 100_100), slice(500, 400), slice(None, None, 7),
+               slice(None, None, -1), slice(500, 10, -3), slice(10, 500, -1), slice(-5, None)):
+        assert np.array_equal(b[sl], a[sl]), sl
     assert b[-1] == a[-1] and b[3] == a[3]
     assert tokpack.token_dtype(65536) == np.uint16 and tokpack.token_dtype(65537) == np.uint32

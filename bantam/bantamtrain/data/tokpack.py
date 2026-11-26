@@ -161,12 +161,13 @@ class BinFile:
             if not 0 <= i < self.n:
                 raise IndexError(f"index {int(key)} out of range for {self.n} tokens")
             return self[i:i + 1][0]
-        start, stop, step = key.indices(self.n)
-        if stop <= start:
-            return np.zeros(0, self.dtype)[::step]
-        a = np.fromfile(self.path, dtype=self.dtype, count=stop - start,
-                        offset=start * self.dtype.itemsize)
-        return a if step == 1 else a[::step]
+        idx = range(*key.indices(self.n))
+        if len(idx) == 0:
+            return np.zeros(0, self.dtype)
+        lo, hi = min(idx[0], idx[-1]), max(idx[0], idx[-1]) + 1     # covering range, any step
+        a = np.fromfile(self.path, dtype=self.dtype, count=hi - lo,
+                        offset=lo * self.dtype.itemsize)
+        return a if idx.step == 1 else a[idx[0] - lo::idx.step]
 
 
 class TokPackWriter:
