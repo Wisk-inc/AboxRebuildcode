@@ -1,14 +1,15 @@
-"""Measure a real 1B-parameter training step on this machine with Bantam's memory stack.
+"""Measure a real ~1B-parameter training step on this machine with Bantam's memory stack.
 
     python experiments/bench_1b.py --steps 3 --threads 2
 
-Builds a 1.0B-parameter ZoomGPT (d=2048, 17 layers, 32k vocab), stores weights
-in bf16 (stochastic-rounding updates) with 8-bit Muon/AdamW state, runs full
-forward/backward/optimizer steps on real TinyStories tokens and reports
-peak memory, seconds per step, tokens/s and the time those rates imply for a
-Chinchilla-optimal 20B-token run. The standard recipe (fp32 weights + fp32
-AdamW = 16 B/param = 16 GB before activations) is reported by calculation
-only: it cannot fit in this machine's RAM.
+Builds a ~1B-parameter ZoomGPT (default d=2048, 17 layers, 32k vocab, tied head:
+0.92B parameters; the exact count is in the output), stores weights in bf16
+(stochastic-rounding updates) with 8-bit Muon/AdamW state, runs full
+forward/backward/optimizer steps on real TinyStories tokens and reports peak
+memory, seconds per step, tokens/s and the time those rates imply for a
+Chinchilla-optimal run (20 tokens per parameter unless --chinchilla_tokens).
+The standard recipe (fp32 weights + fp32 AdamW = 16 B/param, ~15 GB before
+activations) is reported by calculation only: it cannot fit in this machine's RAM.
 """
 import torch
 
@@ -38,9 +39,16 @@ def rss_gb():
     return float("nan")
 
 
-def main():
+def positive_int(s):
+    v = int(s)
+    if v < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return v
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--steps", type=int, default=3)
+    ap.add_argument("--steps", type=positive_int, default=3, help="timed steps after one warm-up")
     ap.add_argument("--threads", type=int, default=2)
     ap.add_argument("--batch", type=int, default=1)
     ap.add_argument("--seq", type=int, default=256)
@@ -48,10 +56,10 @@ def main():
     ap.add_argument("--layers", type=int, default=17)
     ap.add_argument("--heads", type=int, default=16)
     ap.add_argument("--vocab", type=int, default=32000)
-    ap.add_argument("--chinchilla_tokens", type=float, default=2e10)
+    ap.add_argument("--chinchilla_tokens", type=float, default=0, help="0 = 20 x parameters")
     ap.add_argument("--data", default="/home/user/data/tinystories/tok4k/train.bin")
     ap.add_argument("--out", default=os.path.join(ROOT, "results", "bench_1b.json"))
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     torch.set_num_threads(args.threads)
     torch.manual_seed(0)
 
@@ -60,6 +68,8 @@ def main():
     n = sum(p.numel() for p in model.parameters())
     rss_model = rss_gb()
     opt = build_optimizer(model, "muon", 1e-3, 0.1, state_bits=8)
+    build_seconds = time.time() - t0
+    chinchilla = args.chinchilla_tokens or 20 * n
     toks = np.memmap(args.data, dtype=np.uint16, mode="r")
     rng = np.random.default_rng(0)
     times, losses = [], []
@@ -89,15 +99,16 @@ def main():
         "machine_ram_gb": os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1e9,
         "standard_recipe_static_gb": n * 16 / 1e9,
         "sec_per_step": sec, "tokens_per_s": tok_s, "achieved_gflops": flops / sec / 1e9,
-        "chinchilla_tokens": args.chinchilla_tokens,
-        "chinchilla_days_at_measured_rate": args.chinchilla_tokens / tok_s / 86400,
-        "losses": losses, "build_seconds": t0 and (time.time() - t0),
+        "chinchilla_tokens": chinchilla,
+        "chinchilla_days_at_measured_rate": chinchilla / tok_s / 86400,
+        "losses": losses, "build_seconds": build_seconds,
     }
     out["chinchilla_years_at_measured_rate"] = out["chinchilla_days_at_measured_rate"] / 365.25
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:
         json.dump(out, f, indent=1)
     print(json.dumps({k: v for k, v in out.items() if k not in ("config", "losses")}, indent=1))
+    return out
 
 
 if __name__ == "__main__":
